@@ -2,83 +2,127 @@
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
+// 1. Get the Database URL from environment variables
 $databaseUrl = getenv("DATABASE_URL");
 
 if (!$databaseUrl) {
     die("DATABASE_URL not set");
 }
 
+// 2. Parse the URL and handle potential missing components
 $url = parse_url($databaseUrl);
 
-$dsn = "pgsql:host={$url['host']};port={$url['port']};dbname=" . ltrim($url['path'], "/") . ";sslmode=require";
+$host = $url['host'] ?? 'localhost';
+$port = $url['port'] ?? 5432; // Default PostgreSQL port
+$user = $url['user'] ?? '';
+$pass = $url['pass'] ?? '';
+$dbName = ltrim($url['path'] ?? '', '/');
 
-$pdo = new PDO($dsn, $url['user'], $url['pass'], [
-    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
-]);
+// 3. Construct the DSN safely
+$dsn = "pgsql:host=$host;port=$port;dbname=$dbName;sslmode=require";
 
-$pdo->exec("
-CREATE TABLE IF NOT EXISTS members (
-    id SERIAL PRIMARY KEY,
-    full_name TEXT UNIQUE
-);
-CREATE TABLE IF NOT EXISTS sessions (
-    id SERIAL PRIMARY KEY,
-    name TEXT,
-    date DATE DEFAULT CURRENT_DATE
-);
-CREATE TABLE IF NOT EXISTS attendance (
-    id SERIAL PRIMARY KEY,
-    session_id INT,
-    member_id INT,
-    UNIQUE(session_id, member_id)
-);
-");
+try {
+    $pdo = new PDO($dsn, $user, $pass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+    ]);
 
-if ($_POST['add_member'] ?? false) {
-    $stmt = $pdo->prepare("INSERT INTO members(full_name) VALUES (?) ON CONFLICT DO NOTHING");
-    $stmt->execute([$_POST['name']]);
+    // 4. Initialize Tables
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS members (
+            id SERIAL PRIMARY KEY,
+            full_name TEXT UNIQUE
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            id SERIAL PRIMARY KEY,
+            name TEXT,
+            date DATE DEFAULT CURRENT_DATE
+        );
+        CREATE TABLE IF NOT EXISTS attendance (
+            id SERIAL PRIMARY KEY,
+            session_id INT,
+            member_id INT,
+            UNIQUE(session_id, member_id)
+        );
+    ");
+
+    // 5. Handle Form Submissions
+    if ($_POST['add_member'] ?? false) {
+        $stmt = $pdo->prepare("INSERT INTO members(full_name) VALUES (?) ON CONFLICT DO NOTHING");
+        $stmt->execute([$_POST['name']]);
+    }
+
+    if ($_POST['create_session'] ?? false) {
+        $stmt = $pdo->prepare("INSERT INTO sessions(name) VALUES (?)");
+        $stmt->execute([$_POST['session']]);
+    }
+
+    $session_id = $_GET['session'] ?? 1;
+
+    if ($_POST['mark'] ?? false) {
+        $stmt = $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?) ON CONFLICT DO NOTHING");
+        $stmt->execute([$session_id, $_POST['member_id']]);
+    }
+
+    // 6. Fetch Data for Display
+    $members = $pdo->query("SELECT * FROM members ORDER BY full_name")->fetchAll();
+
+    $stmt = $pdo->prepare("SELECT member_id FROM attendance WHERE session_id = ?");
+    $stmt->execute([$session_id]);
+    $attended = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+} catch (PDOException $e) {
+    die("Database connection failed: " . $e->getMessage());
 }
-
-if ($_POST['create_session'] ?? false) {
-    $stmt = $pdo->prepare("INSERT INTO sessions(name) VALUES (?)");
-    $stmt->execute([$_POST['session']]);
-}
-
-$session_id = $_GET['session'] ?? 1;
-
-if ($_POST['mark'] ?? false) {
-    $stmt = $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?) ON CONFLICT DO NOTHING");
-    $stmt->execute([$session_id, $_POST['member_id']]);
-}
-
-$members = $pdo->query("SELECT * FROM members ORDER BY full_name")->fetchAll();
-
-$attended = $pdo->query("SELECT member_id FROM attendance WHERE session_id = $session_id")->fetchAll(PDO::FETCH_COLUMN);
 ?>
 
-<h1>Ujamaa Attendance</h1>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ujamaa Attendance</title>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; max-width: 600px; margin: 20px auto; }
+        .member-row { border-bottom: 1px solid #eee; padding: 10px 0; display: flex; justify-content: space-between; }
+        .present { color: green; font-weight: bold; }
+    </style>
+</head>
+<body>
 
-<form method="POST">
-<input name="name" placeholder="Full name">
-<button name="add_member">Add</button>
-</form>
+    <h1>Ujamaa Attendance</h1>
 
-<form method="POST">
-<input name="session" placeholder="Session name">
-<button name="create_session">Create Session</button>
-</form>
+    <section>
+        <h3>Add Member</h3>
+        <form method="POST">
+            <input name="name" placeholder="Full name" required>
+            <button name="add_member">Add</button>
+        </form>
+    </section>
 
-<h2>Members</h2>
-<?php foreach ($members as $m): ?>
-<div>
-<?= $m['full_name'] ?>
-<?php if (!in_array($m['id'], $attended)): ?>
-<form method="POST" style="display:inline">
-<input type="hidden" name="member_id" value="<?= $m['id'] ?>">
-<button name="mark">Mark Present</button>
-</form>
-<?php else: ?>
-✔ Present
-<?php endif; ?>
-</div>
-<?php endforeach; ?>
+    <section>
+        <h3>New Session</h3>
+        <form method="POST">
+            <input name="session" placeholder="Session name" required>
+            <button name="create_session">Create Session</button>
+        </form>
+    </section>
+
+    <hr>
+
+    <h2>Members (Session ID: <?= htmlspecialchars($session_id) ?>)</h2>
+    <?php foreach ($members as $m): ?>
+        <div class="member-row">
+            <span><?= htmlspecialchars($m['full_name']) ?></span>
+            
+            <?php if (!in_array($m['id'], $attended)): ?>
+                <form method="POST" style="display:inline">
+                    <input type="hidden" name="member_id" value="<?= $m['id'] ?>">
+                    <button name="mark">Mark Present</button>
+                </form>
+            <?php else: ?>
+                <span class="present">✔ Present</span>
+            <?php endif; ?>
+        </div>
+    <?php endforeach; ?>
+
+</body>
+</html>
