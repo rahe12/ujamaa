@@ -1,237 +1,221 @@
 <?php
 /**
- * UJAMAA ACADEMY - ATTENDANCE & REPORTING SYSTEM
- * Lead Dev: Senior Architect Refactor
+ * UJAMAA ACADEMY - ENTERPRISE EDITION
+ * Features: Advanced Reporting, CRUD, Analytics
  */
 
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
-// --- DATABASE CONFIGURATION ---
 $databaseUrl = getenv("DATABASE_URL");
-if (!$databaseUrl) die("CRITICAL: DATABASE_URL environment variable is missing.");
+if (!$databaseUrl) die("Database configuration missing.");
 
 $url = parse_url($databaseUrl);
-$host = $url['host'] ?? 'localhost';
-$port = $url['port'] ?? 5432;
-$user = $url['user'] ?? '';
-$pass = $url['pass'] ?? '';
-$dbName = ltrim($url['path'] ?? '', '/');
-
-$dsn = "pgsql:host=$host;port=$port;dbname=$dbName;sslmode=require";
+$dsn = "pgsql:host={$url['host']};port=" . ($url['port'] ?? 5432) . ";dbname=" . ltrim($url['path'], '/') . ";sslmode=require";
 
 try {
-    $pdo = new PDO($dsn, $user, $pass, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
+    $pdo = new PDO($dsn, $url['user'], $url['pass'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
 
-    // Initial Schema Setup
-    $pdo->exec("
-        CREATE TABLE IF NOT EXISTS members (id SERIAL PRIMARY KEY, full_name TEXT UNIQUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-        CREATE TABLE IF NOT EXISTS sessions (id SERIAL PRIMARY KEY, name TEXT, date DATE DEFAULT CURRENT_DATE);
-        CREATE TABLE IF NOT EXISTS attendance (id SERIAL PRIMARY KEY, session_id INT REFERENCES sessions(id), member_id INT REFERENCES members(id), marked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(session_id, member_id));
-    ");
+    // --- ADMINISTRATIVE ACTIONS (DELETE/EDIT) ---
+    if (isset($_GET['action'])) {
+        if ($_GET['action'] === 'del_member' && isset($_GET['id'])) {
+            $pdo->prepare("DELETE FROM attendance WHERE member_id = ?")->execute([$_GET['id']]);
+            $pdo->prepare("DELETE FROM members WHERE id = ?")->execute([$_GET['id']]);
+        }
+        if ($_GET['action'] === 'unmark' && isset($_GET['mid']) && isset($_GET['sid'])) {
+            $pdo->prepare("DELETE FROM attendance WHERE member_id = ? AND session_id = ?")->execute([$_GET['mid'], $_GET['sid']]);
+        }
+        header("Location: " . strtok($_SERVER["REQUEST_URI"], '?') . (isset($_GET['session']) ? "?session=".$_GET['session'] : ""));
+        exit;
+    }
 
-    // --- REPORT GENERATION LOGIC (CSV EXPORT) ---
-    if (isset($_GET['export'])) {
-        $type = $_GET['export'];
-        $filename = "ujamaa_report_" . date('Y-m-d');
-        
+    // --- EXPORT ENGINE ---
+    if (isset($_GET['export_type'])) {
+        $type = $_GET['export_type'];
+        $date = $_GET['export_date'] ?? date('Y-m-d');
+        $filename = "Ujamaa_Report_{$type}_{$date}.csv";
+
         header('Content-Type: text/csv');
-        header('Content-Disposition: attachment; filename="' . $filename . '.csv"');
-        
-        $output = fopen('php://output', 'w');
-        
-        if ($type === 'session' && isset($_GET['session'])) {
-            // Report for one specific session
-            fputcsv($output, ['Member Name', 'Session', 'Date', 'Status']);
-            $stmt = $pdo->prepare("
-                SELECT m.full_name, s.name as session_name, s.date, 
-                CASE WHEN a.id IS NOT NULL THEN 'Present' ELSE 'Absent' END as status
-                FROM members m
-                CROSS JOIN sessions s
-                LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id
-                WHERE s.id = ?
-                ORDER BY m.full_name ASC
-            ");
-            $stmt->execute([$_GET['session']]);
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        $out = fopen('php://output', 'w');
+
+        if ($type === 'daily') {
+            fputcsv($out, ['Report Date', 'Session Name', 'Athlete Name', 'Status']);
+            $stmt = $pdo->prepare("SELECT s.date, s.name as sname, m.full_name, CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as status 
+                                   FROM members m CROSS JOIN sessions s LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id 
+                                   WHERE s.date = ? ORDER BY s.id, m.full_name");
+            $stmt->execute([$date]);
         } else {
-            // Daily Master Report (All sessions today)
-            fputcsv($output, ['Date', 'Session', 'Member Name', 'Status']);
-            $stmt = $pdo->prepare("
-                SELECT s.date, s.name as session_name, m.full_name,
-                CASE WHEN a.id IS NOT NULL THEN 'Present' ELSE 'Absent' END as status
-                FROM sessions s
-                CROSS JOIN members m
-                LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id
-                WHERE s.date = CURRENT_DATE
-                ORDER BY s.id, m.full_name
-            ");
-            $stmt->execute();
+            fputcsv($out, ['Athlete Name', 'Session', 'Date', 'Status']);
+            $stmt = $pdo->prepare("SELECT m.full_name, s.name, s.date, CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as status 
+                                   FROM members m CROSS JOIN sessions s LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id 
+                                   WHERE s.id = ?");
+            $stmt->execute([$_GET['export_sid']]);
         }
-
-        while ($row = $stmt->fetch()) fputcsv($output, $row);
-        fclose($output);
-        exit;
+        while ($row = $stmt->fetch()) fputcsv($out, $row);
+        fclose($out); exit;
     }
 
-    // --- DATA MUTATIONS ---
+    // --- POST HANDLERS ---
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        if (isset($_POST['add_member']) && !empty(trim($_POST['name']))) {
-            $stmt = $pdo->prepare("INSERT INTO members(full_name) VALUES (?) ON CONFLICT DO NOTHING");
-            $stmt->execute([trim($_POST['name'])]);
-        }
-        if (isset($_POST['create_session']) && !empty(trim($_POST['session']))) {
-            $stmt = $pdo->prepare("INSERT INTO sessions(name) VALUES (?)");
-            $stmt->execute([trim($_POST['session'])]);
-        }
-        if (isset($_POST['mark'])) {
-            $stmt = $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?) ON CONFLICT DO NOTHING");
-            $stmt->execute([$_POST['session_id'], $_POST['member_id']]);
-        }
-        // Redirect to prevent form resubmission
-        header("Location: " . $_SERVER['REQUEST_URI']);
-        exit;
+        if (isset($_POST['add_member'])) $pdo->prepare("INSERT INTO members(full_name) VALUES (?) ON CONFLICT DO NOTHING")->execute([trim($_POST['name'])]);
+        if (isset($_POST['create_session'])) $pdo->prepare("INSERT INTO sessions(name, date) VALUES (?, ?)")->execute([trim($_POST['session']), $_POST['sdate']]);
+        if (isset($_POST['mark'])) $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?)")->execute([$_POST['session_id'], $_POST['member_id']]);
+        header("Location: " . $_SERVER['REQUEST_URI']); exit;
     }
 
-    // --- DATA RETRIEVAL ---
-    $current_session_id = $_GET['session'] ?? null;
+    // --- DATA LOADING ---
     $sessions = $pdo->query("SELECT * FROM sessions ORDER BY date DESC, id DESC")->fetchAll();
-    if (!$current_session_id && !empty($sessions)) $current_session_id = $sessions[0]['id'];
-
+    $current_sid = $_GET['session'] ?? ($sessions[0]['id'] ?? null);
     $members = $pdo->query("SELECT * FROM members ORDER BY full_name ASC")->fetchAll();
     
     $attended_ids = [];
-    if ($current_session_id) {
+    if ($current_sid) {
         $stmt = $pdo->prepare("SELECT member_id FROM attendance WHERE session_id = ?");
-        $stmt->execute([$current_session_id]);
+        $stmt->execute([$current_sid]);
         $attended_ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
     }
 
-} catch (Exception $e) {
-    die("Runtime Error: " . $e->getMessage());
-}
+    // --- STATS CALCULATION ---
+    $total_m = count($members);
+    $present_m = count($attended_ids);
+    $perc = $total_m > 0 ? round(($present_m / $total_m) * 100) : 0;
+
+} catch (Exception $e) { die("System Error: " . $e->getMessage()); }
 ?>
 
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ujamaa Admin | Intelligence</title>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ujamaa Academy | Pro Admin</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f8fafc; }
-        .glass { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); }
-        .custom-scroll::-webkit-scrollbar { width: 5px; }
-        .custom-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
-    </style>
+    <style>body { font-family: 'Plus Jakarta Sans', sans-serif; }</style>
 </head>
-<body class="p-4 md:p-8">
+<body class="bg-[#fcfdfe] p-4 lg:p-10 text-slate-900">
 
-    <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
-        
-        <!-- SIDEBAR / CONTROLS -->
-        <div class="lg:col-span-4 space-y-6">
-            <div class="bg-blue-600 rounded-3xl p-6 text-white shadow-xl shadow-blue-200">
-                <h1 class="text-2xl font-800 tracking-tight">UJAMAA ACADEMY</h1>
-                <p class="text-blue-100 text-sm mt-1">Intelligence Dashboard</p>
+<div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
+    
+    <!-- LEFT SIDEBAR: DASHBOARD & CONTROLS -->
+    <div class="lg:col-span-4 space-y-6">
+        <div class="bg-indigo-700 rounded-[2rem] p-8 text-white shadow-2xl shadow-indigo-200 relative overflow-hidden">
+            <div class="relative z-10">
+                <h1 class="text-3xl font-800">UJAMAA</h1>
+                <p class="text-indigo-200 text-sm mb-8">Performance & Attendance</p>
                 
-                <div class="mt-8 space-y-2">
-                    <label class="text-[10px] font-bold uppercase tracking-widest text-blue-200">Export Reports</label>
-                    <div class="grid grid-cols-2 gap-2">
-                        <a href="?export=session&session=<?= $current_session_id ?>" class="bg-white/10 hover:bg-white/20 text-center py-3 rounded-xl text-xs font-bold transition">Session CSV</a>
-                        <a href="?export=daily" class="bg-white/10 hover:bg-white/20 text-center py-3 rounded-xl text-xs font-bold transition">Daily Master</a>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-white/10 p-4 rounded-2xl">
+                        <p class="text-[10px] uppercase font-bold text-indigo-200">Attendance</p>
+                        <p class="text-2xl font-800"><?= $perc ?>%</p>
+                    </div>
+                    <div class="bg-white/10 p-4 rounded-2xl">
+                        <p class="text-[10px] uppercase font-bold text-indigo-200">Athletes</p>
+                        <p class="text-2xl font-800"><?= $total_m ?></p>
                     </div>
                 </div>
-            </div>
-
-            <div class="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
-                <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4 block">New Entry</label>
-                <form method="POST" class="space-y-3">
-                    <input name="name" placeholder="Athlete Full Name" class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm" required>
-                    <button name="add_member" class="w-full bg-slate-900 text-white py-3 rounded-xl font-bold text-sm hover:bg-black transition">Register Athlete</button>
-                </form>
-
-                <div class="my-6 border-t border-slate-100"></div>
-
-                <form method="POST" class="space-y-3">
-                    <input name="session" placeholder="Session Title (e.g. Morning Drill)" class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm" required>
-                    <button name="create_session" class="w-full bg-blue-50 text-blue-600 py-3 rounded-xl font-bold text-sm hover:bg-blue-100 transition">Open New Session</button>
-                </form>
             </div>
         </div>
 
-        <!-- MAIN CONTENT -->
-        <div class="lg:col-span-8 space-y-6">
-            
-            <div class="bg-white rounded-3xl p-6 shadow-sm border border-slate-100">
-                <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-                    <div>
-                        <h2 class="text-xl font-bold text-slate-800">Attendance Registry</h2>
-                        <p class="text-slate-500 text-sm">Managing <?= count($members) ?> athletes</p>
+        <div class="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
+            <h3 class="font-800 text-lg mb-6">Reporting Center</h3>
+            <form action="" method="GET" class="space-y-4">
+                <div>
+                    <label class="text-xs font-bold text-slate-400 uppercase">Daily Master Report</label>
+                    <div class="flex gap-2 mt-2">
+                        <input type="date" name="export_date" value="<?= date('Y-m-d') ?>" class="flex-1 bg-slate-50 border-none rounded-xl text-sm p-3">
+                        <button name="export_type" value="daily" class="bg-slate-900 text-white px-4 rounded-xl text-xs font-bold">Get</button>
                     </div>
-                    <select onchange="window.location.href='?session='+this.value" class="bg-slate-50 border-none rounded-xl px-4 py-2 text-sm font-semibold text-slate-700 outline-none ring-1 ring-slate-200">
-                        <?php foreach($sessions as $s): ?>
-                            <option value="<?= $s['id'] ?>" <?= $current_session_id == $s['id'] ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($s['name']) ?> (<?= $s['date'] ?>)
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
                 </div>
+            </form>
+        </div>
 
-                <!-- Search UI -->
-                <div class="relative mb-4">
-                    <span class="absolute inset-y-0 left-4 flex items-center text-slate-400">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-                    </span>
-                    <input id="searchBar" onkeyup="searchList()" placeholder="Quick search athlete..." class="w-full pl-12 pr-4 py-3 bg-slate-50 border-none rounded-2xl text-sm focus:ring-2 focus:ring-blue-500 outline-none">
-                </div>
-
-                <div class="custom-scroll overflow-y-auto max-h-[500px] pr-2">
-                    <table class="w-full text-left">
-                        <thead>
-                            <tr class="text-[10px] text-slate-400 uppercase tracking-widest">
-                                <th class="pb-4 font-bold">Athlete</th>
-                                <th class="pb-4 font-bold text-right">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="memberTable">
-                            <?php foreach($members as $m): ?>
-                            <tr class="member-row border-t border-slate-50" data-name="<?= strtolower(htmlspecialchars($m['full_name'])) ?>">
-                                <td class="py-4 font-semibold text-slate-700"><?= htmlspecialchars($m['full_name']) ?></td>
-                                <td class="py-4 text-right">
-                                    <?php if(in_array($m['id'], $attended_ids)): ?>
-                                        <span class="text-emerald-500 font-bold text-xs bg-emerald-50 px-3 py-1 rounded-full">✔ PRESENT</span>
-                                    <?php else: ?>
-                                        <form method="POST">
-                                            <input type="hidden" name="member_id" value="<?= $m['id'] ?>">
-                                            <input type="hidden" name="session_id" value="<?= $current_session_id ?>">
-                                            <button name="mark" class="text-blue-600 font-bold text-xs hover:underline">MARK PRESENT</button>
-                                        </form>
-                                    <?php endif; ?>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
+        <div class="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
+            <h3 class="font-800 text-lg mb-4">Quick Add</h3>
+            <form method="POST" class="space-y-3">
+                <input name="name" placeholder="Athlete Name" class="w-full p-4 bg-slate-50 rounded-2xl border-none text-sm outline-none ring-1 ring-slate-100 focus:ring-indigo-500" required>
+                <button name="add_member" class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition">Register Athlete</button>
+            </form>
         </div>
     </div>
 
-    <script>
-        function searchList() {
-            let input = document.getElementById('searchBar').value.toLowerCase();
-            let rows = document.querySelectorAll('.member-row');
-            rows.forEach(row => {
-                let name = row.getAttribute('data-name');
-                row.style.display = name.includes(input) ? '' : 'none';
-            });
-        }
-    </script>
+    <!-- MAIN PANEL: REGISTRY -->
+    <div class="lg:col-span-8 space-y-6">
+        <div class="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-10">
+                <div>
+                    <h2 class="text-2xl font-800">Registry</h2>
+                    <p class="text-slate-400 text-sm">Session Management</p>
+                </div>
+                <div class="flex gap-2">
+                    <select onchange="window.location.href='?session='+this.value" class="bg-slate-50 border-none rounded-xl px-5 py-3 text-sm font-bold text-slate-700 ring-1 ring-slate-100">
+                        <?php foreach($sessions as $s): ?>
+                            <option value="<?= $s['id'] ?>" <?= $current_sid == $s['id'] ? 'selected' : '' ?>><?= htmlspecialchars($s['name']) ?> (<?= $s['date'] ?>)</option>
+                        <?php endforeach; ?>
+                    </select>
+                    <a href="?export_type=session&export_sid=<?= $current_sid ?>" class="bg-emerald-500 text-white px-5 py-3 rounded-xl text-xs font-bold flex items-center">Export</a>
+                </div>
+            </div>
+
+            <input id="qSearch" onkeyup="doSearch()" placeholder="Search athletes..." class="w-full p-4 mb-6 bg-slate-50 border-none rounded-2xl text-sm ring-1 ring-slate-100 focus:ring-indigo-500 outline-none">
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead>
+                        <tr class="text-[10px] text-slate-400 uppercase font-800 tracking-widest border-b border-slate-50">
+                            <th class="pb-4">Athlete Name</th>
+                            <th class="pb-4">Status</th>
+                            <th class="pb-4 text-right">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="aTable">
+                        <?php foreach($members as $m): ?>
+                        <tr class="t-row border-b border-slate-50/50 hover:bg-slate-50/50 transition" data-name="<?= strtolower(htmlspecialchars($m['full_name'])) ?>">
+                            <td class="py-5 font-bold text-slate-700"><?= htmlspecialchars($m['full_name']) ?></td>
+                            <td class="py-5">
+                                <?php if(in_array($m['id'], $attended_ids)): ?>
+                                    <span class="text-[10px] font-900 bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full">PRESENT</span>
+                                    <a href="?action=unmark&mid=<?= $m['id'] ?>&sid=<?= $current_sid ?>" class="text-[10px] text-slate-300 ml-2 hover:text-red-400 underline">Undo</a>
+                                <?php else: ?>
+                                    <span class="text-[10px] font-900 bg-slate-100 text-slate-400 px-3 py-1 rounded-full">ABSENT</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="py-5 text-right">
+                                <?php if(!in_array($m['id'], $attended_ids)): ?>
+                                <form method="POST" class="inline">
+                                    <input type="hidden" name="member_id" value="<?= $m['id'] ?>">
+                                    <input type="hidden" name="session_id" value="<?= $current_sid ?>">
+                                    <button name="mark" class="text-indigo-600 font-bold text-xs hover:bg-indigo-50 px-3 py-2 rounded-lg transition">Mark Present</button>
+                                </form>
+                                <?php endif; ?>
+                                <a href="?action=del_member&id=<?= $m['id'] ?>" onclick="return confirm('Delete athlete?')" class="text-slate-300 hover:text-red-500 ml-4"><svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></a>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- NEW SESSION FORM -->
+        <div class="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
+            <h3 class="font-800 text-lg mb-4">Create Training Session</h3>
+            <form method="POST" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <input name="session" placeholder="Session Title" class="col-span-1 md:col-span-1 p-4 bg-slate-50 rounded-2xl border-none text-sm ring-1 ring-slate-100 outline-none" required>
+                <input type="date" name="sdate" value="<?= date('Y-m-d') ?>" class="p-4 bg-slate-50 rounded-2xl border-none text-sm ring-1 ring-slate-100 outline-none">
+                <button name="create_session" class="bg-slate-900 text-white rounded-2xl font-bold">Open Session</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    function doSearch() {
+        const q = document.getElementById('qSearch').value.toLowerCase();
+        document.querySelectorAll('.t-row').forEach(row => {
+            row.style.display = row.getAttribute('data-name').includes(q) ? '' : 'none';
+        });
+    }
+</script>
 </body>
 </html>
