@@ -1,23 +1,53 @@
 <?php
 /**
- * UJAMAA ACADEMY - ENTERPRISE EDITION V3
- * Features: Full CRUD (Athletes/Sessions), Financial Ledger, Advanced Reporting
+ * UJAMAA ACADEMY - ENTERPRISE EDITION V4
+ * PRO FEATURES: Export Engine, View Toggling, Full CRUD, Finance & Attendance
  */
 
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
+// 1. EXPORT ENGINE (Must be at the very top)
+if (isset($_GET['export_type'])) {
+    $databaseUrl = getenv("DATABASE_URL");
+    $url = parse_url($databaseUrl);
+    $dsn = "pgsql:host={$url['host']};port=" . ($url['port'] ?? 5432) . ";dbname=" . ltrim($url['path'], '/') . ";sslmode=require";
+    
+    try {
+        $pdo = new PDO($dsn, $url['user'], $url['pass'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $type = $_GET['export_type'];
+        $date = $_GET['export_date'] ?? date('Y-m-d');
+        
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename=Ujamaa_Report_' . $date . '.csv');
+        $output = fopen('php://output', 'w');
+        
+        if ($type === 'daily') {
+            fputcsv($output, ['Date', 'Session', 'Athlete Name', 'Status']);
+            $stmt = $pdo->prepare("SELECT s.date, s.name as sname, m.full_name, CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as status 
+                                   FROM members m CROSS JOIN sessions s LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id 
+                                   WHERE s.date = ? ORDER BY s.id, m.full_name");
+            $stmt->execute([$date]);
+        } else {
+            fputcsv($output, ['Athlete Name', 'Session', 'Date', 'Status']);
+            $stmt = $pdo->prepare("SELECT m.full_name, s.name, s.date, CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as status 
+                                   FROM members m CROSS JOIN sessions s LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id 
+                                   WHERE s.id = ?");
+            $stmt->execute([$_GET['sid']]);
+        }
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) fputcsv($output, $row);
+        fclose($output);
+        exit; // Stop execution so no HTML is appended to the CSV
+    } catch (Exception $e) { die("Export Failed: " . $e->getMessage()); }
+}
 
+// 2. MAIN LOGIC & DATABASE
 $databaseUrl = getenv("DATABASE_URL");
-if (!$databaseUrl) die("Database configuration missing.");
 $url = parse_url($databaseUrl);
 $dsn = "pgsql:host={$url['host']};port=" . ($url['port'] ?? 5432) . ";dbname=" . ltrim($url['path'], '/') . ";sslmode=require";
 
 try {
     $pdo = new PDO($dsn, $url['user'], $url['pass'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
 
-    // --- CONTROLLER: CRUD & POST ACTIONS ---
+    // POST HANDLERS (CRUD)
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        // Create/Update Athlete
         if (isset($_POST['save_member'])) {
             if (!empty($_POST['member_id'])) {
                 $pdo->prepare("UPDATE members SET full_name = ? WHERE id = ?")->execute([trim($_POST['name']), $_POST['member_id']]);
@@ -25,258 +55,160 @@ try {
                 $pdo->prepare("INSERT INTO members(full_name) VALUES (?) ON CONFLICT DO NOTHING")->execute([trim($_POST['name'])]);
             }
         }
-        // Create/Update Session
         if (isset($_POST['save_session'])) {
-            if (!empty($_POST['session_id'])) {
-                $pdo->prepare("UPDATE sessions SET name = ?, date = ? WHERE id = ?")->execute([trim($_POST['session_name']), $_POST['session_date'], $_POST['session_id']]);
-            } else {
-                $pdo->prepare("INSERT INTO sessions(name, date) VALUES (?, ?)")->execute([trim($_POST['session_name']), $_POST['session_date']]);
-            }
+            $pdo->prepare("INSERT INTO sessions(name, date) VALUES (?, ?)")->execute([trim($_POST['s_name']), $_POST['s_date']]);
         }
-        // Attendance & Payments
-        if (isset($_POST['mark_attendance'])) $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?)")->execute([$_POST['session_id'], $_POST['member_id']]);
-        if (isset($_POST['set_payment'])) $pdo->prepare("INSERT INTO payments (member_id, amount, due_date) VALUES (?, ?, ?)")->execute([$_POST['member_id'], $_POST['amount'], $_POST['due_date']]);
-        
+        if (isset($_POST['mark'])) $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?)")->execute([$_POST['sid'], $_POST['mid']]);
         header("Location: " . $_SERVER['REQUEST_URI']); exit;
     }
 
-    // --- CONTROLLER: DELETE ACTIONS ---
-    if (isset($_GET['delete_type']) && isset($_GET['id'])) {
-        if ($_GET['delete_type'] === 'member') $pdo->prepare("DELETE FROM members WHERE id = ?")->execute([$_GET['id']]);
-        if ($_GET['delete_type'] === 'session') $pdo->prepare("DELETE FROM sessions WHERE id = ?")->execute([$_GET['id']]);
+    // ACTIONS (DELETE/UNDO/PAID)
+    if (isset($_GET['action'])) {
+        if ($_GET['action'] === 'del_m') $pdo->prepare("DELETE FROM members WHERE id = ?")->execute([$_GET['id']]);
+        if ($_GET['action'] === 'del_s') $pdo->prepare("DELETE FROM sessions WHERE id = ?")->execute([$_GET['id']]);
+        if ($_GET['action'] === 'unmark') $pdo->prepare("DELETE FROM attendance WHERE member_id = ? AND session_id = ?")->execute([$_GET['mid'], $_GET['sid']]);
         header("Location: index.php"); exit;
     }
 
-    if (isset($_GET['action']) && $_GET['action'] === 'mark_paid') {
-        $pdo->prepare("UPDATE payments SET status = 'paid', paid_at = NOW() WHERE id = ?")->execute([$_GET['pid']]);
-        header("Location: index.php"); exit;
-    }
-
-    // --- DATA LOADING ---
-    $today = date('Y-m-d');
+    // DATA LOADING
     $sessions = $pdo->query("SELECT * FROM sessions ORDER BY date DESC, id DESC")->fetchAll();
     $current_sid = $_GET['session'] ?? ($sessions[0]['id'] ?? null);
     $members = $pdo->query("SELECT * FROM members ORDER BY full_name ASC")->fetchAll();
-    
-    // Attendance Stats for Current Session
-    $attended_ids = [];
-    if ($current_sid) {
-        $stmt = $pdo->prepare("SELECT member_id FROM attendance WHERE session_id = ?");
-        $stmt->execute([$current_sid]);
-        $attended_ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
-    }
+    $attended_ids = $current_sid ? $pdo->prepare("SELECT member_id FROM attendance WHERE session_id = ?"); 
+    if($current_sid) { $attended_ids->execute([$current_sid]); $attended_ids = $attended_ids->fetchAll(PDO::FETCH_COLUMN); } else { $attended_ids = []; }
 
-    // Payment Stats
-    $due_today = $pdo->query("SELECT p.*, m.full_name FROM payments p JOIN members m ON p.member_id = m.id WHERE p.due_date <= '$today' AND p.status = 'unpaid'")->fetchAll();
-
-} catch (Exception $e) { die("Error: " . $e->getMessage()); }
+} catch (Exception $e) { die("System Error: " . $e->getMessage()); }
 ?>
 
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ujamaa Academy Pro</title>
+    <title>Ujamaa Academy | Admin</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #fcfdfe; }
-        .active-tab { background: #4f46e5; color: white; box-shadow: 0 10px 15px -3px rgba(79, 70, 229, 0.2); }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f8fafc; }
+        .tab-active { background: #4f46e5 !important; color: white !important; }
     </style>
 </head>
 <body class="p-4 lg:p-10">
 
 <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
     
-    <!-- LEFT SIDEBAR: NAVIGATION & SUMMARY -->
+    <!-- SIDEBAR -->
     <div class="lg:col-span-4 space-y-6">
-        <div class="bg-slate-900 rounded-[2rem] p-8 text-white shadow-2xl relative overflow-hidden">
-            <h1 class="text-3xl font-800 tracking-tighter mb-2">UJAMAA</h1>
-            <p class="text-slate-400 text-xs font-bold uppercase mb-8">Management System</p>
+        <div class="bg-slate-900 rounded-[2.5rem] p-8 text-white shadow-2xl">
+            <h1 class="text-3xl font-800 mb-1">UJAMAA</h1>
+            <p class="text-slate-500 text-xs font-bold uppercase tracking-widest mb-8">Management Hub</p>
             
             <nav class="space-y-2">
-                <button onclick="showSection('training')" id="nav-training" class="w-full text-left px-6 py-4 rounded-2xl font-bold transition-all active-tab">Training Mode</button>
-                <button onclick="showSection('finance')" id="nav-finance" class="w-full text-left px-6 py-4 rounded-2xl font-bold transition-all text-slate-400 hover:text-white">Finance Mode</button>
-                <button onclick="showSection('reports')" id="nav-reports" class="w-full text-left px-6 py-4 rounded-2xl font-bold transition-all text-slate-400 hover:text-white">Full Reports</button>
+                <button onclick="toggleView('training')" id="btn-training" class="w-full text-left px-6 py-4 rounded-2xl font-bold transition-all tab-active">Training Registry</button>
+                <button onclick="toggleView('sessions')" id="btn-sessions" class="w-full text-left px-6 py-4 rounded-2xl font-bold transition-all text-slate-400 hover:text-white">Session Manager</button>
+                <button onclick="toggleView('export')" id="btn-export" class="w-full text-left px-6 py-4 rounded-2xl font-bold transition-all text-slate-400 hover:text-white">Reports & Export</button>
             </nav>
         </div>
 
-        <!-- Quick Create Athlete Card -->
-        <div class="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
-            <h3 class="font-800 text-lg mb-4" id="member-form-title">Add New Athlete</h3>
+        <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
+            <h3 class="font-800 text-lg mb-4" id="m-title">Add Athlete</h3>
             <form method="POST" class="space-y-3">
-                <input type="hidden" name="member_id" id="form_member_id">
-                <input name="name" id="form_member_name" placeholder="Full Name" class="w-full p-4 bg-slate-50 rounded-2xl border-none text-sm ring-1 ring-slate-100 outline-none" required>
+                <input type="hidden" name="member_id" id="m_id">
+                <input name="name" id="m_name" placeholder="Full Name" class="w-full p-4 bg-slate-50 rounded-2xl border-none text-sm ring-1 ring-slate-100 outline-none focus:ring-indigo-500" required>
                 <button name="save_member" class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-50">Save Athlete</button>
-                <button type="button" onclick="resetMemberForm()" class="w-full text-xs text-slate-400 font-bold hidden" id="cancel-edit-btn">Cancel Edit</button>
             </form>
         </div>
     </div>
 
-    <!-- MAIN DASHBOARD AREA -->
-    <div class="lg:col-span-8 space-y-6">
+    <!-- MAIN PANELS -->
+    <div class="lg:col-span-8">
         
-        <!-- SECTION: TRAINING REGISTRY -->
-        <div id="section-training" class="section-content space-y-6">
-            <div class="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
-                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
-                    <div>
-                        <h2 class="text-2xl font-800">Training Registry</h2>
-                        <p class="text-slate-400 text-sm">Select session to manage attendance</p>
-                    </div>
-                    <div class="flex gap-2">
-                        <select onchange="window.location.href='?session='+this.value" class="bg-slate-50 border-none rounded-xl px-4 py-2 text-sm font-bold ring-1 ring-slate-100">
-                            <?php foreach($sessions as $s): ?>
-                                <option value="<?= $s['id'] ?>" <?= $current_sid == $s['id'] ? 'selected' : '' ?>><?= $s['name'] ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                        <button onclick="openSessionModal()" class="bg-slate-900 text-white p-2 px-4 rounded-xl text-xs font-bold">New Session</button>
-                    </div>
+        <!-- TRAINING PANEL -->
+        <div id="view-training" class="panel space-y-6">
+            <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-2xl font-800">Registry</h2>
+                    <select onchange="window.location.href='?session='+this.value" class="bg-slate-50 border-none rounded-xl px-4 py-2 text-sm font-bold ring-1 ring-slate-100">
+                        <?php foreach($sessions as $s): ?>
+                            <option value="<?= $s['id'] ?>" <?= $current_sid == $s['id'] ? 'selected' : '' ?>><?= htmlspecialchars($s['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
                 </div>
-
-                <div class="overflow-x-auto">
-                    <table class="w-full">
-                        <tbody class="divide-y divide-slate-50">
-                            <?php foreach($members as $m): ?>
-                            <tr class="group hover:bg-slate-50/50 transition">
-                                <td class="py-5 font-bold text-slate-700"><?= $m['full_name'] ?></td>
-                                <td class="py-5 text-right flex items-center justify-end gap-3">
-                                    <?php if(in_array($m['id'], $attended_ids)): ?>
-                                        <span class="text-[10px] bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full font-900">PRESENT</span>
-                                    <?php else: ?>
-                                        <form method="POST" class="inline">
-                                            <input type="hidden" name="session_id" value="<?= $current_sid ?>">
-                                            <input type="hidden" name="member_id" value="<?= $m['id'] ?>">
-                                            <button name="mark_attendance" class="text-indigo-600 font-bold text-xs">Mark</button>
-                                        </form>
-                                    <?php endif; ?>
-                                    
-                                    <!-- CRUD TOOLS -->
-                                    <button onclick="editMember('<?= $m['id'] ?>', '<?= addslashes($m['full_name']) ?>')" class="text-slate-300 hover:text-indigo-600"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg></button>
-                                    <a href="?delete_type=member&id=<?= $m['id'] ?>" onclick="return confirm('Delete athlete?')" class="text-slate-300 hover:text-red-500"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></a>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- SECTION: FINANCE -->
-        <div id="section-finance" class="section-content hidden space-y-6">
-            <div class="bg-white rounded-[2rem] p-8 border border-red-100 shadow-sm">
-                <h2 class="text-2xl font-800 text-slate-900 mb-6">Unpaid Collections</h2>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <?php foreach($due_today as $p): ?>
-                        <div class="bg-red-50/50 p-6 rounded-2xl border border-red-100 flex justify-between items-center">
-                            <div>
-                                <p class="font-bold text-slate-800"><?= $p['full_name'] ?></p>
-                                <p class="text-xs font-bold text-red-500">RWF <?= number_format($p['amount']) ?></p>
-                            </div>
-                            <a href="?action=mark_paid&pid=<?= $p['id'] ?>" class="bg-slate-900 text-white text-[10px] font-bold px-4 py-2 rounded-lg">Confirm Cash</a>
-                        </div>
+                <input onkeyup="filter(this.value)" placeholder="Search athletes..." class="w-full p-4 mb-6 bg-slate-50 rounded-2xl border-none text-sm ring-1 ring-slate-100 outline-none">
+                <div class="overflow-x-auto"><table class="w-full"><tbody id="rows">
+                    <?php foreach($members as $m): ?>
+                    <tr class="border-b border-slate-50 hover:bg-slate-50/50" data-name="<?= strtolower($m['full_name']) ?>">
+                        <td class="py-4 font-bold text-slate-700"><?= htmlspecialchars($m['full_name']) ?></td>
+                        <td class="py-4 text-right space-x-3">
+                            <?php if(in_array($m['id'], $attended_ids)): ?>
+                                <span class="text-[10px] font-900 bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full uppercase">Present</span>
+                                <a href="?action=unmark&mid=<?= $m['id'] ?>&sid=<?= $current_sid ?>" class="text-xs text-slate-300 hover:text-red-500">Undo</a>
+                            <?php else: ?>
+                                <form method="POST" class="inline">
+                                    <input type="hidden" name="sid" value="<?= $current_sid ?>"><input type="hidden" name="mid" value="<?= $m['id'] ?>">
+                                    <button name="mark" class="text-indigo-600 font-bold text-xs">Mark Presence</button>
+                                </form>
+                            <?php endif; ?>
+                            <button onclick="editM('<?= $m['id'] ?>','<?= addslashes($m['full_name']) ?>')" class="text-slate-300 hover:text-indigo-500">Edit</button>
+                            <a href="?action=del_m&id=<?= $m['id'] ?>" onclick="return confirm('Delete?')" class="text-slate-300 hover:text-red-500">Delete</a>
+                        </td>
+                    </tr>
                     <?php endforeach; ?>
-                </div>
+                </tbody></table></div>
             </div>
         </div>
 
-        <!-- SECTION: REPORTS (NEW) -->
-        <div id="section-reports" class="section-content hidden space-y-6">
-            <div class="bg-white rounded-[2rem] p-8 border border-slate-100 shadow-sm">
-                <h2 class="text-2xl font-800 mb-6">Session Management</h2>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left">
-                        <thead>
-                            <tr class="text-[10px] text-slate-400 font-bold uppercase tracking-widest border-b border-slate-50">
-                                <th class="pb-4">Session Title</th>
-                                <th class="pb-4">Date</th>
-                                <th class="pb-4 text-right">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach($sessions as $s): ?>
-                            <tr class="border-b border-slate-50/50">
-                                <td class="py-4 font-bold text-slate-700"><?= $s['name'] ?></td>
-                                <td class="py-4 text-sm text-slate-500"><?= $s['date'] ?></td>
-                                <td class="py-4 text-right space-x-3">
-                                    <button onclick="editSession('<?= $s['id'] ?>', '<?= addslashes($s['name']) ?>', '<?= $s['date'] ?>')" class="text-indigo-600 text-xs font-bold">Edit</button>
-                                    <a href="?delete_type=session&id=<?= $s['id'] ?>" onclick="return confirm('Delete this session?')" class="text-red-400 text-xs font-bold">Delete</a>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
+        <!-- SESSION PANEL -->
+        <div id="view-sessions" class="panel hidden space-y-6">
+            <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
+                <h2 class="text-2xl font-800 mb-6">New Training Session</h2>
+                <form method="POST" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
+                    <input name="s_name" placeholder="Morning Drill" class="p-4 bg-slate-50 rounded-2xl border-none text-sm ring-1 ring-slate-100 outline-none" required>
+                    <input type="date" name="s_date" value="<?= date('Y-m-d') ?>" class="p-4 bg-slate-50 rounded-2xl border-none text-sm ring-1 ring-slate-100 outline-none">
+                    <button name="save_session" class="bg-slate-900 text-white rounded-2xl font-bold">Create Session</button>
+                </form>
+                <div class="overflow-x-auto"><table class="w-full text-left">
+                    <thead><tr class="text-[10px] text-slate-400 uppercase font-bold tracking-widest"><th class="pb-4">Name</th><th class="pb-4">Date</th><th class="pb-4 text-right">Action</th></tr></thead>
+                    <tbody>
+                        <?php foreach($sessions as $s): ?>
+                        <tr class="border-b border-slate-50"><td class="py-4 font-bold"><?= $s['name'] ?></td><td class="py-4 text-sm"><?= $s['date'] ?></td>
+                        <td class="py-4 text-right"><a href="?action=del_s&id=<?= $s['id'] ?>" class="text-red-400 font-bold text-xs">Delete</a></td></tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table></div>
             </div>
         </div>
 
-    </div>
-</div>
-
-<!-- MODAL: SESSION CRUD -->
-<div id="sessionModal" class="hidden fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-    <div class="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl">
-        <h3 class="text-2xl font-800 mb-6" id="session-modal-title">New Training Session</h3>
-        <form method="POST" class="space-y-4">
-            <input type="hidden" name="session_id" id="modal_session_id">
-            <input name="session_name" id="modal_session_name" placeholder="Session Title (e.g., Morning Drill)" class="w-full p-4 bg-slate-50 rounded-2xl border-none ring-1 ring-slate-100 outline-none" required>
-            <input type="date" name="session_date" id="modal_session_date" value="<?= date('Y-m-d') ?>" class="w-full p-4 bg-slate-50 rounded-2xl border-none ring-1 ring-slate-100 outline-none" required>
-            <div class="flex gap-2 pt-4">
-                <button type="button" onclick="closeSessionModal()" class="flex-1 py-4 font-bold text-slate-400">Cancel</button>
-                <button type="submit" name="save_session" class="flex-1 bg-indigo-600 text-white py-4 rounded-2xl font-bold">Save Session</button>
+        <!-- EXPORT PANEL -->
+        <div id="view-export" class="panel hidden space-y-6">
+            <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
+                <h2 class="text-2xl font-800 mb-2">Generate Reports</h2>
+                <p class="text-slate-400 text-sm mb-8">Export your academy data to Excel (CSV format).</p>
+                <form method="GET" class="p-6 bg-slate-50 rounded-[2rem] flex flex-col md:flex-row gap-4 items-center">
+                    <div class="flex-1 w-full"><label class="text-[10px] font-bold uppercase text-slate-400 ml-2">Select Date</label>
+                    <input type="date" name="export_date" value="<?= date('Y-m-d') ?>" class="w-full p-4 bg-white rounded-2xl border-none mt-1 outline-none ring-1 ring-slate-100"></div>
+                    <button type="submit" name="export_type" value="daily" class="w-full md:w-auto bg-indigo-600 text-white px-10 py-4 rounded-2xl font-bold shadow-lg shadow-indigo-100">Download Report</button>
+                </form>
             </div>
-        </form>
+        </div>
+
     </div>
 </div>
 
 <script>
-    // VIEW TOGGLE LOGIC
-    function showSection(id) {
-        document.querySelectorAll('.section-content').forEach(s => s.classList.add('hidden'));
-        document.getElementById('section-' + id).classList.remove('hidden');
-        
-        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active-tab', 'text-white'));
-        document.querySelectorAll('nav button').forEach(b => b.classList.add('text-slate-400'));
-        
-        const activeBtn = document.getElementById('nav-' + id);
-        activeBtn.classList.add('active-tab', 'text-white');
-        activeBtn.classList.remove('text-slate-400');
+    function toggleView(v) {
+        document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+        document.getElementById('view-' + v).classList.remove('hidden');
+        document.querySelectorAll('nav button').forEach(b => b.classList.remove('tab-active', 'text-white'));
+        document.getElementById('btn-' + v).classList.add('tab-active', 'text-white');
     }
-
-    // ATHLETE CRUD LOGIC
-    function editMember(id, name) {
-        document.getElementById('form_member_id').value = id;
-        document.getElementById('form_member_name').value = name;
-        document.getElementById('member-form-title').innerText = "Edit Athlete";
-        document.getElementById('cancel-edit-btn').classList.remove('hidden');
+    function filter(q) {
+        q = q.toLowerCase();
+        document.querySelectorAll('#rows tr').forEach(r => { r.style.display = r.getAttribute('data-name').includes(q) ? '' : 'none'; });
     }
-
-    function resetMemberForm() {
-        document.getElementById('form_member_id').value = "";
-        document.getElementById('form_member_name').value = "";
-        document.getElementById('member-form-title').innerText = "Add New Athlete";
-        document.getElementById('cancel-edit-btn').classList.add('hidden');
-    }
-
-    // SESSION CRUD LOGIC
-    function openSessionModal() {
-        document.getElementById('modal_session_id').value = "";
-        document.getElementById('modal_session_name').value = "";
-        document.getElementById('session-modal-title').innerText = "New Training Session";
-        document.getElementById('sessionModal').classList.remove('hidden');
-    }
-
-    function editSession(id, name, date) {
-        document.getElementById('modal_session_id').value = id;
-        document.getElementById('modal_session_name').value = name;
-        document.getElementById('modal_session_date').value = date;
-        document.getElementById('session-modal-title').innerText = "Edit Session";
-        document.getElementById('sessionModal').classList.remove('hidden');
-    }
-
-    function closeSessionModal() {
-        document.getElementById('sessionModal').classList.add('hidden');
+    function editM(id, name) {
+        document.getElementById('m_id').value = id;
+        document.getElementById('m_name').value = name;
+        document.getElementById('m-title').innerText = "Edit Athlete";
     }
 </script>
 </body>
