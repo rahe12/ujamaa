@@ -49,7 +49,6 @@ try {
     ]);
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        // Save Member
         if (isset($_POST['save_member'])) {
             if (!empty($_POST['member_id'])) {
                 $pdo->prepare("UPDATE members SET full_name = ? WHERE id = ?")->execute([trim($_POST['name']), $_POST['member_id']]);
@@ -57,15 +56,15 @@ try {
                 $pdo->prepare("INSERT INTO members(full_name) VALUES (?) ON CONFLICT DO NOTHING")->execute([trim($_POST['name'])]);
             }
         }
-        // Save Session
+
         if (isset($_POST['save_session'])) {
             $pdo->prepare("INSERT INTO sessions(name, date) VALUES (?, ?)")->execute([trim($_POST['s_name']), $_POST['s_date']]);
         }
-        // Mark Attendance
+
         if (isset($_POST['mark'])) {
             $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?)")->execute([$_POST['sid'], $_POST['mid']]);
         }
-        // SET PAYMENT (Setting the 9th/Deadline)
+
         if (isset($_POST['set_payment'])) {
             $pdo->prepare("INSERT INTO payments (member_id, amount, due_date, status) 
                            VALUES (?, ?, ?, 'unpaid') 
@@ -73,22 +72,24 @@ try {
                            SET amount = EXCLUDED.amount, due_date = EXCLUDED.due_date, status = 'unpaid'")
                 ->execute([$_POST['mid'], $_POST['amount'], $_POST['due_date']]);
         }
-        // PROCESS PAYMENT (Mark as Paid)
+
         if (isset($_POST['pay_now'])) {
             $pdo->prepare("UPDATE payments SET status = 'paid', paid_at = NOW() WHERE member_id = ?")
                 ->execute([$_POST['mid']]);
         }
-        header("Location: index.php" . (isset($_POST['sid']) ? "?session=".$_POST['sid'] : "")); exit;
+
+        header("Location: index.php" . (isset($_POST['sid']) ? "?session=".$_POST['sid'] : "")); 
+        exit;
     }
 
     if (isset($_GET['action'])) {
         if ($_GET['action'] === 'del_m') $pdo->prepare("DELETE FROM members WHERE id = ?")->execute([$_GET['id']]);
         if ($_GET['action'] === 'del_s') $pdo->prepare("DELETE FROM sessions WHERE id = ?")->execute([$_GET['id']]);
         if ($_GET['action'] === 'unmark') $pdo->prepare("DELETE FROM attendance WHERE member_id = ? AND session_id = ?")->execute([$_GET['mid'], $_GET['sid']]);
-        header("Location: index.php"); exit;
+        header("Location: index.php"); 
+        exit;
     }
 
-    // Load Members + Payment Alerts (Overdue if unpaid and date passed)
     $members = $pdo->query("
         SELECT m.*, p.amount, p.due_date, p.status,
         CASE WHEN p.status = 'unpaid' AND p.due_date <= CURRENT_DATE THEN 1 ELSE 0 END as is_overdue
@@ -129,7 +130,6 @@ try {
 
 <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
     
-    <!-- SIDEBAR -->
     <div class="lg:col-span-4 space-y-6">
         <div class="bg-slate-900 rounded-[2.5rem] p-8 text-white shadow-2xl">
             <h1 class="text-3xl font-800 mb-1">UJAMAA</h1>
@@ -141,7 +141,6 @@ try {
             </nav>
         </div>
 
-        <!-- QUICK ADD -->
         <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
             <h3 class="font-800 text-lg mb-4" id="m-title">Register Athlete</h3>
             <form method="POST" class="space-y-3">
@@ -152,27 +151,35 @@ try {
         </div>
     </div>
 
-    <!-- MAIN PANELS -->
     <div class="lg:col-span-8">
         
-        <!-- REGISTRY & PAYMENTS -->
         <div id="view-registry" class="panel space-y-6">
             <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
-                <div class="flex justify-between items-center mb-8">
+                <div class="flex flex-col md:flex-row justify-between md:items-center gap-4 mb-6">
                     <h2 class="text-2xl font-800">Academy Registry</h2>
                     <select onchange="window.location.href='?session='+this.value" class="bg-slate-50 border-none rounded-xl px-4 py-2 text-sm font-bold ring-1 ring-slate-100">
                         <?php foreach($sessions as $s): ?>
-                            <option value="<?= $s['id'] ?>" <?= $current_sid == $s['id'] ? 'selected' : '' ?>><?= htmlspecialchars($s['name']) ?> (<?= $s['date'] ?>)</option>
+                            <option value="<?= $s['id'] ?>" <?= $current_sid == $s['id'] ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($s['name']) ?> (<?= $s['date'] ?>)
+                            </option>
                         <?php endforeach; ?>
                     </select>
                 </div>
+
+                <input
+                    type="text"
+                    id="searchInput"
+                    onkeyup="searchAthletes()"
+                    placeholder="Search athlete..."
+                    class="w-full mb-6 p-4 bg-slate-50 rounded-2xl border-none text-sm ring-1 ring-slate-100 outline-none"
+                >
 
                 <div class="overflow-x-auto">
                     <table class="w-full">
                         <tbody id="athlete-rows">
                             <?php foreach($members as $m): ?>
-                            <tr class="border-b border-slate-50 hover:bg-slate-50/50">
-                                <td class="py-6">
+                            <tr class="border-b border-slate-50 hover:bg-slate-50/50 athlete-row">
+                                <td class="py-6 athlete-name">
                                     <div class="font-bold text-slate-700"><?= htmlspecialchars($m['full_name']) ?></div>
                                     <?php if($m['is_overdue']): ?>
                                         <span class="text-[10px] font-bold text-red-500 uppercase overdue-pulse">● Overdue since <?= $m['due_date'] ?></span>
@@ -183,17 +190,16 @@ try {
                                     <?php endif; ?>
                                 </td>
                                 <td class="py-6 text-right space-x-2">
-                                    <!-- Attendance -->
                                     <?php if(in_array($m['id'], $attended_ids)): ?>
                                         <a href="?action=unmark&mid=<?= $m['id'] ?>&sid=<?= $current_sid ?>" class="text-[10px] font-900 bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full uppercase">Present</a>
                                     <?php else: ?>
                                         <form method="POST" class="inline">
-                                            <input type="hidden" name="sid" value="<?= $current_sid ?>"><input type="hidden" name="mid" value="<?= $m['id'] ?>">
+                                            <input type="hidden" name="sid" value="<?= $current_sid ?>">
+                                            <input type="hidden" name="mid" value="<?= $m['id'] ?>">
                                             <button name="mark" class="text-indigo-600 font-bold text-xs hover:underline">Mark Presence</button>
                                         </form>
                                     <?php endif; ?>
 
-                                    <!-- Payment Actions -->
                                     <button onclick="openPaymentModal(<?= $m['id'] ?>, '<?= addslashes($m['full_name']) ?>')" class="text-slate-400 hover:text-indigo-600 font-bold text-xs">Set Due</button>
                                     
                                     <?php if($m['status'] === 'unpaid'): ?>
@@ -209,11 +215,14 @@ try {
                             <?php endforeach; ?>
                         </tbody>
                     </table>
+
+                    <p id="noResults" class="hidden text-center text-slate-400 font-bold py-8">
+                        No athlete found.
+                    </p>
                 </div>
             </div>
         </div>
 
-        <!-- SESSIONS VIEW -->
         <div id="view-sessions" class="panel hidden space-y-6">
             <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
                 <h2 class="text-2xl font-800 mb-6">Sessions</h2>
@@ -231,7 +240,6 @@ try {
             </div>
         </div>
 
-        <!-- EXPORT VIEW -->
         <div id="view-export" class="panel hidden">
             <div class="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
                 <h2 class="text-2xl font-800 mb-4">Reports</h2>
@@ -244,7 +252,6 @@ try {
     </div>
 </div>
 
-<!-- PAYMENT MODAL -->
 <div id="pay-modal" class="hidden fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-50">
     <div class="bg-white rounded-[2.5rem] p-10 w-full max-w-md shadow-2xl">
         <h3 class="text-2xl font-800 mb-2">Set Payment Due</h3>
@@ -256,7 +263,7 @@ try {
                 <input type="number" name="amount" value="50.00" class="w-full p-4 bg-slate-50 rounded-2xl border-none ring-1 ring-slate-100 mt-1 outline-none">
             </div>
             <div>
-                <label class="text-[10px] font-bold text-slate-400 uppercase ml-2">Due Date (e.g. the 9th)</label>
+                <label class="text-[10px] font-bold text-slate-400 uppercase ml-2">Due Date</label>
                 <input type="date" name="due_date" class="w-full p-4 bg-slate-50 rounded-2xl border-none ring-1 ring-slate-100 mt-1 outline-none" required>
             </div>
             <button name="set_payment" class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold shadow-lg">Save Deadline</button>
@@ -269,8 +276,29 @@ try {
     function toggleView(v) {
         document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
         document.getElementById('view-' + v).classList.remove('hidden');
+
         document.querySelectorAll('nav button').forEach(b => b.classList.remove('tab-active', 'text-white'));
         document.getElementById('btn-' + v).classList.add('tab-active', 'text-white');
+    }
+
+    function searchAthletes() {
+        const input = document.getElementById("searchInput").value.toLowerCase().trim();
+        const rows = document.querySelectorAll("#athlete-rows tr");
+        let visibleCount = 0;
+
+        rows.forEach(row => {
+            const nameCell = row.querySelector(".athlete-name div");
+            const name = nameCell ? nameCell.innerText.toLowerCase() : "";
+
+            if (name.includes(input)) {
+                row.style.display = "";
+                visibleCount++;
+            } else {
+                row.style.display = "none";
+            }
+        });
+
+        document.getElementById("noResults").classList.toggle("hidden", visibleCount !== 0);
     }
 
     function openPaymentModal(id, name) {
@@ -279,7 +307,9 @@ try {
         document.getElementById('pay-modal').classList.remove('hidden');
     }
 
-    function closeModal() { document.getElementById('pay-modal').classList.add('hidden'); }
+    function closeModal() {
+        document.getElementById('pay-modal').classList.add('hidden');
+    }
 
     function editM(id, name) {
         document.getElementById('m_id').value = id;
@@ -287,5 +317,6 @@ try {
         document.getElementById('m-title').innerText = "Edit Athlete";
     }
 </script>
+
 </body>
 </html>
