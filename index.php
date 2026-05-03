@@ -1,6 +1,6 @@
 <?php  
-/** * UJAMAA ACADEMY - ENTERPRISE EDITION V5.4  
- * Workflow: Session-First Selection & Cross-Session Intelligence
+/** * UJAMAA ACADEMY - ENTERPRISE EDITION V5.6  
+ * Features: Single Session Snapshots, Manual Comparison, & Daily Reports
  */  
 
 error_reporting(E_ALL);
@@ -23,34 +23,76 @@ if (isset($_GET['export_type'])) {
         $pdo = get_db_connection();
         $type = $_GET['export_type'];
 
-        if ($type === 'compare') {
-            $s_stmt = $pdo->query("SELECT id, name, date FROM sessions ORDER BY date DESC, id DESC LIMIT 2");
-            $recent_sessions = $s_stmt->fetchAll();
-            if (count($recent_sessions) < 2) die("Error: Need 2 sessions for comparison.");
+        // TOOL A: Single Session Snapshot (Present & Absent for ONE session)
+        if ($type === 'single_session') {
+            $sid = $_GET['target_session'];
+            if (!$sid) die("Error: Select a session.");
 
-            $s1 = $recent_sessions[0]; $s2 = $recent_sessions[1];
+            $s_meta = $pdo->prepare("SELECT name, date FROM sessions WHERE id = ?");
+            $s_meta->execute([$sid]); $s = $s_meta->fetch();
+
             header('Content-Type: text/csv; charset=utf-8');  
-            header('Content-Disposition: attachment; filename=Ujamaa_Consistency_Report.csv');  
+            header('Content-Disposition: attachment; filename=Session_Snapshot_'.$s['date'].'.csv');  
             $output = fopen('php://output', 'w');  
-            fputcsv($output, ["Report: {$s2['name']} vs {$s1['name']}"]);
-            fputcsv($output, ['Athlete Name', 'Prev Status', 'Current Status', 'Consistency']);
+            
+            fputcsv($output, ["Session Snapshot Report"]);
+            fputcsv($output, ["Session Name:", $s['name']]);
+            fputcsv($output, ["Session Date:", $s['date']]);
+            fputcsv($output, []);
+            fputcsv($output, ['Athlete Name', 'Attendance Status']);
 
-            $stmt = $pdo->prepare("SELECT m.full_name, CASE WHEN a1.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as cur, CASE WHEN a2.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as prev FROM members m LEFT JOIN attendance a1 ON a1.member_id = m.id AND a1.session_id = ? LEFT JOIN attendance a2 ON a2.member_id = m.id AND a2.session_id = ? ORDER BY m.full_name ASC");
-            $stmt->execute([$s1['id'], $s2['id']]);
+            $stmt = $pdo->prepare("
+                SELECT m.full_name, 
+                CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as att
+                FROM members m
+                LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = ?
+                ORDER BY m.full_name ASC
+            ");
+            $stmt->execute([$sid]);
+            while ($row = $stmt->fetch()) { fputcsv($output, $row); }
+            exit;
+        }
+
+        // TOOL B: Cross-Session Comparison
+        elseif ($type === 'compare_custom') {
+            $sid1 = $_GET['session_a'];
+            $sid2 = $_GET['session_b'];
+            if (!$sid1 || !$sid2) die("Error: Select two sessions.");
+
+            header('Content-Type: text/csv; charset=utf-8');  
+            header('Content-Disposition: attachment; filename=Comparison_Report.csv');  
+            $output = fopen('php://output', 'w');  
+            fputcsv($output, ['Athlete Name', 'Status in A', 'Status in B', 'Insight']);
+
+            $stmt = $pdo->prepare("
+                SELECT m.full_name, 
+                CASE WHEN a1.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as stat_a,
+                CASE WHEN a2.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as stat_b
+                FROM members m
+                LEFT JOIN attendance a1 ON a1.member_id = m.id AND a1.session_id = ?
+                LEFT JOIN attendance a2 ON a2.member_id = m.id AND a2.session_id = ?
+                ORDER BY m.full_name ASC
+            ");
+            $stmt->execute([$sid1, $sid2]);
+
             while ($row = $stmt->fetch()) {
-                $cons = ($row['cur'] === $row['prev']) ? ($row['cur'] === 'PRESENT' ? 'Steady (Both)' : 'Absent Both') : 'Changed';
-                fputcsv($output, [$row['full_name'], $row['prev'], $row['cur'], $cons]);
+                $insight = "Inconsistent";
+                if($row['stat_a'] === $row['stat_b']) $insight = ($row['stat_a'] === 'PRESENT' ? "Always Present" : "Always Absent");
+                fputcsv($output, [$row['full_name'], $row['stat_a'], $row['stat_b'], $insight]);
             }
             exit;
-        } else {
+        } 
+        
+        // TOOL C: Daily Standard Report
+        else {
             $date = $_GET['export_date'] ?? date('Y-m-d');  
             header('Content-Type: text/csv; charset=utf-8');  
-            header('Content-Disposition: attachment; filename=Ujamaa_Report.csv');  
+            header('Content-Disposition: attachment; filename=Daily_Report.csv');  
             $output = fopen('php://output', 'w');  
-            fputcsv($output, ['Athlete Name', 'Status', 'Payment', 'Due Date']);  
-            $stmt = $pdo->prepare("SELECT m.full_name, CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as att, COALESCE(p.status, 'No Record') as pay, p.due_date FROM members m CROSS JOIN sessions s LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id LEFT JOIN payments p ON p.member_id = m.id WHERE s.date = ? ORDER BY m.full_name ASC");  
+            fputcsv($output, ['Athlete Name', 'Status', 'Date']);  
+            $stmt = $pdo->prepare("SELECT m.full_name, CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as att FROM members m CROSS JOIN sessions s LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id WHERE s.date = ? ORDER BY m.full_name ASC");  
             $stmt->execute([$date]);  
-            while ($row = $stmt->fetch()) { fputcsv($output, $row); }  
+            while ($row = $stmt->fetch()) { fputcsv($output, [$row['full_name'], $row['att'], $date]); }  
             exit;
         }
     } catch (Exception $e) { die("Export Error: " . $e->getMessage()); }  
@@ -60,20 +102,14 @@ if (isset($_GET['export_type'])) {
 try {  
     $pdo = get_db_connection();
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {  
-        if (isset($_POST['save_member'])) {  
-            $pdo->prepare("INSERT INTO members(full_name) VALUES (?) ON CONFLICT DO NOTHING")->execute([trim($_POST['name'])]);  
-        }  
-        if (isset($_POST['save_session'])) {  
-            $pdo->prepare("INSERT INTO sessions(name, date) VALUES (?, ?)")->execute([trim($_POST['s_name']), $_POST['s_date']]);  
-        }  
-        if (isset($_POST['mark'])) {  
-            $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?) ON CONFLICT DO NOTHING")->execute([$_POST['sid'], $_POST['mid']]);  
-        }  
+        if (isset($_POST['save_member'])) { $pdo->prepare("INSERT INTO members(full_name) VALUES (?) ON CONFLICT DO NOTHING")->execute([trim($_POST['name'])]); }  
+        if (isset($_POST['save_session'])) { $pdo->prepare("INSERT INTO sessions(name, date) VALUES (?, ?)")->execute([trim($_POST['s_name']), $_POST['s_date']]); }  
+        if (isset($_POST['mark'])) { $pdo->prepare("INSERT INTO attendance(session_id, member_id) VALUES (?, ?) ON CONFLICT DO NOTHING")->execute([$_POST['sid'], $_POST['mid']]); }  
         header("Location: index.php?session=" . ($_POST['sid'] ?? '')); exit;  
     }  
 
-    if (isset($_GET['action'])) {  
-        if ($_GET['action'] === 'unmark') $pdo->prepare("DELETE FROM attendance WHERE member_id = ? AND session_id = ?")->execute([$_GET['mid'], $_GET['sid']]);  
+    if (isset($_GET['action']) && $_GET['action'] === 'unmark') {  
+        $pdo->prepare("DELETE FROM attendance WHERE member_id = ? AND session_id = ?")->execute([$_GET['mid'], $_GET['sid']]);  
         header("Location: index.php?session=" . $_GET['sid']); exit;  
     }
 
@@ -96,141 +132,129 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ujamaa Academy v5.4</title>
+    <title>Ujamaa Academy v5.6</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <style> body { font-family: 'Inter', sans-serif; background: #f8fafc; } </style>
 </head>
-<body class="bg-slate-50 font-['Inter'] antialiased text-slate-900">
+<body class="antialiased">
 
 <div class="flex flex-col lg:flex-row min-h-screen">
-    <aside class="w-full lg:w-72 bg-slate-900 p-6 text-white flex flex-col">
-        <div class="mb-10">
-            <h1 class="font-bold text-xl tracking-tighter">UJAMAA <span class="text-indigo-400">ENTERPRISE</span></h1>
+    <aside class="w-full lg:w-80 bg-slate-900 p-8 text-white">
+        <div class="mb-12">
+            <h1 class="text-2xl font-black italic">UJAMAA<span class="text-indigo-500">.</span></h1>
+            <p class="text-[10px] uppercase text-slate-500 font-bold">Registry v5.6</p>
         </div>
-        
-        <nav class="space-y-2 flex-1">
-            <button onclick="location.href='index.php'" class="w-full text-left p-3 rounded-xl hover:bg-slate-800 transition font-semibold <?= !$current_sid ? 'bg-indigo-600' : '' ?>">Select Session</button>
-            <button onclick="toggleView('registry')" class="w-full text-left p-3 rounded-xl hover:bg-slate-800 transition font-semibold <?= $current_sid ? 'bg-slate-800' : 'opacity-50' ?>" <?= !$current_sid ? 'disabled' : '' ?>>Mark Attendance</button>
-            <button onclick="toggleView('export')" class="w-full text-left p-3 rounded-xl hover:bg-slate-800 transition font-semibold">Reports</button>
-        </nav>
 
-        <div class="mt-10 p-4 bg-slate-800 rounded-2xl border border-slate-700">
-            <h3 class="text-xs font-bold uppercase mb-3 text-indigo-300">Quick Add Athlete</h3>
-            <form method="POST" class="space-y-2">
-                <input name="name" placeholder="Full Name" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-sm text-white outline-none" required>
-                <button name="save_member" class="w-full bg-indigo-600 py-2 rounded-lg font-bold text-xs">Save</button>
-            </form>
-        </div>
+        <nav class="space-y-3">
+            <button onclick="window.location.href='index.php'" class="w-full text-left p-4 rounded-2xl transition hover:bg-slate-800 font-bold <?= !$current_sid ? 'bg-indigo-600' : 'text-slate-400' ?>">Dashboard</button>
+            <button onclick="toggleView('export')" class="w-full text-left p-4 rounded-2xl transition hover:bg-slate-800 font-bold text-slate-400">Intelligence Center</button>
+        </nav>
     </aside>
 
     <main class="flex-1 p-6 lg:p-12">
         
-        <header class="mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div>
-                <h2 class="text-3xl font-black text-slate-900">
-                    <?= $active_session ? htmlspecialchars($active_session['name']) : 'Choose a Session' ?>
-                </h2>
-                <p class="text-slate-500 font-medium"><?= $active_session ? 'Tracking Date: ' . $active_session['date'] : 'Select a session to begin marking attendance.' ?></p>
-            </div>
-            <div class="bg-white shadow-sm border p-2 rounded-2xl">
-                <select onchange="window.location.href='?session=' + this.value" class="bg-slate-50 px-4 py-2 rounded-xl font-bold text-sm outline-none">
-                    <option value="">-- Change Session --</option>
-                    <?php foreach($sessions as $s): ?>
-                        <option value="<?= $s['id'] ?>" <?= $current_sid == $s['id'] ? 'selected' : '' ?>><?= $s['date'] ?> | <?= htmlspecialchars($s['name']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-        </header>
-
-        <?php if(!$current_sid): ?>
-        <div id="view-selector" class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="bg-white p-8 rounded-[2.5rem] border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-center">
-                <h3 class="text-xl font-bold mb-2">Create New Session</h3>
-                <form method="POST" class="w-full space-y-4 max-w-xs mt-4">
-                    <input name="s_name" placeholder="Session Name (e.g. Finals)" class="w-full p-4 bg-slate-50 border rounded-2xl outline-none focus:ring-2 ring-indigo-500" required>
-                    <input type="date" name="s_date" value="<?= date('Y-m-d') ?>" class="w-full p-4 bg-slate-50 border rounded-2xl">
-                    <button name="save_session" class="w-full bg-slate-900 text-white p-4 rounded-2xl font-bold">Start New Session</button>
-                </form>
-            </div>
-            <div class="bg-white p-8 rounded-[2.5rem] border shadow-sm overflow-hidden">
-                <h3 class="text-xl font-bold mb-6">Recent Sessions</h3>
-                <div class="space-y-3">
-                    <?php foreach(array_slice($sessions, 0, 5) as $s): ?>
-                    <a href="?session=<?= $s['id'] ?>" class="flex items-center justify-between p-4 bg-slate-50 hover:bg-indigo-50 rounded-2xl transition border border-transparent hover:border-indigo-100">
-                        <span class="font-bold"><?= htmlspecialchars($s['name']) ?></span>
-                        <span class="text-xs text-slate-400 font-mono"><?= $s['date'] ?></span>
-                    </a>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <?php if($current_sid): ?>
-        <div id="view-registry" class="panel">
-            <div class="bg-white rounded-[2.5rem] border shadow-sm overflow-hidden">
-                <div class="p-6 border-b flex justify-between items-center bg-slate-50/50">
-                    <input type="text" id="searchInput" onkeyup="searchAthletes()" placeholder="Search athletes..." class="w-full md:w-80 p-3 bg-white border rounded-xl text-sm outline-none focus:ring-2 ring-indigo-500/20">
-                    <div class="text-xs font-bold text-slate-400 uppercase tracking-widest px-4">Registry Control</div>
-                </div>
-                <table class="w-full text-left">
-                    <tbody class="divide-y divide-slate-100" id="athlete-rows">
-                        <?php foreach($members as $m): $isPresent = in_array($m['id'], $attended_ids); ?>
-                        <tr class="athlete-row hover:bg-slate-50/80 transition">
-                            <td class="px-8 py-5">
-                                <p class="font-bold text-slate-800 athlete-name"><?= htmlspecialchars($m['full_name']) ?></p>
-                            </td>
-                            <td class="px-8 py-5 text-right">
-                                <?php if($isPresent): ?>
-                                    <a href="?action=unmark&mid=<?= $m['id'] ?>&sid=<?= $current_sid ?>" class="bg-emerald-100 text-emerald-700 px-6 py-2 rounded-full text-xs font-black uppercase">Present</a>
-                                <?php else: ?>
-                                    <form method="POST" class="inline">
-                                        <input type="hidden" name="sid" value="<?= $current_sid ?>">
-                                        <input type="hidden" name="mid" value="<?= $m['id'] ?>">
-                                        <button name="mark" class="bg-white border-2 border-slate-200 text-slate-400 hover:border-indigo-500 hover:text-indigo-600 px-6 py-2 rounded-full text-xs font-black uppercase transition-all">Mark Present</button>
-                                    </form>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <?php endif; ?>
-
-        <div id="view-export" class="panel hidden">
-            <div class="bg-indigo-900 rounded-[2.5rem] p-10 text-white shadow-xl relative overflow-hidden">
-                <div class="relative z-10">
-                    <h3 class="text-2xl font-bold mb-2">Intelligence Center</h3>
-                    <p class="text-indigo-200 mb-8">Generate cross-session comparison or daily reports.</p>
-                    <form method="GET" class="space-y-4">
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <button type="submit" name="export_type" value="compare" class="bg-amber-400 text-amber-950 p-6 rounded-2xl font-black uppercase text-sm hover:bg-amber-300 transition">
-                                ⚡ Generate Consistency Report (Last 2 Sessions)
-                            </button>
-                            <div class="bg-indigo-800/50 p-6 rounded-2xl border border-indigo-700/50">
-                                <p class="text-xs font-bold text-indigo-300 mb-3 uppercase">Export by Date</p>
-                                <input type="date" name="export_date" value="<?= date('Y-m-d') ?>" class="w-full bg-indigo-950 border-none rounded-xl p-3 mb-3 text-white">
-                                <button type="submit" name="export_type" value="all" class="w-full bg-white text-indigo-900 p-3 rounded-xl font-bold text-xs uppercase">Download Daily CSV</button>
-                            </div>
+        <div id="view-main">
+            <?php if(!$current_sid): ?>
+                <div class="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div class="bg-white p-8 rounded-[3rem] shadow-sm border">
+                        <h3 class="text-xl font-bold mb-6">Start New Session</h3>
+                        <form method="POST" class="space-y-4">
+                            <input name="s_name" placeholder="Session Title" class="w-full p-4 bg-slate-50 border rounded-2xl outline-none" required>
+                            <input type="date" name="s_date" value="<?= date('Y-m-d') ?>" class="w-full p-4 bg-slate-50 border rounded-2xl">
+                            <button name="save_session" class="w-full bg-slate-900 text-white p-4 rounded-2xl font-black uppercase text-xs">Initialize</button>
+                        </form>
+                    </div>
+                    <div class="bg-white p-8 rounded-[3rem] shadow-sm border">
+                        <h3 class="text-xl font-bold mb-6">Recent Records</h3>
+                        <div class="space-y-2">
+                            <?php foreach(array_slice($sessions, 0, 6) as $s): ?>
+                                <a href="?session=<?= $s['id'] ?>" class="flex justify-between p-4 bg-slate-50 rounded-2xl hover:bg-indigo-50 transition">
+                                    <span class="font-bold"><?= htmlspecialchars($s['name']) ?></span>
+                                    <span class="text-[10px] text-slate-400"><?= $s['date'] ?></span>
+                                </a>
+                            <?php endforeach; ?>
                         </div>
+                    </div>
+                </div>
+            <?php else: ?>
+                <header class="mb-10 flex justify-between items-center bg-white p-6 rounded-[2rem] border shadow-sm">
+                    <h2 class="text-2xl font-black"><?= htmlspecialchars($active_session['name']) ?></h2>
+                    <button onclick="window.location.href='index.php'" class="bg-slate-100 px-6 py-2 rounded-xl text-xs font-bold text-slate-500">Change Session</button>
+                </header>
+
+                <div class="bg-white rounded-[2.5rem] shadow-sm border overflow-hidden">
+                    <div class="p-6 border-b bg-slate-50/50 flex justify-between">
+                        <input type="text" id="searchInput" onkeyup="searchAthletes()" placeholder="Filter athletes..." class="p-3 bg-white border rounded-xl text-sm w-80 outline-none">
+                        <p class="text-xs font-black text-slate-400 uppercase self-center">Present: <?= count($attended_ids) ?></p>
+                    </div>
+                    <table class="w-full">
+                        <tbody class="divide-y divide-slate-100" id="athlete-rows">
+                            <?php foreach($members as $m): $isPresent = in_array($m['id'], $attended_ids); ?>
+                            <tr>
+                                <td class="px-10 py-5 font-bold text-slate-800 athlete-name"><?= htmlspecialchars($m['full_name']) ?></td>
+                                <td class="px-10 py-5 text-right">
+                                    <?php if($isPresent): ?>
+                                        <a href="?action=unmark&mid=<?= $m['id'] ?>&sid=<?= $current_sid ?>" class="bg-emerald-500 text-white px-8 py-2 rounded-full text-[10px] font-black uppercase">Present</a>
+                                    <?php else: ?>
+                                        <form method="POST"><input type="hidden" name="sid" value="<?= $current_sid ?>"><input type="hidden" name="mid" value="<?= $m['id'] ?>"><button name="mark" class="border-2 px-8 py-2 rounded-full text-[10px] font-black uppercase">Mark Present</button></form>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <div id="view-export" class="hidden space-y-8">
+            <h2 class="text-3xl font-black">Intelligence Center</h2>
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                <div class="bg-white p-8 rounded-[2.5rem] border shadow-sm">
+                    <h3 class="text-lg font-black mb-4">Session Snapshot</h3>
+                    <p class="text-slate-500 text-xs mb-6">Download Present/Absent report for one specific session.</p>
+                    <form method="GET" class="space-y-4">
+                        <input type="hidden" name="export_type" value="single_session">
+                        <select name="target_session" class="w-full p-4 bg-slate-50 border rounded-2xl text-sm" required>
+                            <option value="">Select Session...</option>
+                            <?php foreach($sessions as $s): ?><option value="<?= $s['id'] ?>"><?= $s['date'] ?> - <?= $s['name'] ?></option><?php endforeach; ?>
+                        </select>
+                        <button type="submit" class="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black text-[10px] uppercase">Download Snapshot</button>
                     </form>
                 </div>
+
+                <div class="bg-indigo-900 p-8 rounded-[2.5rem] text-white shadow-xl">
+                    <h3 class="text-lg font-black mb-4">Consistency Report</h3>
+                    <form method="GET" class="space-y-4">
+                        <input type="hidden" name="export_type" value="compare_custom">
+                        <select name="session_a" class="w-full p-4 bg-indigo-950 border-none rounded-2xl text-xs text-white" required><option value="">Baseline Session...</option><?php foreach($sessions as $s): ?><option value="<?= $s['id'] ?>"><?= $s['date'] ?> - <?= $s['name'] ?></option><?php endforeach; ?></select>
+                        <select name="session_b" class="w-full p-4 bg-indigo-950 border-none rounded-2xl text-xs text-white" required><option value="">Comparison Session...</option><?php foreach($sessions as $s): ?><option value="<?= $s['id'] ?>"><?= $s['date'] ?> - <?= $s['name'] ?></option><?php endforeach; ?></select>
+                        <button type="submit" class="w-full bg-amber-400 text-amber-950 p-4 rounded-2xl font-black text-[10px] uppercase">Compare Analytics</button>
+                    </form>
+                </div>
+
+                <div class="bg-white p-8 rounded-[2.5rem] border shadow-sm">
+                    <h3 class="text-lg font-black mb-4">Daily Export</h3>
+                    <form method="GET" class="space-y-4">
+                        <input type="hidden" name="export_type" value="daily">
+                        <input type="date" name="export_date" value="<?= date('Y-m-d') ?>" class="w-full p-4 bg-slate-50 border rounded-2xl text-sm">
+                        <button type="submit" class="w-full bg-slate-900 text-white p-4 rounded-2xl font-black text-[10px] uppercase">Download Daily CSV</button>
+                    </form>
+                </div>
+
             </div>
         </div>
-
     </main>
 </div>
 
 <script>
     function toggleView(v) {
-        document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
-        const target = document.getElementById('view-' + v);
-        if(target) target.classList.remove('hidden');
-        if(document.getElementById('view-selector')) document.getElementById('view-selector').classList.add('hidden');
+        document.getElementById('view-main').classList.add('hidden');
+        document.getElementById('view-export').classList.add('hidden');
+        document.getElementById('view-' + v).classList.remove('hidden');
     }
-
     function searchAthletes() {
         const input = document.getElementById("searchInput").value.toLowerCase();
         document.querySelectorAll(".athlete-row").forEach(row => {
