@@ -1,6 +1,6 @@
 <?php  
-/** * UJAMAA ACADEMY - ENTERPRISE EDITION V5.2  
- * Feature Set: Full/Present/Absent Exports, Athlete Management, & Summaries
+/** * UJAMAA ACADEMY - ENTERPRISE EDITION V5.3  
+ * Feature Set: Full/Present/Absent Exports, Cross-Session Intelligence, & Management
  */  
 
 error_reporting(E_ALL);
@@ -17,40 +17,80 @@ function get_db_connection() {
     ]);
 }
 
-// 2. ADVANCED EXPORT ENGINE (Full, Present, or Absent)
+// 2. ADVANCED EXPORT ENGINE (Full, Present, Absent, or Cross-Session)
 if (isset($_GET['export_type'])) {  
     try {  
         $pdo = get_db_connection();
-        $date = $_GET['export_date'] ?? date('Y-m-d');  
-        $type = $_GET['export_type']; // 'all', 'present', or 'absent'
+        $type = $_GET['export_type'];
 
-        $filename = "Ujamaa_" . ucfirst($type) . "_Report_" . $date . ".csv";
-        $filter = "";
-        if ($type === 'present') $filter = "AND a.id IS NOT NULL";
-        if ($type === 'absent') $filter = "AND a.id IS NULL";
+        // NEW: Cross-Session Intelligence Logic
+        if ($type === 'compare') {
+            $s_stmt = $pdo->query("SELECT id, name, date FROM sessions ORDER BY date DESC, id DESC LIMIT 2");
+            $recent_sessions = $s_stmt->fetchAll();
+            
+            if (count($recent_sessions) < 2) {
+                die("Error: Not enough data. You need at least two sessions to run a comparison.");
+            }
 
-        header('Content-Type: text/csv; charset=utf-8');  
-        header('Content-Disposition: attachment; filename=' . $filename);  
-  
-        $output = fopen('php://output', 'w');  
-        fputcsv($output, ['Athlete Name', 'Attendance Status', 'Payment Status', 'Due Date']);  
-  
-        $stmt = $pdo->prepare("  
-            SELECT m.full_name,  
-            CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as att,  
-            COALESCE(p.status, 'No Record') as pay,  
-            p.due_date  
-            FROM members m  
-            CROSS JOIN sessions s  
-            LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id  
-            LEFT JOIN payments p ON p.member_id = m.id  
-            WHERE s.date = ? $filter
-            ORDER BY m.full_name ASC
-        ");  
-        $stmt->execute([$date]);  
-  
-        while ($row = $stmt->fetch()) { fputcsv($output, $row); }  
-        exit;  
+            $s1 = $recent_sessions[0]; // Most Recent
+            $s2 = $recent_sessions[1]; // Previous
+
+            $filename = "Ujamaa_Consistency_Report_" . date('Y-m-d') . ".csv";
+            header('Content-Type: text/csv; charset=utf-8');  
+            header('Content-Disposition: attachment; filename=' . $filename);  
+            
+            $output = fopen('php://output', 'w');  
+            fputcsv($output, ["Report: {$s2['name']} ({$s2['date']}) vs {$s1['name']} ({$s1['date']})"]);
+            fputcsv($output, ['Athlete Name', 'Status (Prev)', 'Status (Current)', 'Consistency Category']);
+
+            $stmt = $pdo->prepare("
+                SELECT m.full_name,
+                CASE WHEN a1.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as status_current,
+                CASE WHEN a2.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as status_previous
+                FROM members m
+                LEFT JOIN attendance a1 ON a1.member_id = m.id AND a1.session_id = ?
+                LEFT JOIN attendance a2 ON a2.member_id = m.id AND a2.session_id = ?
+                ORDER BY m.full_name ASC
+            ");
+            $stmt->execute([$s1['id'], $s2['id']]);
+
+            while ($row = $stmt->fetch()) {
+                $consistency = "Changed (Partial)";
+                if ($row['status_current'] === 'PRESENT' && $row['status_previous'] === 'PRESENT') $consistency = "Both Sessions (Perfect)";
+                if ($row['status_current'] === 'ABSENT' && $row['status_previous'] === 'ABSENT') $consistency = "Absent Both (Zero)";
+                
+                fputcsv($output, [$row['full_name'], $row['status_previous'], $row['status_current'], $consistency]);
+            }
+            exit;
+        } else {
+            // Standard Reports (Full, Present, Absent)
+            $date = $_GET['export_date'] ?? date('Y-m-d');  
+            $filename = "Ujamaa_" . ucfirst($type) . "_Report_" . $date . ".csv";
+            $filter = "";
+            if ($type === 'present') $filter = "AND a.id IS NOT NULL";
+            if ($type === 'absent') $filter = "AND a.id IS NULL";
+
+            header('Content-Type: text/csv; charset=utf-8');  
+            header('Content-Disposition: attachment; filename=' . $filename);  
+            $output = fopen('php://output', 'w');  
+            fputcsv($output, ['Athlete Name', 'Attendance Status', 'Payment Status', 'Due Date']);  
+      
+            $stmt = $pdo->prepare("  
+                SELECT m.full_name,  
+                CASE WHEN a.id IS NOT NULL THEN 'PRESENT' ELSE 'ABSENT' END as att,  
+                COALESCE(p.status, 'No Record') as pay,  
+                p.due_date  
+                FROM members m  
+                CROSS JOIN sessions s  
+                LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = s.id  
+                LEFT JOIN payments p ON p.member_id = m.id  
+                WHERE s.date = ? $filter
+                ORDER BY m.full_name ASC
+            ");  
+            $stmt->execute([$date]);  
+            while ($row = $stmt->fetch()) { fputcsv($output, $row); }  
+            exit;
+        }
     } catch (Exception $e) { die("Export Error: " . $e->getMessage()); }  
 }
 
@@ -76,7 +116,6 @@ try {
         exit;  
     }  
 
-    // ACTION HANDLERS (Delete Athlete, Delete Session, Unmark Attendance)
     if (isset($_GET['action'])) {  
         if ($_GET['action'] === 'del_m') $pdo->prepare("DELETE FROM members WHERE id = ?")->execute([$_GET['id']]);  
         if ($_GET['action'] === 'del_s') $pdo->prepare("DELETE FROM sessions WHERE id = ?")->execute([$_GET['id']]);  
@@ -105,7 +144,7 @@ try {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ujamaa Academy | Management v5.2</title>
+    <title>Ujamaa Academy | Management v5.3</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
     <style>
@@ -147,6 +186,9 @@ try {
             <h2 class="text-3xl font-bold text-slate-900">Ujamaa Dashboard</h2>
             <div class="bg-white p-2 rounded-2xl shadow-sm border border-slate-200">
                 <select onchange="window.location.href='?session=' + this.value" class="bg-slate-100 rounded-xl px-4 py-2.5 text-sm font-bold text-slate-700 outline-none">
+                    <?php if(empty($sessions)): ?>
+                        <option>No sessions found</option>
+                    <?php endif; ?>
                     <?php foreach($sessions as $s): ?>
                         <option value="<?= $s['id'] ?>" <?= $current_sid == $s['id'] ? 'selected' : '' ?>>
                             <?= htmlspecialchars($s['name']) ?> (<?= $s['date'] ?>)
@@ -217,7 +259,7 @@ try {
         </div>
 
         <div id="view-sessions" class="panel hidden">
-            <div class="bg-white rounded-[2.5rem] p-10 border border-slate-200">
+            <div class="bg-white rounded-[2.5rem] p-10 border border-slate-200 shadow-sm">
                 <form method="POST" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
                     <input name="s_name" placeholder="E.g. Morning Practice" class="p-4 bg-slate-50 rounded-2xl border outline-none" required>
                     <input type="date" name="s_date" value="<?= date('Y-m-d') ?>" class="p-4 bg-slate-50 rounded-2xl border">
@@ -239,7 +281,8 @@ try {
             <div class="bg-indigo-900 rounded-[2.5rem] p-12 text-white shadow-2xl relative overflow-hidden">
                 <div class="relative z-10">
                     <h3 class="text-3xl font-bold mb-4">Export Intelligence Reports</h3>
-                    <p class="text-indigo-200 mb-10 max-w-md">Generate data reports for specific attendance groups. Select a date and hit the desired category.</p>
+                    <p class="text-indigo-200 mb-10 max-w-md">Analyze athlete consistency. Generate standard daily reports or compare data across recent sessions.</p>
+                    
                     <form method="GET" class="space-y-6">
                         <div class="flex flex-col md:flex-row gap-4">
                             <input type="date" name="export_date" value="<?= date('Y-m-d') ?>" 
@@ -250,6 +293,16 @@ try {
                                 <button type="submit" name="export_type" value="absent" class="flex-1 bg-red-500 text-white p-4 rounded-2xl font-bold uppercase text-xs">Absent Only</button>
                             </div>
                         </div>
+
+                        <div class="pt-6 border-t border-indigo-800/50">
+                            <h4 class="text-xs font-black uppercase text-indigo-400 mb-4 tracking-widest">Consistency Analytics</h4>
+                            <button type="submit" name="export_type" value="compare" class="w-full bg-gradient-to-r from-amber-400 to-orange-500 text-amber-950 p-5 rounded-2xl font-black uppercase text-sm hover:scale-[1.01] transition-transform shadow-xl">
+                                ⚡ Generate Cross-Session Consistency Report
+                            </button>
+                            <p class="text-[10px] text-indigo-300 mt-3 text-center uppercase tracking-widest font-bold opacity-70">
+                                This report identifies athletes who attended both, one, or zero of the last two sessions.
+                            </p>
+                        </div>
                     </form>
                 </div>
                 <div class="absolute -right-10 -bottom-10 w-64 h-64 bg-indigo-500/20 rounded-full blur-[100px]"></div>
@@ -259,6 +312,7 @@ try {
 </div>
 
 <script>
+    // VIEW SWITCHER
     function toggleView(v) {
         document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
         document.getElementById('view-' + v).classList.remove('hidden');
@@ -268,6 +322,7 @@ try {
         document.getElementById('btn-' + v).classList.remove('text-slate-400');
     }
 
+    // SEARCH LOGIC
     function searchAthletes() {
         const input = document.getElementById("searchInput").value.toLowerCase().trim();
         const rows = document.querySelectorAll("#athlete-rows .athlete-row");
@@ -277,10 +332,12 @@ try {
         });
     }
 
+    // EDIT MODAL HELPER
     function editM(id, name) {
         document.getElementById('m_id').value = id;
         document.getElementById('m_name').value = name;
         document.getElementById('m-title').innerText = "Update Athlete";
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 </script>
 </body>
