@@ -66,13 +66,26 @@ function ensure_schema(PDO $pdo) {
     $pdo->exec("CREATE TABLE IF NOT EXISTS payments (
         id SERIAL PRIMARY KEY,
         member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-        period CHAR(7) NOT NULL,
+        period CHAR(7) NOT NULL DEFAULT TO_CHAR(CURRENT_DATE, 'YYYY-MM'),
         amount NUMERIC(12,2) NOT NULL DEFAULT 0,
         paid_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        note TEXT,
-        UNIQUE(member_id, period)
+        note TEXT
     )");
 
+    // Fix old payments tables that may have been created without these columns.
+    $pdo->exec("ALTER TABLE payments ADD COLUMN IF NOT EXISTS member_id INTEGER");
+    $pdo->exec("ALTER TABLE payments ADD COLUMN IF NOT EXISTS period CHAR(7) NOT NULL DEFAULT TO_CHAR(CURRENT_DATE, 'YYYY-MM')");
+    $pdo->exec("ALTER TABLE payments ADD COLUMN IF NOT EXISTS amount NUMERIC(12,2) NOT NULL DEFAULT 0");
+    $pdo->exec("ALTER TABLE payments ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP NOT NULL DEFAULT NOW()");
+    $pdo->exec("ALTER TABLE payments ADD COLUMN IF NOT EXISTS note TEXT");
+
+    // Add constraints/indexes safely after columns exist.
+    $pdo->exec("DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'payments_member_id_fkey') THEN
+            ALTER TABLE payments ADD CONSTRAINT payments_member_id_fkey FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE;
+        END IF;
+    END $$;");
+    $pdo->exec("CREATE UNIQUE INDEX IF NOT EXISTS payments_member_period_unique ON payments(member_id, period)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_payments_period ON payments(period)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_attendance_member ON attendance(member_id)");
