@@ -21,6 +21,13 @@ function js($v){ return json_encode($v, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|
 function money($v){ return 'RWF ' . number_format((float)$v, 0); }
 function current_period(){ return date('Y-m'); }
 function valid_period($p){ return preg_match('/^\d{4}-\d{2}$/', (string)$p) ? $p : current_period(); }
+function valid_view($v){ return in_array($v, ['dashboard','attendance','payments','members','reports'], true) ? $v : 'dashboard'; }
+function redirect_app($period, $session = '', $view = 'dashboard'){
+    $url = 'index.php?period=' . urlencode(valid_period($period)) . '&view=' . urlencode(valid_view($view));
+    if ($session !== '' && $session !== null) $url .= '&session=' . urlencode((string)$session);
+    header("Location: $url");
+    exit;
+}
 function due_date_from_day($period,$day){
     $day=max(1,min(31,(int)$day));
     $last=(int)date('t',strtotime($period.'-01'));
@@ -130,7 +137,9 @@ function csv_headers($name){
 try{
     $pdo=db();
     ensure_schema($pdo);
+
     $period=valid_period($_GET['period'] ?? current_period());
+    $active_view=valid_view($_GET['view'] ?? 'dashboard');
 
     if(isset($_GET['export_type'])){
         $type=$_GET['export_type'];
@@ -156,9 +165,8 @@ try{
                 SELECT m.full_name, COUNT(a.id) AS total
                 FROM members m
                 LEFT JOIN attendance a ON a.member_id=m.id
-                LEFT JOIN sessions s ON s.id=a.session_id
+                LEFT JOIN sessions s ON s.id=a.session_id AND TO_CHAR(s.date,'YYYY-MM')=?
                 WHERE m.is_active=TRUE
-                AND (s.id IS NULL OR TO_CHAR(s.date,'YYYY-MM')=?)
                 GROUP BY m.id,m.full_name
                 ORDER BY total DESC,m.full_name ASC
             ");
@@ -216,16 +224,25 @@ try{
     }
 
     if($_SERVER['REQUEST_METHOD']==='POST'){
+        $posted_period=valid_period($_POST['period'] ?? $period);
+        $posted_session=$_POST['sid'] ?? ($_POST['session'] ?? ($_GET['session'] ?? ''));
+        $posted_view=valid_view($_POST['view'] ?? ($_GET['view'] ?? 'dashboard'));
+
         if(isset($_POST['save_athlete'])){
-            $name=trim($_POST['full_name']);
+            $name=trim($_POST['full_name'] ?? '');
             if($name !== ''){
-                $fee=(float)($_POST['default_monthly_fee'] ?? 0);
-                $day=(int)($_POST['default_due_day'] ?? 5);
+                $phone=trim($_POST['phone'] ?? '');
+                $feeRaw=trim((string)($_POST['default_monthly_fee'] ?? ''));
+                $dayRaw=trim((string)($_POST['default_due_day'] ?? ''));
+                $fee=$feeRaw === '' ? 0 : (float)$feeRaw;
+                $day=$dayRaw === '' ? 5 : (int)$dayRaw;
+
                 $pdo->prepare("
                     INSERT INTO members(full_name,phone,default_monthly_fee,default_due_day,monthly_fee,due_day)
                     VALUES(?,?,?,?,?,?)
-                ")->execute([$name,trim($_POST['phone'] ?? ''),$fee,$day,$fee,$day]);
+                ")->execute([$name,$phone,$fee,$day,$fee,$day]);
             }
+            redirect_app($posted_period, $posted_session, 'members');
         }
 
         if(isset($_POST['update_athlete'])){
@@ -241,25 +258,35 @@ try{
                 isset($_POST['is_active']) ? 1 : 0,
                 (int)$_POST['mid']
             ]);
+            redirect_app($posted_period, $posted_session, 'members');
         }
 
         if(isset($_POST['delete_athlete'])){
             $pdo->prepare("DELETE FROM members WHERE id=?")->execute([(int)$_POST['mid']]);
+            redirect_app($posted_period, $posted_session, 'members');
         }
 
         if(isset($_POST['save_session'])){
-            $pdo->prepare("INSERT INTO sessions(name,date) VALUES(?,?)")
-                ->execute([trim($_POST['s_name']),$_POST['s_date']]);
+            $sname=trim($_POST['s_name'] ?? '');
+            $sdate=$_POST['s_date'] ?? date('Y-m-d');
+            if($sname !== ''){
+                $stmt=$pdo->prepare("INSERT INTO sessions(name,date) VALUES(?,?) RETURNING id");
+                $stmt->execute([$sname,$sdate]);
+                $posted_session=$stmt->fetchColumn();
+            }
+            redirect_app($posted_period, $posted_session, 'attendance');
         }
 
         if(isset($_POST['mark'])){
             $pdo->prepare("INSERT INTO attendance(session_id,member_id) VALUES(?,?) ON CONFLICT DO NOTHING")
                 ->execute([(int)$_POST['sid'],(int)$_POST['mid']]);
+            redirect_app($posted_period, $_POST['sid'], 'attendance');
         }
 
         if(isset($_POST['clear_attendance'])){
             $pdo->prepare("DELETE FROM attendance WHERE session_id=? AND member_id=?")
                 ->execute([(int)$_POST['sid'],(int)$_POST['mid']]);
+            redirect_app($posted_period, $_POST['sid'], 'attendance');
         }
 
         if(isset($_POST['save_bill'])){
@@ -286,15 +313,16 @@ try{
             ")->execute([
                 (int)$_POST['mid'],$p,$expected,$paid,$manual,$due,$paidAt,trim($_POST['note'] ?? '')
             ]);
+            redirect_app($p, $posted_session, 'payments');
         }
 
         if(isset($_POST['reset_bill'])){
             $pdo->prepare("DELETE FROM monthly_bills WHERE member_id=? AND period=?")
                 ->execute([(int)$_POST['mid'],valid_period($_POST['period'] ?? $period)]);
+            redirect_app($posted_period, $posted_session, 'payments');
         }
 
-        header("Location: index.php?period=".valid_period($_POST['period'] ?? $period)."&session=".urlencode($_POST['sid'] ?? ($_GET['session'] ?? '')));
-        exit;
+        redirect_app($posted_period, $posted_session, $posted_view);
     }
 
     $sessions=$pdo->query("SELECT * FROM sessions ORDER BY date DESC,id DESC LIMIT 150")->fetchAll();
@@ -319,7 +347,6 @@ try{
         FROM members m
         LEFT JOIN attendance a ON a.member_id=m.id
         LEFT JOIN sessions s ON s.id=a.session_id AND TO_CHAR(s.date,'YYYY-MM')=?
-        WHERE s.id IS NOT NULL OR a.id IS NULL
         GROUP BY m.id
     ");
     $attStmt->execute([$period]);
@@ -343,9 +370,7 @@ try{
 }catch(Exception $e){
     die("System Error: ".h($e->getMessage()));
 }
-?>
-<!DOCTYPE html>
-<html lang="en">
+?><!DOCTYPE html><html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -357,104 +382,97 @@ body{font-family:Arial,sans-serif;background:#f8fafc}
 .pill{border-radius:999px;padding:.35rem .7rem;font-size:10px;font-weight:900;text-transform:uppercase}
 .modal{display:none}.modal.show{display:flex}
 </style>
-</head>
-
-<body class="text-slate-900">
-<div class="min-h-screen lg:flex">
-
-<aside class="lg:w-80 bg-slate-950 text-white p-6 flex flex-col gap-6">
+</head><body class="text-slate-900">
+<div class="min-h-screen lg:flex"><aside class="lg:w-80 bg-slate-950 text-white p-6 flex flex-col gap-6">
     <div>
         <h1 class="text-3xl font-black">UJAMAA<span class="text-indigo-400">.</span></h1>
         <p class="text-xs text-slate-400 font-bold">Academy Manager</p>
-    </div>
+    </div><nav class="grid grid-cols-2 lg:grid-cols-1 gap-3">
+    <button onclick="view('dashboard')" id="n-dashboard" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Dashboard</button>
+    <button onclick="view('attendance')" id="n-attendance" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Attendance</button>
+    <button onclick="view('payments')" id="n-payments" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Payments</button>
+    <button onclick="view('members')" id="n-members" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Members</button>
+    <button onclick="view('reports')" id="n-reports" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Reports</button>
+</nav>
 
-    <nav class="grid grid-cols-2 lg:grid-cols-1 gap-3">
-        <button onclick="view('dashboard')" id="n-dashboard" class="nav-btn bg-indigo-600 p-4 rounded-2xl font-black text-left">Dashboard</button>
-        <button onclick="view('attendance')" id="n-attendance" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Attendance</button>
-        <button onclick="view('payments')" id="n-payments" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Payments</button>
-        <button onclick="view('members')" id="n-members" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Members</button>
-        <button onclick="view('reports')" id="n-reports" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Reports</button>
-    </nav>
+<div class="bg-white/5 border border-white/10 p-5 rounded-3xl">
+    <h3 class="text-xs font-black uppercase text-indigo-300 mb-4">Add Athlete</h3>
+    <form method="POST" class="space-y-3">
+        <input name="full_name" placeholder="Full name only is enough" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm" required>
+        <input name="phone" placeholder="Phone optional" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm">
+        <input name="default_monthly_fee" type="number" step="0.01" placeholder="Monthly fee optional" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm">
+        <input name="default_due_day" type="number" min="1" max="31" placeholder="Due day optional, default 5" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm">
+        <input type="hidden" name="period" value="<?= h($period) ?>">
+        <input type="hidden" name="sid" value="<?= h($current_sid) ?>">
+        <input type="hidden" name="view" value="members">
+        <button name="save_athlete" class="w-full bg-white text-slate-950 py-3 rounded-xl font-black text-xs uppercase">Save Athlete</button>
+    </form>
+</div>
 
-    <div class="bg-white/5 border border-white/10 p-5 rounded-3xl">
-        <h3 class="text-xs font-black uppercase text-indigo-300 mb-4">Add Athlete</h3>
-        <form method="POST" class="space-y-3">
-            <input name="full_name" placeholder="Full name" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm" required>
-            <input name="phone" placeholder="Phone optional" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm">
-            <input name="default_monthly_fee" type="number" step="0.01" placeholder="Monthly fee" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm" required>
-            <input name="default_due_day" type="number" min="1" max="31" value="5" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm" required>
-            <button name="save_athlete" class="w-full bg-white text-slate-950 py-3 rounded-xl font-black text-xs uppercase">Save Athlete</button>
-        </form>
-    </div>
-</aside>
-
-<main class="flex-1 p-5 lg:p-10">
-<div class="max-w-7xl mx-auto">
-
-<header class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-5 mb-8">
+</aside><main class="flex-1 p-5 lg:p-10">
+<div class="max-w-7xl mx-auto"><header class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-5 mb-8">
     <div>
         <h2 class="text-3xl lg:text-5xl font-black">Academy Control Center</h2>
         <p class="text-slate-500 font-bold mt-2">Period: <?= h($period) ?> · Today: <?= date('Y-m-d') ?></p>
     </div>
     <form method="GET" class="bg-white border p-2 rounded-2xl flex gap-2">
         <input type="hidden" name="session" value="<?= h($current_sid) ?>">
+        <input type="hidden" name="view" value="<?= h($active_view) ?>">
         <input name="period" type="month" value="<?= h($period) ?>" class="rounded-xl px-4 py-3 font-black border">
         <button class="bg-slate-950 text-white px-5 py-3 rounded-xl font-black text-xs uppercase">Open Month</button>
     </form>
-</header>
-
-<section id="v-dashboard" class="page space-y-8">
+</header><section id="v-dashboard" class="page space-y-8 hidden">
     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
         <div class="soft-card p-6 rounded-3xl"><p class="text-xs font-black text-slate-400 uppercase">Expected</p><h3 class="text-3xl font-black"><?= money($expectedIncome) ?></h3></div>
         <div class="soft-card p-6 rounded-3xl"><p class="text-xs font-black text-slate-400 uppercase">Collected</p><h3 class="text-3xl font-black text-emerald-600"><?= money($collectedIncome) ?></h3></div>
         <div class="soft-card p-6 rounded-3xl"><p class="text-xs font-black text-slate-400 uppercase">Remaining</p><h3 class="text-3xl font-black text-amber-600"><?= money($remainingIncome) ?></h3></div>
         <div class="soft-card p-6 rounded-3xl"><p class="text-xs font-black text-slate-400 uppercase">Overdue</p><h3 class="text-3xl font-black text-red-600"><?= $overdueCount ?> members</h3></div>
+    </div><div class="soft-card p-6 rounded-3xl overflow-x-auto">
+    <div class="flex justify-between items-center mb-5">
+        <h3 class="text-xl font-black">Manager Summary</h3>
+        <a href="?export_type=full_summary&period=<?= h($period) ?>" class="bg-indigo-600 text-white px-4 py-3 rounded-xl text-xs font-black uppercase">Download</a>
     </div>
+    <table class="w-full text-sm">
+        <thead>
+        <tr class="text-left text-xs uppercase text-slate-400 border-b">
+            <th class="py-3">Athlete</th><th>Status</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Attend.</th>
+        </tr>
+        </thead>
+        <tbody>
+        <?php foreach($billingRows as $r): ?>
+        <tr class="border-b">
+            <td class="py-4 font-black"><?= h($r['full_name']) ?></td>
+            <td><span class="pill <?= $r['effective_status']==='PAID'?'bg-emerald-100 text-emerald-700':($r['effective_status']==='PARTIAL'?'bg-amber-100 text-amber-700':($r['effective_status']==='NO BILL'?'bg-slate-100 text-slate-600':'bg-red-100 text-red-700')) ?>"><?= h($r['effective_status']) ?></span></td>
+            <td><?= money($r['effective_expected']) ?></td>
+            <td><?= money($r['effective_paid']) ?></td>
+            <td class="font-black"><?= money($r['effective_remaining']) ?></td>
+            <td><?= (int)($attendanceMonth[$r['id']] ?? 0) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+</div>
 
-    <div class="soft-card p-6 rounded-3xl overflow-x-auto">
-        <div class="flex justify-between items-center mb-5">
-            <h3 class="text-xl font-black">Manager Summary</h3>
-            <a href="?export_type=full_summary&period=<?= h($period) ?>" class="bg-indigo-600 text-white px-4 py-3 rounded-xl text-xs font-black uppercase">Download</a>
-        </div>
-        <table class="w-full text-sm">
-            <thead>
-            <tr class="text-left text-xs uppercase text-slate-400 border-b">
-                <th class="py-3">Athlete</th><th>Status</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Attend.</th>
-            </tr>
-            </thead>
-            <tbody>
-            <?php foreach($billingRows as $r): ?>
-            <tr class="border-b">
-                <td class="py-4 font-black"><?= h($r['full_name']) ?></td>
-                <td><span class="pill <?= $r['effective_status']==='PAID'?'bg-emerald-100 text-emerald-700':($r['effective_status']==='PARTIAL'?'bg-amber-100 text-amber-700':'bg-red-100 text-red-700') ?>"><?= h($r['effective_status']) ?></span></td>
-                <td><?= money($r['effective_expected']) ?></td>
-                <td><?= money($r['effective_paid']) ?></td>
-                <td class="font-black"><?= money($r['effective_remaining']) ?></td>
-                <td><?= (int)($attendanceMonth[$r['id']] ?? 0) ?></td>
-            </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
-    </div>
-</section>
-
-<section id="v-attendance" class="page hidden space-y-6">
+</section><section id="v-attendance" class="page hidden space-y-6">
     <div class="soft-card p-6 rounded-3xl">
         <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
             <div>
                 <h3 class="text-2xl font-black"><?= $active_s ? h($active_s['name']) : 'No Session Yet' ?></h3>
-                <p class="text-slate-500 font-bold"><?= $active_s ? h($active_s['date']) : 'Create a session first.' ?></p>
+                <p class="text-slate-500 font-bold"><?= $active_s ? h($active_s['date']) : 'Create a session first, then mark attendance.' ?></p>
             </div>
-            <div class="flex gap-2">
-                <select onchange="location.href='?session='+this.value+'&period=<?= h($period) ?>'" class="rounded-xl px-4 py-3 font-bold border">
+            <div class="flex flex-col md:flex-row gap-2">
+                <?php if(count($sessions)>0): ?>
+                <select onchange="location.href='?session='+this.value+'&period=<?= h($period) ?>&view=attendance'" class="rounded-xl px-4 py-3 font-bold border">
                     <?php foreach($sessions as $s): ?>
-                    <option value="<?= h($s['id']) ?>" <?= $current_sid==$s['id']?'selected':'' ?>><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
+                    <option value="<?= h($s['id']) ?>" <?= (string)$current_sid===(string)$s['id']?'selected':'' ?>><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
                     <?php endforeach; ?>
                 </select>
-                <button onclick="openModal('m-session')" class="bg-indigo-600 text-white px-5 rounded-xl font-black">+</button>
+                <?php endif; ?>
+                <button onclick="openModal('m-session')" class="bg-indigo-600 text-white px-5 py-3 rounded-xl font-black">Create Session</button>
             </div>
-        </div>
-
+        </div><?php if(!$current_sid): ?>
+        <div class="bg-amber-50 border border-amber-200 text-amber-800 p-5 rounded-2xl font-bold">No session selected. Create a session before marking attendance.</div>
+    <?php else: ?>
         <input id="attendanceSearch" onkeyup="searchRows('attendanceSearch','.attendance-row')" placeholder="Search athlete..." class="w-full p-4 bg-slate-50 rounded-2xl border mb-5">
 
         <?php foreach($members as $m): if(!is_true($m['is_active'])) continue; $isP=in_array($m['id'],$attended_ids); ?>
@@ -463,63 +481,59 @@ body{font-family:Arial,sans-serif;background:#f8fafc}
                 <b class="row-name text-lg"><?= h($m['full_name']) ?></b>
                 <p class="text-xs font-bold text-slate-400">This month: <?= (int)($attendanceMonth[$m['id']] ?? 0) ?> time(s)</p>
             </div>
-            <?php if($current_sid): ?>
             <form method="POST">
                 <input type="hidden" name="sid" value="<?= (int)$current_sid ?>">
                 <input type="hidden" name="mid" value="<?= (int)$m['id'] ?>">
                 <input type="hidden" name="period" value="<?= h($period) ?>">
+                <input type="hidden" name="view" value="attendance">
                 <?php if($isP): ?>
                     <button name="clear_attendance" class="bg-emerald-500 text-white px-6 py-3 rounded-xl text-xs font-black uppercase">Present</button>
                 <?php else: ?>
                     <button name="mark" class="border px-6 py-3 rounded-xl text-xs font-black uppercase">Mark</button>
                 <?php endif; ?>
             </form>
-            <?php endif; ?>
         </div>
         <?php endforeach; ?>
-    </div>
-</section>
+    <?php endif; ?>
+</div>
 
-<section id="v-payments" class="page hidden space-y-6">
+</section><section id="v-payments" class="page hidden space-y-6">
     <div class="flex justify-between gap-4">
         <div>
             <h3 class="text-3xl font-black">Payments</h3>
             <p class="text-slate-500 font-bold">Month: <?= h($period) ?></p>
         </div>
         <a href="?export_type=payment_report&period=<?= h($period) ?>" class="bg-slate-950 text-white px-5 py-4 rounded-2xl font-black text-xs uppercase">Download</a>
-    </div>
+    </div><input id="paymentSearch" onkeyup="searchRows('paymentSearch','.payment-row')" placeholder="Search payment..." class="w-full p-4 bg-white rounded-2xl border">
 
-    <input id="paymentSearch" onkeyup="searchRows('paymentSearch','.payment-row')" placeholder="Search payment..." class="w-full p-4 bg-white rounded-2xl border">
-
-    <?php foreach($billingRows as $r): ?>
-    <div class="payment-row soft-card rounded-3xl p-5">
-        <div class="grid grid-cols-1 xl:grid-cols-12 gap-4 xl:items-center">
-            <div class="xl:col-span-3">
-                <h4 class="row-name text-lg font-black"><?= h($r['full_name']) ?></h4>
-                <p class="text-xs text-slate-400 font-bold">Due: <?= h($r['effective_due_date']) ?> · <?= (int)$r['overdue_days'] ?> overdue day(s)</p>
-            </div>
-            <div class="xl:col-span-2"><span class="pill <?= $r['effective_status']==='PAID'?'bg-emerald-100 text-emerald-700':($r['effective_status']==='PARTIAL'?'bg-amber-100 text-amber-700':'bg-red-100 text-red-700') ?>"><?= h($r['effective_status']) ?></span></div>
-            <div class="xl:col-span-2"><small>Expected</small><br><b><?= money($r['effective_expected']) ?></b></div>
-            <div class="xl:col-span-2"><small>Paid</small><br><b><?= money($r['effective_paid']) ?></b></div>
-            <div class="xl:col-span-2"><small>Remaining</small><br><b class="<?= $r['effective_remaining']>0?'text-red-600':'text-emerald-600' ?>"><?= money($r['effective_remaining']) ?></b></div>
-            <div class="xl:col-span-1">
-                <button onclick='openBill(<?= js([
-                    'id'=>$r['id'],
-                    'name'=>$r['full_name'],
-                    'period'=>$period,
-                    'expected'=>$r['effective_expected'],
-                    'paid'=>$r['effective_paid'],
-                    'remaining'=>$r['manual_remaining_amount'],
-                    'due'=>$r['effective_due_date'],
-                    'note'=>$r['note'] ?? ''
-                ]) ?>)' class="bg-indigo-600 text-white px-4 py-3 rounded-xl text-xs font-black uppercase w-full">Edit</button>
-            </div>
+<?php foreach($billingRows as $r): ?>
+<div class="payment-row soft-card rounded-3xl p-5">
+    <div class="grid grid-cols-1 xl:grid-cols-12 gap-4 xl:items-center">
+        <div class="xl:col-span-3">
+            <h4 class="row-name text-lg font-black"><?= h($r['full_name']) ?></h4>
+            <p class="text-xs text-slate-400 font-bold">Due: <?= h($r['effective_due_date']) ?> · <?= (int)$r['overdue_days'] ?> overdue day(s)</p>
+        </div>
+        <div class="xl:col-span-2"><span class="pill <?= $r['effective_status']==='PAID'?'bg-emerald-100 text-emerald-700':($r['effective_status']==='PARTIAL'?'bg-amber-100 text-amber-700':($r['effective_status']==='NO BILL'?'bg-slate-100 text-slate-600':'bg-red-100 text-red-700')) ?>"><?= h($r['effective_status']) ?></span></div>
+        <div class="xl:col-span-2"><small>Expected</small><br><b><?= money($r['effective_expected']) ?></b></div>
+        <div class="xl:col-span-2"><small>Paid</small><br><b><?= money($r['effective_paid']) ?></b></div>
+        <div class="xl:col-span-2"><small>Remaining</small><br><b class="<?= $r['effective_remaining']>0?'text-red-600':'text-emerald-600' ?>"><?= money($r['effective_remaining']) ?></b></div>
+        <div class="xl:col-span-1">
+            <button onclick='openBill(<?= js([
+                'id'=>$r['id'],
+                'name'=>$r['full_name'],
+                'period'=>$period,
+                'expected'=>$r['effective_expected'],
+                'paid'=>$r['effective_paid'],
+                'remaining'=>$r['manual_remaining_amount'],
+                'due'=>$r['effective_due_date'],
+                'note'=>$r['note'] ?? ''
+            ]) ?>)' class="bg-indigo-600 text-white px-4 py-3 rounded-xl text-xs font-black uppercase w-full">Edit</button>
         </div>
     </div>
-    <?php endforeach; ?>
-</section>
+</div>
+<?php endforeach; ?>
 
-<section id="v-members" class="page hidden space-y-6">
+</section><section id="v-members" class="page hidden space-y-6">
     <h3 class="text-3xl font-black">Members</h3>
     <div class="soft-card rounded-3xl overflow-hidden">
         <?php foreach($members as $m): ?>
@@ -542,89 +556,83 @@ body{font-family:Arial,sans-serif;background:#f8fafc}
         </div>
         <?php endforeach; ?>
     </div>
-</section>
-
-<section id="v-reports" class="page hidden space-y-6">
+</section><section id="v-reports" class="page hidden space-y-6">
     <h3 class="text-3xl font-black">Reports</h3>
     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
         <a class="soft-card p-6 rounded-3xl font-black text-indigo-600" href="?export_type=payment_report&period=<?= h($period) ?>">Payment Report</a>
         <a class="soft-card p-6 rounded-3xl font-black text-red-600" href="?export_type=debtors_report&period=<?= h($period) ?>">Debtors Report</a>
         <a class="soft-card p-6 rounded-3xl font-black text-emerald-600" href="?export_type=monthly_attendance_report&period=<?= h($period) ?>">Monthly Attendance</a>
         <a class="soft-card p-6 rounded-3xl font-black text-slate-900" href="?export_type=manager_summary&period=<?= h($period) ?>">Manager Summary</a>
-    </div>
-
-    <div class="soft-card p-6 rounded-3xl">
-        <h4 class="font-black mb-4">Present / Absent List</h4>
-        <form method="GET" class="space-y-3">
-            <input type="hidden" name="export_type" value="filtered_status">
-            <select name="sid" class="w-full p-3 bg-slate-50 rounded-xl border">
-                <?php foreach($sessions as $s): ?>
-                <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
-                <?php endforeach; ?>
-            </select>
-            <select name="status" class="w-full p-3 bg-slate-50 rounded-xl border">
-                <option value="PRESENT">Present only</option>
-                <option value="ABSENT">Absent only</option>
-            </select>
-            <button class="w-full bg-slate-950 text-white p-4 rounded-xl font-black uppercase text-xs">Download</button>
-        </form>
-    </div>
-</section>
-
+    </div><div class="soft-card p-6 rounded-3xl">
+    <h4 class="font-black mb-4">Present / Absent List</h4>
+    <form method="GET" class="space-y-3">
+        <input type="hidden" name="export_type" value="filtered_status">
+        <select name="sid" class="w-full p-3 bg-slate-50 rounded-xl border">
+            <?php foreach($sessions as $s): ?>
+            <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
+            <?php endforeach; ?>
+        </select>
+        <select name="status" class="w-full p-3 bg-slate-50 rounded-xl border">
+            <option value="PRESENT">Present only</option>
+            <option value="ABSENT">Absent only</option>
+        </select>
+        <button class="w-full bg-slate-950 text-white p-4 rounded-xl font-black uppercase text-xs">Download</button>
+    </form>
 </div>
+
+</section></div>
 </main>
-</div>
-
-<div id="m-session" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
+</div><div id="m-session" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
 <div class="bg-white rounded-3xl p-7 w-full max-w-md">
 <h3 class="text-2xl font-black mb-5">New Session</h3>
 <form method="POST" class="space-y-4">
 <input name="s_name" placeholder="Session title" class="w-full p-4 bg-slate-50 rounded-xl border" required>
 <input name="s_date" type="date" value="<?= date('Y-m-d') ?>" class="w-full p-4 bg-slate-50 rounded-xl border" required>
 <input type="hidden" name="period" value="<?= h($period) ?>">
+<input type="hidden" name="view" value="attendance">
 <button name="save_session" class="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase text-xs">Create</button>
 <button type="button" onclick="closeModal('m-session')" class="w-full p-2 font-bold text-slate-400">Cancel</button>
 </form>
 </div>
-</div>
-
-<div id="m-member" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
+</div><div id="m-member" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
 <div class="bg-white rounded-3xl p-7 w-full max-w-md">
 <h3 class="text-2xl font-black mb-5">Edit Member</h3>
 <form method="POST" class="space-y-4">
 <input type="hidden" name="mid" id="em-id">
 <input name="full_name" id="em-name" class="w-full p-4 bg-slate-50 rounded-xl border" required>
 <input name="phone" id="em-phone" class="w-full p-4 bg-slate-50 rounded-xl border">
-<input name="default_monthly_fee" id="em-fee" type="number" step="0.01" class="w-full p-4 bg-slate-50 rounded-xl border" required>
-<input name="default_due_day" id="em-due" type="number" min="1" max="31" class="w-full p-4 bg-slate-50 rounded-xl border" required>
+<input name="default_monthly_fee" id="em-fee" type="number" step="0.01" class="w-full p-4 bg-slate-50 rounded-xl border">
+<input name="default_due_day" id="em-due" type="number" min="1" max="31" class="w-full p-4 bg-slate-50 rounded-xl border">
 <label class="flex gap-2 font-bold"><input type="checkbox" name="is_active" id="em-active"> Active member</label>
 <input type="hidden" name="period" value="<?= h($period) ?>">
+<input type="hidden" name="sid" value="<?= h($current_sid) ?>">
+<input type="hidden" name="view" value="members">
 <button name="update_athlete" class="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase text-xs">Save</button>
 <button type="button" onclick="closeModal('m-member')" class="w-full p-2 font-bold text-slate-400">Cancel</button>
 </form>
 </div>
-</div>
-
-<div id="m-delete" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
+</div><div id="m-delete" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
 <div class="bg-white rounded-3xl p-7 w-full max-w-md text-center">
 <h3 class="text-2xl font-black text-red-600 mb-3">Delete Member?</h3>
 <p class="text-slate-500 font-bold mb-5">This deletes attendance and payment records too.</p>
 <form method="POST">
 <input type="hidden" name="mid" id="del-id">
 <input type="hidden" name="period" value="<?= h($period) ?>">
+<input type="hidden" name="sid" value="<?= h($current_sid) ?>">
+<input type="hidden" name="view" value="members">
 <button name="delete_athlete" class="w-full bg-red-600 text-white p-4 rounded-xl font-black uppercase text-xs">Delete</button>
 <button type="button" onclick="closeModal('m-delete')" class="w-full p-2 font-bold text-slate-400">Cancel</button>
 </form>
 </div>
-</div>
-
-<div id="m-bill" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
+</div><div id="m-bill" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
 <div class="bg-white rounded-3xl p-7 w-full max-w-lg">
 <h3 class="text-2xl font-black mb-1">Edit Payment</h3>
 <p id="bill-athlete" class="text-slate-500 font-bold mb-5"></p>
 <form method="POST" class="space-y-4">
 <input type="hidden" name="mid" id="bill-mid">
 <input type="hidden" name="period" id="bill-period">
+<input type="hidden" name="sid" value="<?= h($current_sid) ?>">
+<input type="hidden" name="view" value="payments">
 <input name="due_date" id="bill-due" type="date" class="w-full p-4 bg-slate-50 rounded-xl border" required>
 <input name="expected_amount" id="bill-expected" type="number" step="0.01" class="w-full p-4 bg-slate-50 rounded-xl border" required>
 <input name="paid_amount" id="bill-paid" type="number" step="0.01" class="w-full p-4 bg-slate-50 rounded-xl border" required>
@@ -637,14 +645,16 @@ body{font-family:Arial,sans-serif;background:#f8fafc}
 <button type="button" onclick="closeModal('m-bill')" class="w-full p-2 font-bold text-slate-400">Cancel</button>
 </form>
 </div>
-</div>
-
-<script>
+</div><script>
+const initialView = <?= js($active_view) ?>;
 function view(id){
     document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
     document.getElementById('v-'+id).classList.remove('hidden');
     document.querySelectorAll('.nav-btn').forEach(b=>b.className='nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left');
     document.getElementById('n-'+id).className='nav-btn bg-indigo-600 p-4 rounded-2xl font-black text-left';
+    const url = new URL(window.location.href);
+    url.searchParams.set('view', id);
+    history.replaceState(null, '', url.toString());
 }
 function searchRows(inputId,selector){
     const q=document.getElementById(inputId).value.toLowerCase();
@@ -682,6 +692,6 @@ function openBill(b){
 document.addEventListener('keydown',e=>{
     if(e.key==='Escape') document.querySelectorAll('.modal').forEach(m=>m.classList.remove('show'));
 });
-</script>
-</body>
+document.addEventListener('DOMContentLoaded',()=>view(initialView));
+</script></body>
 </html>
