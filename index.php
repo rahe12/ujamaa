@@ -162,16 +162,61 @@ try{
             fputcsv($out,['Athlete','Period','Times Attended']);
 
             $stmt=$pdo->prepare("
-                SELECT m.full_name, COUNT(a.id) AS total
+                SELECT m.full_name, COUNT(DISTINCT a.session_id) AS total
                 FROM members m
                 LEFT JOIN attendance a ON a.member_id=m.id
-                LEFT JOIN sessions s ON s.id=a.session_id AND TO_CHAR(s.date,'YYYY-MM')=?
+                LEFT JOIN sessions s ON s.id=a.session_id
                 WHERE m.is_active=TRUE
+                  AND (s.id IS NULL OR TO_CHAR(s.date,'YYYY-MM')=?)
                 GROUP BY m.id,m.full_name
                 ORDER BY total DESC,m.full_name ASC
             ");
             $stmt->execute([$period]);
             while($row=$stmt->fetch()) fputcsv($out,[$row['full_name'],$period,$row['total']]);
+            exit;
+        }
+
+        if($type==='two_session_report'){
+            $sid1=(int)($_GET['sid1'] ?? 0);
+            $sid2=(int)($_GET['sid2'] ?? 0);
+            if($sid1 <= 0 || $sid2 <= 0 || $sid1 === $sid2) die('Choose two different sessions.');
+
+            $stmt=$pdo->prepare("SELECT id,name,date FROM sessions WHERE id IN (?,?) ORDER BY date ASC,id ASC");
+            $stmt->execute([$sid1,$sid2]);
+            $picked=$stmt->fetchAll();
+            if(count($picked) < 2) die('One of the selected sessions was not found.');
+
+            $sessionNames=[];
+            foreach($picked as $ss){
+                $sessionNames[(int)$ss['id']]=$ss['date'].' - '.$ss['name'];
+            }
+
+            csv_headers('two_session_attendance_'.$sid1.'_and_'.$sid2.'.csv');
+            $out=fopen('php://output','w');
+            fputcsv($out,['Athlete','Phone','Session 1','Session 1 Status','Session 2','Session 2 Status','Times Attended','Overall']);
+
+            $stmt=$pdo->prepare("
+                SELECT
+                    m.id,
+                    m.full_name,
+                    m.phone,
+                    MAX(CASE WHEN a.session_id=? THEN 1 ELSE 0 END) AS attended_s1,
+                    MAX(CASE WHEN a.session_id=? THEN 1 ELSE 0 END) AS attended_s2,
+                    COUNT(DISTINCT CASE WHEN a.session_id IN (?,?) THEN a.session_id END) AS total_attended
+                FROM members m
+                LEFT JOIN attendance a ON a.member_id=m.id AND a.session_id IN (?,?)
+                WHERE m.is_active=TRUE
+                GROUP BY m.id,m.full_name,m.phone
+                ORDER BY total_attended DESC,m.full_name ASC
+            ");
+            $stmt->execute([$sid1,$sid2,$sid1,$sid2,$sid1,$sid2]);
+            while($row=$stmt->fetch()){
+                $s1=(int)$row['attended_s1']===1 ? 'PRESENT':'ABSENT';
+                $s2=(int)$row['attended_s2']===1 ? 'PRESENT':'ABSENT';
+                $total=(int)$row['total_attended'];
+                $overall=$total===2 ? 'ATTENDED BOTH' : ($total===1 ? 'ATTENDED ONE':'MISSED BOTH');
+                fputcsv($out,[$row['full_name'],$row['phone'],$sessionNames[$sid1] ?? $sid1,$s1,$sessionNames[$sid2] ?? $sid2,$s2,$total,$overall]);
+            }
             exit;
         }
 
@@ -343,10 +388,11 @@ try{
     }
 
     $attStmt=$pdo->prepare("
-        SELECT m.id, COUNT(a.id) AS total
+        SELECT m.id, COUNT(DISTINCT a.session_id) AS total
         FROM members m
         LEFT JOIN attendance a ON a.member_id=m.id
-        LEFT JOIN sessions s ON s.id=a.session_id AND TO_CHAR(s.date,'YYYY-MM')=?
+        LEFT JOIN sessions s ON s.id=a.session_id
+        WHERE s.id IS NULL OR TO_CHAR(s.date,'YYYY-MM')=?
         GROUP BY m.id
     ");
     $attStmt->execute([$period]);
@@ -381,6 +427,11 @@ body{font-family:Arial,sans-serif;background:#f8fafc}
 .soft-card{background:#fff;border:1px solid #e2e8f0;box-shadow:0 15px 40px rgba(15,23,42,.06)}
 .pill{border-radius:999px;padding:.35rem .7rem;font-size:10px;font-weight:900;text-transform:uppercase}
 .modal{display:none}.modal.show{display:flex}
+.glass{background:linear-gradient(135deg,rgba(255,255,255,.96),rgba(248,250,252,.92));backdrop-filter:blur(14px)}
+.report-card{transition:.2s ease;position:relative;overflow:hidden}.report-card:hover{transform:translateY(-3px);box-shadow:0 20px 50px rgba(15,23,42,.10)}
+.report-card:before{content:'';position:absolute;inset:0 0 auto 0;height:4px;background:linear-gradient(90deg,#4f46e5,#06b6d4)}
+.input-clean{width:100%;padding:.9rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:1rem;font-weight:800;color:#0f172a}
+.btn-dark{background:#020617;color:#fff;padding:1rem;border-radius:1rem;font-size:11px;font-weight:900;text-transform:uppercase}
 </style>
 </head><body class="text-slate-900">
 <div class="min-h-screen lg:flex"><aside class="lg:w-80 bg-slate-950 text-white p-6 flex flex-col gap-6">
@@ -557,29 +608,91 @@ body{font-family:Arial,sans-serif;background:#f8fafc}
         <?php endforeach; ?>
     </div>
 </section><section id="v-reports" class="page hidden space-y-6">
-    <h3 class="text-3xl font-black">Reports</h3>
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
-        <a class="soft-card p-6 rounded-3xl font-black text-indigo-600" href="?export_type=payment_report&period=<?= h($period) ?>">Payment Report</a>
-        <a class="soft-card p-6 rounded-3xl font-black text-red-600" href="?export_type=debtors_report&period=<?= h($period) ?>">Debtors Report</a>
-        <a class="soft-card p-6 rounded-3xl font-black text-emerald-600" href="?export_type=monthly_attendance_report&period=<?= h($period) ?>">Monthly Attendance</a>
-        <a class="soft-card p-6 rounded-3xl font-black text-slate-900" href="?export_type=manager_summary&period=<?= h($period) ?>">Manager Summary</a>
-    </div><div class="soft-card p-6 rounded-3xl">
-    <h4 class="font-black mb-4">Present / Absent List</h4>
-    <form method="GET" class="space-y-3">
-        <input type="hidden" name="export_type" value="filtered_status">
-        <select name="sid" class="w-full p-3 bg-slate-50 rounded-xl border">
-            <?php foreach($sessions as $s): ?>
-            <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
-            <?php endforeach; ?>
-        </select>
-        <select name="status" class="w-full p-3 bg-slate-50 rounded-xl border">
-            <option value="PRESENT">Present only</option>
-            <option value="ABSENT">Absent only</option>
-        </select>
-        <button class="w-full bg-slate-950 text-white p-4 rounded-xl font-black uppercase text-xs">Download</button>
-    </form>
-</div>
+    <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+        <div>
+            <p class="text-xs font-black uppercase text-indigo-600">Exports & attendance analysis</p>
+            <h3 class="text-3xl lg:text-4xl font-black">Reports</h3>
+            <p class="text-slate-500 font-bold mt-1">Generate payment reports, monthly attendance, and compare two sessions without duplicate athlete rows.</p>
+        </div>
+    </div>
 
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+        <a class="report-card soft-card p-6 rounded-3xl font-black text-indigo-600" href="?export_type=payment_report&period=<?= h($period) ?>">
+            <span class="block text-slate-900 text-lg mb-2">Payment Report</span>
+            <span class="text-xs text-slate-400">Expected, paid, balance</span>
+        </a>
+        <a class="report-card soft-card p-6 rounded-3xl font-black text-red-600" href="?export_type=debtors_report&period=<?= h($period) ?>">
+            <span class="block text-slate-900 text-lg mb-2">Debtors Report</span>
+            <span class="text-xs text-slate-400">Unpaid and partial only</span>
+        </a>
+        <a class="report-card soft-card p-6 rounded-3xl font-black text-emerald-600" href="?export_type=monthly_attendance_report&period=<?= h($period) ?>">
+            <span class="block text-slate-900 text-lg mb-2">Monthly Attendance</span>
+            <span class="text-xs text-slate-400">Times attended in <?= h($period) ?></span>
+        </a>
+        <a class="report-card soft-card p-6 rounded-3xl font-black text-slate-900" href="?export_type=manager_summary&period=<?= h($period) ?>">
+            <span class="block text-slate-900 text-lg mb-2">Manager Summary</span>
+            <span class="text-xs text-slate-400">Income and status totals</span>
+        </a>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        <div class="glass soft-card p-6 rounded-3xl">
+            <div class="mb-5">
+                <h4 class="text-2xl font-black">Two Sessions Attendance Report</h4>
+                <p class="text-sm text-slate-500 font-bold mt-1">This report gives one row per athlete, Session 1 status, Session 2 status, and total times attended: 0, 1, or 2.</p>
+            </div>
+            <form method="GET" class="space-y-4">
+                <input type="hidden" name="export_type" value="two_session_report">
+                <input type="hidden" name="period" value="<?= h($period) ?>">
+                <div>
+                    <label class="text-xs font-black uppercase text-slate-400">First session</label>
+                    <select name="sid1" class="input-clean mt-2" required>
+                        <option value="">Choose first session</option>
+                        <?php foreach($sessions as $s): ?>
+                        <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-black uppercase text-slate-400">Second session</label>
+                    <select name="sid2" class="input-clean mt-2" required>
+                        <option value="">Choose second session</option>
+                        <?php foreach($sessions as $s): ?>
+                        <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <button class="w-full btn-dark">Download Two-Session Report</button>
+            </form>
+        </div>
+
+        <div class="glass soft-card p-6 rounded-3xl">
+            <div class="mb-5">
+                <h4 class="text-2xl font-black">Present / Absent List</h4>
+                <p class="text-sm text-slate-500 font-bold mt-1">Export only present athletes or only absent athletes for one selected session.</p>
+            </div>
+            <form method="GET" class="space-y-4">
+                <input type="hidden" name="export_type" value="filtered_status">
+                <input type="hidden" name="period" value="<?= h($period) ?>">
+                <div>
+                    <label class="text-xs font-black uppercase text-slate-400">Session</label>
+                    <select name="sid" class="input-clean mt-2" required>
+                        <?php foreach($sessions as $s): ?>
+                        <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label class="text-xs font-black uppercase text-slate-400">Status</label>
+                    <select name="status" class="input-clean mt-2">
+                        <option value="PRESENT">Present only</option>
+                        <option value="ABSENT">Absent only</option>
+                    </select>
+                </div>
+                <button class="w-full btn-dark">Download List</button>
+            </form>
+        </div>
+    </div>
 </section></div>
 </main>
 </div><div id="m-session" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
