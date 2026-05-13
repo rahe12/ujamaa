@@ -393,30 +393,53 @@ function get_monthly_summary($pdo, $period) {
     $stmt = $pdo->prepare("
         SELECT
             COUNT(DISTINCT s.id) as total_sessions,
-            COUNT(a.id) as total_records,
+            COUNT(a.id)          as total_records,
             SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present_count,
             SUM(CASE WHEN a.status = 'absent'  THEN 1 ELSE 0 END) as absent_count,
             SUM(CASE WHEN a.status = 'late'    THEN 1 ELSE 0 END) as late_count
         FROM sessions s
-        LEFT JOIN attendance a ON a.session_id = s.id
+        INNER JOIN attendance a ON a.session_id = s.id
         WHERE TO_CHAR(s.date, 'YYYY-MM') = ?
     ");
     $stmt->execute([$period]);
     $att = $stmt->fetch();
 
-    // Top attenders this period
+    // If no attendance rows exist yet, fill defaults
+    if (!$att || $att['total_records'] === null) {
+        // Count sessions separately (they may exist without attendance)
+        $s2 = $pdo->prepare("SELECT COUNT(*) as c FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ?");
+        $s2->execute([$period]);
+        $sc = $s2->fetch();
+        $att = [
+            'total_sessions' => $sc['c'] ?? 0,
+            'total_records'  => 0,
+            'present_count'  => 0,
+            'absent_count'   => 0,
+            'late_count'     => 0,
+        ];
+    }
+
+    // Top attenders this period — join only sessions in this period, then aggregate
     $stmt = $pdo->prepare("
         SELECT m.full_name,
-            COUNT(a.id) as sessions_attended,
-            SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present,
-            SUM(CASE WHEN a.status = 'absent'  THEN 1 ELSE 0 END) as absent,
-            SUM(CASE WHEN a.status = 'late'    THEN 1 ELSE 0 END) as late
+            COALESCE(agg.sessions_attended, 0) as sessions_attended,
+            COALESCE(agg.present, 0) as present,
+            COALESCE(agg.absent,  0) as absent,
+            COALESCE(agg.late,    0) as late
         FROM members m
-        LEFT JOIN attendance a ON a.member_id = m.id
-        LEFT JOIN sessions s ON s.id = a.session_id AND TO_CHAR(s.date, 'YYYY-MM') = ?
+        LEFT JOIN (
+            SELECT a.member_id,
+                COUNT(a.id) as sessions_attended,
+                SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present,
+                SUM(CASE WHEN a.status = 'absent'  THEN 1 ELSE 0 END) as absent,
+                SUM(CASE WHEN a.status = 'late'    THEN 1 ELSE 0 END) as late
+            FROM attendance a
+            INNER JOIN sessions s ON s.id = a.session_id
+            WHERE TO_CHAR(s.date, 'YYYY-MM') = ?
+            GROUP BY a.member_id
+        ) agg ON agg.member_id = m.id
         WHERE m.is_active = TRUE
-        GROUP BY m.id, m.full_name
-        ORDER BY present DESC, sessions_attended DESC
+        ORDER BY agg.present DESC NULLS LAST, agg.sessions_attended DESC NULLS LAST
         LIMIT 10
     ");
     $stmt->execute([$period]);
