@@ -2,17 +2,6 @@
 /**
  * INTEGRATED ACADEMY MANAGEMENT SYSTEM (AMS)
  * Single PHP File - Complete Sports Club Management Platform
- * 
- * Features:
- * - Member Management (CRUD operations)
- * - Session-Based Attendance Tracking
- * - Automated Financial Ledgering
- * - Payment Recording & Tracking
- * - Comprehensive Reporting (CSV Export)
- * - Role-Based Access Control (Admin/Coach)
- * 
- * Database: PostgreSQL/MySQL
- * Schema: schema1.sql
  */
 
 error_reporting(E_ALL);
@@ -34,9 +23,9 @@ function getDatabase() {
         $dbname = ltrim($url['path'], '/');
         $user = $url['user'] ?? 'postgres';
         $pass = $url['pass'] ?? '';
-        
+
         $dsn = "pgsql:host={$host};port={$port};dbname={$dbname};sslmode=require";
-        
+
         $pdo = new PDO($dsn, $user, $pass, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
@@ -169,6 +158,8 @@ function ensure_schema($pdo) {
         CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
         CREATE INDEX IF NOT EXISTS idx_payment_logs_member ON payment_logs(member_id);
         CREATE INDEX IF NOT EXISTS idx_payments_period ON payments(period);
+
+        ALTER TABLE public.attendance ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'present';
     ");
 }
 
@@ -357,7 +348,7 @@ function get_payment_logs($pdo, $member_id) {
 function get_dashboard_stats($pdo, $period) {
     $members = $pdo->query("SELECT COUNT(*) as count FROM members")->fetch();
     $active = $pdo->query("SELECT COUNT(*) as count FROM members WHERE is_active = TRUE")->fetch();
-    
+
     $stmt = $pdo->prepare("
         SELECT SUM(paid_amount) as revenue, SUM(expected_amount - COALESCE(paid_amount, 0)) as outstanding
         FROM monthly_bills WHERE period = ?
@@ -366,15 +357,14 @@ function get_dashboard_stats($pdo, $period) {
     $financial = $stmt->fetch();
 
     return [
-        'total_members' => $members['count'] ?? 0,
+        'total_members'  => $members['count'] ?? 0,
         'active_members' => $active['count'] ?? 0,
-        'revenue' => $financial['revenue'] ?? 0,
-        'outstanding' => $financial['outstanding'] ?? 0
+        'revenue'        => $financial['revenue'] ?? 0,
+        'outstanding'    => $financial['outstanding'] ?? 0
     ];
 }
 
 function get_monthly_summary($pdo, $period) {
-    // Payment summary
     $stmt = $pdo->prepare("
         SELECT
             COUNT(*) as total_bills,
@@ -389,7 +379,6 @@ function get_monthly_summary($pdo, $period) {
     $stmt->execute([$period]);
     $pay = $stmt->fetch();
 
-    // Attendance summary — aggregate from attendance table directly, filter by session date
     $stmt = $pdo->prepare("
         SELECT
             COUNT(DISTINCT att.session_id) as total_sessions,
@@ -405,7 +394,6 @@ function get_monthly_summary($pdo, $period) {
     $stmt->execute([$period]);
     $att = $stmt->fetch();
 
-    // If no attendance rows exist yet, fill defaults
     if (!$att || (int)($att['total_records'] ?? 0) === 0) {
         $s2 = $pdo->prepare("SELECT COUNT(*) as c FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = $1");
         $s2->execute([$period]);
@@ -419,7 +407,6 @@ function get_monthly_summary($pdo, $period) {
         ];
     }
 
-    // Top attenders — subquery aggregates attendance for the period, then join to members
     $stmt = $pdo->prepare("
         SELECT m.full_name,
             COALESCE(agg.sessions_attended, 0) as sessions_attended,
@@ -446,27 +433,10 @@ function get_monthly_summary($pdo, $period) {
     $stmt->execute([$period]);
     $top_attenders = $stmt->fetchAll();
 
-    // Members with unpaid/partial bills
-    $stmt = $pdo->prepare("
-        SELECT m.full_name, m.phone,
-            b.expected_amount, b.paid_amount,
-            (b.expected_amount - COALESCE(b.paid_amount,0)) as remaining,
-            b.due_date
-        FROM monthly_bills b
-        JOIN members m ON m.id = b.member_id
-        WHERE b.period = $1 AND b.expected_amount > 0
-          AND COALESCE(b.paid_amount,0) < b.expected_amount
-        ORDER BY remaining DESC
-        LIMIT 10
-    ");
-    $stmt->execute([$period]);
-    $unpaid_members = $stmt->fetchAll();
-
     return [
-        'payment'       => $pay,
-        'attendance'    => $att,
-        'top_attenders' => $top_attenders,
-        'unpaid_members'=> $unpaid_members,
+        'payment'        => $pay,
+        'attendance'     => $att,
+        'top_attenders'  => $top_attenders,
     ];
 }
 
@@ -481,119 +451,120 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'create_member') {
             create_member($pdo, [
-                'full_name' => $_POST['full_name'] ?? '',
-                'phone' => $_POST['phone'] ?? '',
+                'full_name'   => $_POST['full_name'] ?? '',
+                'phone'       => $_POST['phone'] ?? '',
                 'monthly_fee' => $_POST['monthly_fee'] ?? 0,
-                'due_day' => $_POST['due_day'] ?? 5
+                'due_day'     => $_POST['due_day'] ?? 5
             ]);
-            $message = 'Member created successfully!';
-            redirect_app(current_period(), 'members', $message);
+            redirect_app(current_period(), 'members', 'Member created successfully!');
         }
 
         if ($action === 'update_member') {
             update_member($pdo, $_POST['id'] ?? 0, [
-                'full_name' => $_POST['full_name'] ?? '',
-                'phone' => $_POST['phone'] ?? '',
+                'full_name'   => $_POST['full_name'] ?? '',
+                'phone'       => $_POST['phone'] ?? '',
                 'monthly_fee' => $_POST['monthly_fee'] ?? 0,
-                'due_day' => $_POST['due_day'] ?? 5
+                'due_day'     => $_POST['due_day'] ?? 5
             ]);
-            $message = 'Member updated successfully!';
-            redirect_app(current_period(), 'members', $message);
+            redirect_app(current_period(), 'members', 'Member updated successfully!');
         }
 
         if ($action === 'deactivate_member') {
             deactivate_member($pdo, $_POST['id'] ?? 0);
-            $message = 'Member deactivated!';
-            redirect_app(current_period(), 'members', $message);
+            redirect_app(current_period(), 'members', 'Member deactivated!');
         }
 
         if ($action === 'create_session') {
             create_session($pdo, $_POST['name'] ?? '', $_POST['date'] ?? date('Y-m-d'));
-            $message = 'Session created!';
-            redirect_app(current_period(), 'attendance', $message);
+            redirect_app(current_period(), 'attendance', 'Session created!');
         }
 
         if ($action === 'delete_session') {
             delete_session($pdo, $_POST['id'] ?? 0);
-            $message = 'Session deleted!';
-            redirect_app(current_period(), 'attendance', $message);
+            redirect_app(current_period(), 'attendance', 'Session deleted!');
         }
 
         if ($action === 'log_attendance') {
             log_attendance($pdo, $_POST['session_id'] ?? 0, $_POST['member_id'] ?? 0, $_POST['status'] ?? 'present');
-            $message = 'Attendance recorded!';
-            redirect_app(current_period(), 'attendance', $message);
+            redirect_app(current_period(), 'attendance', 'Attendance recorded!');
         }
 
         if ($action === 'record_payment') {
             record_payment($pdo, $_POST['member_id'] ?? 0, $_POST['amount'] ?? 0, current_period());
-            $message = 'Payment recorded!';
-            redirect_app(current_period(), 'payments', $message);
+            redirect_app(current_period(), 'payments', 'Payment recorded!');
         }
 
         if ($action === 'export_csv') {
             $export_type = $_POST['export_type'] ?? '';
-            $period = valid_period($_POST['period'] ?? current_period());
+            $period      = valid_period($_POST['period'] ?? current_period());
 
             header('Content-Type: text/csv; charset=utf-8');
             header('Content-Disposition: attachment; filename="' . $export_type . '_' . $period . '.csv"');
             $output = fopen('php://output', 'w');
 
-            if ($export_type === 'payment_report') {
-                fputcsv($output, ['Member', 'Phone', 'Expected', 'Paid', 'Remaining', 'Due Date', 'Status', 'Overdue Days']);
-                foreach (billing_rows($pdo, $period) as $row) {
-                    fputcsv($output, [
-                        $row['full_name'],
-                        $row['phone'],
-                        money($row['effective_expected']),
-                        money($row['effective_paid']),
-                        money($row['effective_remaining']),
-                        $row['effective_due_date'],
-                        $row['effective_status'],
-                        $row['overdue_days']
-                    ]);
-                }
-            }
-
             if ($export_type === 'attendance_report') {
-                fputcsv($output, ['Member', 'Total Sessions', 'Present', 'Absent', 'Late']);
-                $stmt = $pdo->prepare("
-                    SELECT m.full_name,
-                        COUNT(DISTINCT a.session_id) as total,
-                        SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present,
-                        SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) as absent,
-                        SUM(CASE WHEN a.status = 'late' THEN 1 ELSE 0 END) as late
-                    FROM members m
-                    LEFT JOIN attendance a ON a.member_id = m.id
-                    LEFT JOIN sessions s ON s.id = a.session_id
-                    WHERE m.is_active = TRUE AND (s.id IS NULL OR DATE_FORMAT(s.date, '%Y-%m') = ?)
-                    GROUP BY m.id, m.full_name
-                    ORDER BY total DESC
-                ");
-                $stmt->execute([$period]);
-                foreach ($stmt->fetchAll() as $row) {
-                    fputcsv($output, [
-                        $row['full_name'],
-                        $row['total'] ?? 0,
-                        $row['present'] ?? 0,
-                        $row['absent'] ?? 0,
-                        $row['late'] ?? 0
-                    ]);
+                $selected_ids = array_filter(array_map('intval', $_POST['session_ids'] ?? []));
+
+                if (count($selected_ids) > 0) {
+                    $placeholders = implode(',', array_fill(0, count($selected_ids), '?'));
+                    $stmt_sessions = $pdo->prepare("SELECT * FROM sessions WHERE id IN ($placeholders) ORDER BY date ASC");
+                    $stmt_sessions->execute($selected_ids);
+                } else {
+                    $stmt_sessions = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date ASC");
+                    $stmt_sessions->execute([$period]);
+                }
+                $export_sessions   = $stmt_sessions->fetchAll();
+                $session_ids_used  = array_column($export_sessions, 'id');
+
+                // Build CSV header
+                $header = ['Member'];
+                foreach ($export_sessions as $es) {
+                    $header[] = $es['name'] . ' (' . $es['date'] . ')';
+                }
+                $header[] = 'Total Present';
+                $header[] = 'Total Absent';
+                $header[] = 'Total Late';
+                fputcsv($output, $header);
+
+                // Fetch attendance for selected sessions
+                $att_map = [];
+                if (count($session_ids_used) > 0) {
+                    $ph       = implode(',', array_fill(0, count($session_ids_used), '?'));
+                    $stmt_att = $pdo->prepare("SELECT * FROM attendance WHERE session_id IN ($ph)");
+                    $stmt_att->execute($session_ids_used);
+                    foreach ($stmt_att->fetchAll() as $a) {
+                        $att_map[$a['session_id']][$a['member_id']] = $a['status'] ?? 'present';
+                    }
+                }
+
+                foreach (get_active_members($pdo) as $m) {
+                    $row    = [$m['full_name']];
+                    $totals = ['present' => 0, 'absent' => 0, 'late' => 0];
+                    foreach ($export_sessions as $es) {
+                        $status = $att_map[$es['id']][$m['id']] ?? '—';
+                        $row[]  = $status;
+                        if (isset($totals[$status])) $totals[$status]++;
+                    }
+                    $row[] = $totals['present'];
+                    $row[] = $totals['absent'];
+                    $row[] = $totals['late'];
+                    fputcsv($output, $row);
                 }
             }
 
             fclose($output);
             exit;
         }
+
     } catch (Exception $e) {
-        $message = 'Error: ' . $e->getMessage();
+        $message      = 'Error: ' . $e->getMessage();
         $message_type = 'error';
     }
 }
 
 // ============ GET REQUEST PARAMETERS ============
 
-$period = valid_period($_GET['period'] ?? current_period());
+$period      = valid_period($_GET['period'] ?? current_period());
 $active_view = valid_view($_GET['view'] ?? 'dashboard');
 if (isset($_GET['msg'])) $message = $_GET['msg'];
 
@@ -651,13 +622,9 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ──────────── LAYOUT SHELL ──────────── */
-        .shell {
-            display: flex;
-            min-height: 100vh;
-        }
+        .shell { display: flex; min-height: 100vh; }
 
-        /* ──────────── SIDEBAR ──────────── */
+        /* ── SIDEBAR ── */
         .sidebar {
             width: var(--sidebar-w);
             background: var(--surface);
@@ -706,11 +673,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             text-transform: uppercase;
         }
 
-        .sidebar-nav {
-            flex: 1;
-            padding: 12px 10px;
-            overflow-y: auto;
-        }
+        .sidebar-nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
 
         .nav-label {
             font-size: 10px;
@@ -741,30 +704,13 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             margin-bottom: 2px;
         }
 
-        .nav-item:hover {
-            background: var(--surface-2);
-            color: var(--text-1);
-        }
+        .nav-item:hover { background: var(--surface-2); color: var(--text-1); }
+        .nav-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
 
-        .nav-item.active {
-            background: var(--accent-dim);
-            color: var(--accent);
-            font-weight: 600;
-        }
-
-        .nav-icon {
-            width: 18px;
-            height: 18px;
-            flex-shrink: 0;
-            opacity: .7;
-        }
-
+        .nav-icon { width: 18px; height: 18px; flex-shrink: 0; opacity: .7; }
         .nav-item.active .nav-icon { opacity: 1; }
 
-        .sidebar-footer {
-            padding: 14px 20px;
-            border-top: 1px solid var(--border);
-        }
+        .sidebar-footer { padding: 14px 20px; border-top: 1px solid var(--border); }
 
         .period-badge {
             display: flex;
@@ -787,21 +733,11 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             animation: pulse 2s infinite;
         }
 
-        @keyframes pulse {
-            0%,100% { opacity: 1; }
-            50% { opacity: .4; }
-        }
+        @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
 
-        /* ──────────── MAIN AREA ──────────── */
-        .main {
-            margin-left: var(--sidebar-w);
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
-        }
+        /* ── MAIN ── */
+        .main { margin-left: var(--sidebar-w); flex: 1; display: flex; flex-direction: column; min-height: 100vh; }
 
-        /* ──────────── TOPBAR ──────────── */
         .topbar {
             height: var(--header-h);
             background: var(--surface);
@@ -815,11 +751,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             z-index: 100;
         }
 
-        .topbar-left {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
+        .topbar-left { display: flex; align-items: center; gap: 12px; }
 
         .menu-toggle {
             display: none;
@@ -831,39 +763,20 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             border-radius: var(--radius-sm);
         }
 
-        .page-title {
-            font-family: 'Syne', sans-serif;
-            font-weight: 700;
-            font-size: 18px;
-            color: var(--text-1);
-        }
-
-        .topbar-right {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+        .page-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; color: var(--text-1); }
+        .topbar-right { display: flex; align-items: center; gap: 10px; }
 
         .avatar {
             width: 34px; height: 34px;
             border-radius: 50%;
             background: linear-gradient(135deg, var(--accent), #8b5cf6);
             display: flex; align-items: center; justify-content: center;
-            font-weight: 700;
-            font-size: 13px;
-            color: #fff;
-            cursor: pointer;
+            font-weight: 700; font-size: 13px; color: #fff; cursor: pointer;
         }
 
-        /* ──────────── CONTENT ──────────── */
-        .content {
-            flex: 1;
-            padding: 28px;
-            max-width: 1200px;
-            width: 100%;
-        }
+        .content { flex: 1; padding: 28px; max-width: 1200px; width: 100%; }
 
-        /* ──────────── ALERT MESSAGES ──────────── */
+        /* ── ALERTS ── */
         .alert {
             display: flex;
             align-items: center;
@@ -876,24 +789,12 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             animation: slideDown .3s ease;
         }
 
-        @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-8px); }
-            to   { opacity: 1; transform: translateY(0); }
-        }
+        @keyframes slideDown { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
 
-        .alert-success {
-            background: var(--green-dim);
-            border: 1px solid rgba(45,212,160,.3);
-            color: var(--green);
-        }
+        .alert-success { background: var(--green-dim); border: 1px solid rgba(45,212,160,.3); color: var(--green); }
+        .alert-error   { background: var(--red-dim);   border: 1px solid rgba(248,113,113,.3); color: var(--red); }
 
-        .alert-error {
-            background: var(--red-dim);
-            border: 1px solid rgba(248,113,113,.3);
-            color: var(--red);
-        }
-
-        /* ──────────── SECTION HEADER ──────────── */
+        /* ── SECTION HEADER ── */
         .section-header {
             display: flex;
             align-items: flex-start;
@@ -903,26 +804,11 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             flex-wrap: wrap;
         }
 
-        .section-title {
-            font-family: 'Syne', sans-serif;
-            font-weight: 700;
-            font-size: 22px;
-            color: var(--text-1);
-        }
+        .section-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 22px; color: var(--text-1); }
+        .section-subtitle { font-size: 13px; color: var(--text-3); margin-top: 2px; }
 
-        .section-subtitle {
-            font-size: 13px;
-            color: var(--text-3);
-            margin-top: 2px;
-        }
-
-        /* ──────────── STAT CARDS ──────────── */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 16px;
-            margin-bottom: 28px;
-        }
+        /* ── STAT CARDS ── */
+        .stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 16px; margin-bottom: 28px; }
 
         .stat-card {
             background: var(--surface);
@@ -934,61 +820,24 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             transition: var(--transition);
         }
 
-        .stat-card:hover {
-            border-color: var(--border-hover);
-            transform: translateY(-1px);
-        }
-
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 3px;
-        }
-
+        .stat-card:hover { border-color: var(--border-hover); transform: translateY(-1px); }
+        .stat-card::before { content:''; position:absolute; top:0; left:0; right:0; height:3px; }
         .stat-card.blue::before  { background: var(--accent); }
         .stat-card.green::before { background: var(--green); }
         .stat-card.amber::before { background: var(--amber); }
         .stat-card.red::before   { background: var(--red); }
 
-        .stat-icon {
-            width: 38px; height: 38px;
-            border-radius: var(--radius-sm);
-            display: flex; align-items: center; justify-content: center;
-            font-size: 18px;
-            margin-bottom: 14px;
-        }
-
+        .stat-icon { width:38px; height:38px; border-radius:var(--radius-sm); display:flex; align-items:center; justify-content:center; font-size:18px; margin-bottom:14px; }
         .stat-icon.blue  { background: var(--accent-dim); }
         .stat-icon.green { background: var(--green-dim); }
         .stat-icon.amber { background: var(--amber-dim); }
         .stat-icon.red   { background: var(--red-dim); }
 
-        .stat-value {
-            font-family: 'Syne', sans-serif;
-            font-weight: 800;
-            font-size: 28px;
-            color: var(--text-1);
-            line-height: 1;
-            margin-bottom: 6px;
-        }
+        .stat-value { font-family:'Syne',sans-serif; font-weight:800; font-size:28px; color:var(--text-1); line-height:1; margin-bottom:6px; }
+        .stat-label { font-size:12px; color:var(--text-3); font-weight:500; letter-spacing:.02em; text-transform:uppercase; }
 
-        .stat-label {
-            font-size: 12px;
-            color: var(--text-3);
-            font-weight: 500;
-            letter-spacing: .02em;
-            text-transform: uppercase;
-        }
-
-        /* ──────────── CARD ──────────── */
-        .card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            overflow: hidden;
-        }
-
+        /* ── CARD ── */
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
         .card + .card { margin-top: 20px; }
 
         .card-header {
@@ -999,38 +848,14 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             border-bottom: 1px solid var(--border);
         }
 
-        .card-title {
-            font-family: 'Syne', sans-serif;
-            font-weight: 700;
-            font-size: 15px;
-            color: var(--text-1);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        .card-title { font-family:'Syne',sans-serif; font-weight:700; font-size:15px; color:var(--text-1); display:flex; align-items:center; gap:8px; }
+        .card-body { padding: 22px; }
 
-        .card-body {
-            padding: 22px;
-        }
-
-        /* ──────────── FORM ELEMENTS ──────────── */
-        .form-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 16px;
-        }
-
-        .form-grid.cols-3 {
-            grid-template-columns: repeat(3, 1fr);
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .form-group.full { grid-column: 1 / -1; }
+        /* ── FORMS ── */
+        .form-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 16px; }
+        .form-grid.cols-3 { grid-template-columns: repeat(3,1fr); }
+        .form-group { display: flex; flex-direction: column; gap: 6px; }
+        .form-group.full { grid-column: 1/-1; }
 
         label {
             font-size: 12px;
@@ -1074,14 +899,9 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             padding-right: 36px;
         }
 
-        .form-actions {
-            display: flex;
-            gap: 10px;
-            margin-top: 20px;
-            flex-wrap: wrap;
-        }
+        .form-actions { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
 
-        /* ──────────── BUTTONS ──────────── */
+        /* ── BUTTONS ── */
         .btn {
             display: inline-flex;
             align-items: center;
@@ -1100,57 +920,22 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
 
         .btn:active { transform: scale(.97); }
 
-        .btn-primary {
-            background: var(--accent);
-            color: #fff;
-            box-shadow: 0 1px 8px var(--accent-glow);
-        }
+        .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 1px 8px var(--accent-glow); }
+        .btn-primary:hover { background: #6b93ff; box-shadow: 0 2px 14px var(--accent-glow); }
 
-        .btn-primary:hover {
-            background: #6b93ff;
-            box-shadow: 0 2px 14px var(--accent-glow);
-        }
+        .btn-ghost { background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
+        .btn-ghost:hover { background: var(--border); color: var(--text-1); }
 
-        .btn-ghost {
-            background: var(--surface-2);
-            color: var(--text-2);
-            border: 1px solid var(--border);
-        }
+        .btn-danger { background: var(--red-dim); color: var(--red); border: 1px solid rgba(248,113,113,.25); }
+        .btn-danger:hover { background: rgba(248,113,113,.22); }
 
-        .btn-ghost:hover {
-            background: var(--border);
-            color: var(--text-1);
-        }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
 
-        .btn-danger {
-            background: var(--red-dim);
-            color: var(--red);
-            border: 1px solid rgba(248,113,113,.25);
-        }
+        /* ── TABLE ── */
+        .table-wrap { overflow-x: auto; }
 
-        .btn-danger:hover {
-            background: rgba(248,113,113,.22);
-        }
-
-        .btn-sm {
-            padding: 6px 12px;
-            font-size: 12px;
-        }
-
-        /* ──────────── TABLE ──────────── */
-        .table-wrap {
-            overflow-x: auto;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13.5px;
-        }
-
-        thead tr {
-            border-bottom: 1px solid var(--border);
-        }
+        table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+        thead tr { border-bottom: 1px solid var(--border); }
 
         th {
             padding: 10px 16px;
@@ -1163,34 +948,14 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             white-space: nowrap;
         }
 
-        td {
-            padding: 13px 16px;
-            color: var(--text-2);
-            border-bottom: 1px solid var(--border);
-            vertical-align: middle;
-        }
-
+        td { padding: 13px 16px; color: var(--text-2); border-bottom: 1px solid var(--border); vertical-align: middle; }
         tbody tr:last-child td { border-bottom: none; }
+        tbody tr { transition: background .12s; }
+        tbody tr:hover { background: var(--surface-2); }
+        td.name-cell { color: var(--text-1); font-weight: 500; }
+        td .mono { font-family: 'Courier New', monospace; font-size: 13px; }
 
-        tbody tr {
-            transition: background .12s;
-        }
-
-        tbody tr:hover {
-            background: var(--surface-2);
-        }
-
-        td.name-cell {
-            color: var(--text-1);
-            font-weight: 500;
-        }
-
-        td .mono {
-            font-family: 'Courier New', monospace;
-            font-size: 13px;
-        }
-
-        /* ──────────── BADGES ──────────── */
+        /* ── BADGES ── */
         .badge {
             display: inline-flex;
             align-items: center;
@@ -1203,155 +968,69 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             text-transform: uppercase;
         }
 
-        .badge::before {
-            content: '';
-            width: 5px; height: 5px;
-            border-radius: 50%;
-        }
+        .badge::before { content:''; width:5px; height:5px; border-radius:50%; }
+        .badge-green  { background:var(--green-dim); color:var(--green); }
+        .badge-green::before  { background:var(--green); }
+        .badge-red    { background:var(--red-dim);   color:var(--red); }
+        .badge-red::before    { background:var(--red); }
+        .badge-amber  { background:var(--amber-dim); color:var(--amber); }
+        .badge-amber::before  { background:var(--amber); }
+        .badge-blue   { background:var(--accent-dim);color:var(--accent); }
+        .badge-blue::before   { background:var(--accent); }
+        .badge-gray   { background:var(--surface-2); color:var(--text-3); }
+        .badge-gray::before   { background:var(--text-3); }
 
-        .badge-green  { background: var(--green-dim); color: var(--green); }
-        .badge-green::before  { background: var(--green); }
+        /* ── MISC ── */
+        .divider { height:1px; background:var(--border); margin:20px 0; }
 
-        .badge-red    { background: var(--red-dim);   color: var(--red); }
-        .badge-red::before    { background: var(--red); }
+        .empty-state { text-align:center; padding:48px 24px; color:var(--text-3); }
+        .empty-icon  { font-size:36px; margin-bottom:12px; opacity:.5; }
+        .empty-state p { font-size:14px; }
 
-        .badge-amber  { background: var(--amber-dim); color: var(--amber); }
-        .badge-amber::before  { background: var(--amber); }
+        .two-col { display: grid; grid-template-columns: 380px 1fr; gap: 20px; align-items: start; }
 
-        .badge-blue   { background: var(--accent-dim);color: var(--accent); }
-        .badge-blue::before   { background: var(--accent); }
+        /* ── SESSION CHECKBOX LIST ── */
+        .session-list { display:flex; flex-direction:column; gap:8px; max-height:220px; overflow-y:auto; padding-right:4px; }
 
-        .badge-gray   { background: var(--surface-2); color: var(--text-3); }
-        .badge-gray::before   { background: var(--text-3); }
-
-        /* ──────────── DIVIDER ──────────── */
-        .divider {
-            height: 1px;
-            background: var(--border);
-            margin: 20px 0;
-        }
-
-        /* ──────────── EMPTY STATE ──────────── */
-        .empty-state {
-            text-align: center;
-            padding: 48px 24px;
-            color: var(--text-3);
-        }
-
-        .empty-icon {
-            font-size: 36px;
-            margin-bottom: 12px;
-            opacity: .5;
-        }
-
-        .empty-state p { font-size: 14px; }
-
-        /* ──────────── LAYOUT SPLIT ──────────── */
-        .two-col {
-            display: grid;
-            grid-template-columns: 380px 1fr;
-            gap: 20px;
-            align-items: start;
-        }
-
-        /* ──────────── SUMMARY TABLE ──────────── */
-        .summary-table td:first-child {
-            color: var(--text-3);
-            font-size: 12px;
-            font-weight: 600;
-            letter-spacing: .04em;
-            text-transform: uppercase;
-            width: 55%;
-        }
-
-        .summary-table td:last-child {
-            color: var(--text-1);
-            font-weight: 600;
-            font-size: 15px;
-        }
-
-        /* ──────────── EXPORT BUTTONS ──────────── */
-        .export-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-        }
-
-        .export-card {
+        .session-check-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
             background: var(--surface-2);
             border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 18px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
             transition: var(--transition);
         }
 
-        .export-card:hover {
-            border-color: var(--accent);
-            background: var(--accent-dim);
-        }
+        .session-check-label:hover { border-color: var(--accent); background: var(--accent-dim); }
+        .session-check-label input[type="checkbox"] { width:15px; height:15px; accent-color:var(--accent); flex-shrink:0; }
 
-        .export-card-title {
-            font-weight: 600;
-            font-size: 14px;
-            color: var(--text-1);
-        }
+        /* ── OVERLAY / MOBILE ── */
+        .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:150; }
 
-        .export-card-desc {
-            font-size: 12px;
-            color: var(--text-3);
-            line-height: 1.5;
-        }
-
-        /* ──────────── OVERLAY / MOBILE ──────────── */
-        .overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,.6);
-            z-index: 150;
-        }
-
-        /* ──────────── RESPONSIVE ──────────── */
-        @media (max-width: 1024px) {
-            .stats-grid  { grid-template-columns: repeat(2, 1fr); }
+        @media (max-width:1024px) {
+            .stats-grid  { grid-template-columns: repeat(2,1fr); }
             .two-col     { grid-template-columns: 1fr; }
             .form-grid   { grid-template-columns: 1fr; }
             .form-grid.cols-3 { grid-template-columns: 1fr 1fr; }
             .report-row  { grid-template-columns: 1fr !important; }
         }
 
-        @media (max-width: 768px) {
-            :root { --sidebar-w: 240px; }
-
-            .sidebar {
-                transform: translateX(-100%);
-            }
-
-            .sidebar.open {
-                transform: translateX(0);
-            }
-
+        @media (max-width:768px) {
+            .sidebar { transform: translateX(-100%); }
+            .sidebar.open { transform: translateX(0); }
             .overlay.active { display: block; }
-
             .menu-toggle { display: flex; }
-
             .main { margin-left: 0; }
-
             .content { padding: 16px; }
-
             .topbar { padding: 0 16px; }
-
             .stats-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
-
             .stat-value { font-size: 22px; }
-
-            .export-grid { grid-template-columns: 1fr; }
         }
 
-        @media (max-width: 480px) {
+        @media (max-width:480px) {
             .stats-grid { grid-template-columns: 1fr; }
             .form-grid.cols-3 { grid-template-columns: 1fr; }
         }
@@ -1361,7 +1040,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
 
 <div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 
-<!-- ──────────── SIDEBAR ──────────── -->
+<!-- ── SIDEBAR ── -->
 <div class="sidebar" id="sidebar">
     <div class="sidebar-brand">
         <div class="brand-icon">🏟️</div>
@@ -1374,7 +1053,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
     <nav class="sidebar-nav">
         <div class="nav-label">Main</div>
         <a href="?view=dashboard&period=<?php echo h($period); ?>"
-           class="nav-item <?php echo $active_view === 'dashboard' ? 'active' : ''; ?>">
+           class="nav-item <?php echo $active_view==='dashboard'?'active':''; ?>">
             <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <rect x="3" y="3" width="7" height="7" rx="1" stroke-width="2"/>
                 <rect x="14" y="3" width="7" height="7" rx="1" stroke-width="2"/>
@@ -1386,7 +1065,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
 
         <div class="nav-label">Management</div>
         <a href="?view=members&period=<?php echo h($period); ?>"
-           class="nav-item <?php echo $active_view === 'members' ? 'active' : ''; ?>">
+           class="nav-item <?php echo $active_view==='members'?'active':''; ?>">
             <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke-width="2" stroke-linecap="round"/>
                 <circle cx="9" cy="7" r="4" stroke-width="2"/>
@@ -1396,7 +1075,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         </a>
 
         <a href="?view=attendance&period=<?php echo h($period); ?>"
-           class="nav-item <?php echo $active_view === 'attendance' ? 'active' : ''; ?>">
+           class="nav-item <?php echo $active_view==='attendance'?'active':''; ?>">
             <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M9 11l3 3L22 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                 <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke-width="2" stroke-linecap="round"/>
@@ -1405,7 +1084,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         </a>
 
         <a href="?view=payments&period=<?php echo h($period); ?>"
-           class="nav-item <?php echo $active_view === 'payments' ? 'active' : ''; ?>">
+           class="nav-item <?php echo $active_view==='payments'?'active':''; ?>">
             <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <rect x="1" y="4" width="22" height="16" rx="2" stroke-width="2"/>
                 <path d="M1 10h22" stroke-width="2"/>
@@ -1415,7 +1094,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
 
         <div class="nav-label">Analytics</div>
         <a href="?view=reports&period=<?php echo h($period); ?>"
-           class="nav-item <?php echo $active_view === 'reports' ? 'active' : ''; ?>">
+           class="nav-item <?php echo $active_view==='reports'?'active':''; ?>">
             <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path d="M18 20V10M12 20V4M6 20v-6" stroke-width="2" stroke-linecap="round"/>
             </svg>
@@ -1434,10 +1113,9 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
     </div>
 </div>
 
-<!-- ──────────── MAIN ──────────── -->
+<!-- ── MAIN ── -->
 <div class="main">
 
-    <!-- TOPBAR -->
     <div class="topbar">
         <div class="topbar-left">
             <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Menu">
@@ -1447,13 +1125,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             </button>
             <span class="page-title">
                 <?php
-                $titles = [
-                    'dashboard'  => 'Dashboard',
-                    'members'    => 'Members',
-                    'attendance' => 'Attendance',
-                    'payments'   => 'Payments',
-                    'reports'    => 'Reports',
-                ];
+                $titles = ['dashboard'=>'Dashboard','members'=>'Members','attendance'=>'Attendance','payments'=>'Payments','reports'=>'Reports'];
                 echo h($titles[$active_view] ?? 'Dashboard');
                 ?>
             </span>
@@ -1463,17 +1135,16 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         </div>
     </div>
 
-    <!-- CONTENT -->
     <div class="content">
 
         <?php if ($message): ?>
-            <div class="alert <?php echo $message_type === 'error' ? 'alert-error' : 'alert-success'; ?>" id="alert-msg">
-                <?php echo $message_type === 'error' ? '⚠️' : '✅'; ?>
+            <div class="alert <?php echo $message_type==='error'?'alert-error':'alert-success'; ?>" id="alert-msg">
+                <?php echo $message_type==='error'?'⚠️':'✅'; ?>
                 <?php echo h($message); ?>
             </div>
         <?php endif; ?>
 
-        <!-- ═══════════════ DASHBOARD ═══════════════ -->
+        <!-- ═══════════ DASHBOARD ═══════════ -->
         <?php if ($active_view === 'dashboard'): ?>
             <?php $stats = get_dashboard_stats($pdo, $period); ?>
 
@@ -1525,7 +1196,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                 </div>
             </div>
 
-        <!-- ═══════════════ MEMBERS ═══════════════ -->
+        <!-- ═══════════ MEMBERS ═══════════ -->
         <?php elseif ($active_view === 'members'): ?>
 
             <div class="section-header">
@@ -1536,7 +1207,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             </div>
 
             <div class="two-col">
-                <!-- Form -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">
@@ -1574,7 +1244,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                     </div>
                 </div>
 
-                <!-- Table -->
                 <div class="card">
                     <div class="card-header" style="flex-wrap:wrap;gap:10px;">
                         <div class="card-title">
@@ -1618,8 +1287,8 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                                         <td class="mono">$<?php echo money($member['monthly_fee']); ?></td>
                                         <td class="mono">$<?php echo money($member['balance_remaining']); ?></td>
                                         <td>
-                                            <span class="badge <?php echo $member['is_active'] ? 'badge-green' : 'badge-gray'; ?>">
-                                                <?php echo $member['is_active'] ? 'Active' : 'Inactive'; ?>
+                                            <span class="badge <?php echo $member['is_active']?'badge-green':'badge-gray'; ?>">
+                                                <?php echo $member['is_active']?'Active':'Inactive'; ?>
                                             </span>
                                         </td>
                                         <td>
@@ -1639,7 +1308,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                 </div>
             </div>
 
-        <!-- ═══════════════ ATTENDANCE ═══════════════ -->
+        <!-- ═══════════ ATTENDANCE ═══════════ -->
         <?php elseif ($active_view === 'attendance'): ?>
 
             <div class="section-header">
@@ -1654,7 +1323,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             <div class="two-col">
                 <div style="display:flex;flex-direction:column;gap:20px;">
 
-                    <!-- Create Session -->
                     <div class="card">
                         <div class="card-header">
                             <div class="card-title">
@@ -1683,7 +1351,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                         </div>
                     </div>
 
-                    <!-- Log Attendance -->
                     <div class="card">
                         <div class="card-header">
                             <div class="card-title">
@@ -1740,7 +1407,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                     </div>
                 </div>
 
-                <!-- Sessions Table -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">
@@ -1793,7 +1459,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                 </div>
             </div>
 
-        <!-- ═══════════════ PAYMENTS ═══════════════ -->
+        <!-- ═══════════ PAYMENTS ═══════════ -->
         <?php elseif ($active_view === 'payments'): ?>
 
             <div class="section-header">
@@ -1804,7 +1470,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             </div>
 
             <div class="two-col">
-                <!-- Record Payment Form -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">
@@ -1839,7 +1504,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                     </div>
                 </div>
 
-                <!-- Billing Table -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">
@@ -1894,53 +1558,50 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                 </div>
             </div>
 
-        <!-- ═══════════════ REPORTS ═══════════════ -->
+        <!-- ═══════════ REPORTS ═══════════ -->
         <?php elseif ($active_view === 'reports'): ?>
 
             <?php
                 $stats   = get_dashboard_stats($pdo, $period);
                 $summary = get_monthly_summary($pdo, $period);
-                $pay     = $summary['payment'];
                 $att     = $summary['attendance'];
 
                 $total_records = max(1, (int)($att['total_records'] ?? 1));
-                $pct_present = $total_records > 0 ? round((($att['present_count'] ?? 0) / $total_records) * 100) : 0;
-                $pct_absent  = $total_records > 0 ? round((($att['absent_count']  ?? 0) / $total_records) * 100) : 0;
-                $pct_late    = $total_records > 0 ? round((($att['late_count']    ?? 0) / $total_records) * 100) : 0;
+                $pct_present   = $total_records > 0 ? round((($att['present_count'] ?? 0) / $total_records) * 100) : 0;
+                $pct_absent    = $total_records > 0 ? round((($att['absent_count']  ?? 0) / $total_records) * 100) : 0;
+                $pct_late      = $total_records > 0 ? round((($att['late_count']    ?? 0) / $total_records) * 100) : 0;
 
-                $total_bills = max(1, (int)($pay['total_bills'] ?? 1));
-                $pct_paid    = $total_bills > 0 ? round((($pay['paid_count']    ?? 0) / $total_bills) * 100) : 0;
-                $pct_partial = $total_bills > 0 ? round((($pay['partial_count'] ?? 0) / $total_bills) * 100) : 0;
-                $pct_unpaid  = $total_bills > 0 ? round((($pay['unpaid_count']  ?? 0) / $total_bills) * 100) : 0;
+                // Sessions for this period
+                $stmt = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date DESC");
+                $stmt->execute([$period]);
+                $period_sessions = $stmt->fetchAll();
 
-                $collection_rate = ((float)($pay['total_expected'] ?? 0)) > 0
-                    ? round(((float)($pay['total_paid'] ?? 0) / (float)$pay['total_expected']) * 100, 1)
-                    : 0;
+                // Latest session summary
+                $latest_session    = null;
+                $latest_attendance = [];
+                if (count($period_sessions) > 0) {
+                    $latest_session = $period_sessions[0];
+                    $stmt2 = $pdo->prepare("
+                        SELECT m.full_name, a.status
+                        FROM members m
+                        LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = ?
+                        WHERE m.is_active = TRUE
+                        ORDER BY m.full_name ASC
+                    ");
+                    $stmt2->execute([$latest_session['id']]);
+                    $latest_attendance = $stmt2->fetchAll();
+                }
             ?>
 
             <div class="section-header">
                 <div>
-                    <div class="section-title">Monthly Report</div>
-                    <div class="section-subtitle">Full overview for period <strong><?php echo h($period); ?></strong></div>
-                </div>
-                <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                    <form method="POST" style="margin:0;">
-                        <input type="hidden" name="action" value="export_csv">
-                        <input type="hidden" name="export_type" value="payment_report">
-                        <input type="hidden" name="period" value="<?php echo h($period); ?>">
-                        <button type="submit" class="btn btn-ghost btn-sm">📊 Export Payments</button>
-                    </form>
-                    <form method="POST" style="margin:0;">
-                        <input type="hidden" name="action" value="export_csv">
-                        <input type="hidden" name="export_type" value="attendance_report">
-                        <input type="hidden" name="period" value="<?php echo h($period); ?>">
-                        <button type="submit" class="btn btn-ghost btn-sm">📋 Export Attendance</button>
-                    </form>
+                    <div class="section-title">Reports</div>
+                    <div class="section-subtitle">Attendance analytics for <strong><?php echo h($period); ?></strong></div>
                 </div>
             </div>
 
-            <!-- ── Top KPIs ── -->
-            <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;">
+            <!-- KPI row (3 cards, no payment) -->
+            <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
                 <div class="stat-card blue">
                     <div class="stat-icon blue">👥</div>
                     <div class="stat-value"><?php echo $stats['active_members']; ?></div>
@@ -1952,21 +1613,122 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                     <div class="stat-label">Sessions Held</div>
                 </div>
                 <div class="stat-card amber">
-                    <div class="stat-icon amber">💰</div>
-                    <div class="stat-value">$<?php echo money($pay['total_paid'] ?? 0); ?></div>
-                    <div class="stat-label">Collected</div>
-                </div>
-                <div class="stat-card red">
-                    <div class="stat-icon red">⏳</div>
-                    <div class="stat-value"><?php echo $collection_rate; ?>%</div>
-                    <div class="stat-label">Collection Rate</div>
+                    <div class="stat-icon amber">✅</div>
+                    <div class="stat-value"><?php echo (int)($att['present_count'] ?? 0); ?></div>
+                    <div class="stat-label">Total Presences</div>
                 </div>
             </div>
 
-            <!-- ── Two summary cards side by side ── -->
+            <!-- Multi-session export + latest session summary -->
             <div class="report-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
 
-                <!-- Attendance Summary -->
+                <!-- Export card -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">📋 Export Attendance</div>
+                    </div>
+                    <div class="card-body">
+                        <?php if (count($period_sessions) > 0): ?>
+                        <form method="POST">
+                            <input type="hidden" name="action" value="export_csv">
+                            <input type="hidden" name="export_type" value="attendance_report">
+                            <input type="hidden" name="period" value="<?php echo h($period); ?>">
+
+                            <div style="margin-bottom:14px;">
+                                <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer;">
+                                    <input type="checkbox" id="selectAll" onchange="toggleAll(this)"
+                                           style="width:15px;height:15px;accent-color:var(--accent);">
+                                    <span style="font-size:12px;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Select All Sessions</span>
+                                </label>
+
+                                <div class="session-list">
+                                    <?php foreach ($period_sessions as $s): ?>
+                                    <label class="session-check-label">
+                                        <input type="checkbox" name="session_ids[]"
+                                               value="<?php echo $s['id']; ?>"
+                                               class="session-check">
+                                        <div>
+                                            <div style="font-size:13px;font-weight:600;color:var(--text-1);"><?php echo h($s['name']); ?></div>
+                                            <div style="font-size:11px;color:var(--text-3);"><?php echo h($s['date']); ?></div>
+                                        </div>
+                                    </label>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary" style="width:100%;">
+                                ⬇️ Download Selected as CSV
+                            </button>
+                        </form>
+                        <?php else: ?>
+                            <div class="empty-state"><div class="empty-icon">📅</div><p>No sessions this period.</p></div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- Latest session detail -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            🕐 Latest Session
+                            <?php if ($latest_session): ?>
+                                <span style="font-size:11px;font-weight:400;color:var(--text-3);margin-left:4px;">
+                                    <?php echo h($latest_session['name']); ?> · <?php echo h($latest_session['date']); ?>
+                                </span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <?php if ($latest_session && count($latest_attendance) > 0): ?>
+                        <?php
+                            $lp = count(array_filter($latest_attendance, fn($r) => $r['status'] === 'present'));
+                            $la = count(array_filter($latest_attendance, fn($r) => $r['status'] === 'absent'));
+                            $ll = count(array_filter($latest_attendance, fn($r) => $r['status'] === 'late'));
+                            $lu = count(array_filter($latest_attendance, fn($r) => $r['status'] === null));
+                        ?>
+                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:14px 16px;border-bottom:1px solid var(--border);">
+                            <div style="text-align:center;">
+                                <div style="font-size:22px;font-weight:800;color:var(--green);font-family:'Syne',sans-serif;"><?php echo $lp; ?></div>
+                                <div style="font-size:10px;color:var(--text-3);text-transform:uppercase;margin-top:2px;">Present</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:22px;font-weight:800;color:var(--red);font-family:'Syne',sans-serif;"><?php echo $la; ?></div>
+                                <div style="font-size:10px;color:var(--text-3);text-transform:uppercase;margin-top:2px;">Absent</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:22px;font-weight:800;color:var(--amber);font-family:'Syne',sans-serif;"><?php echo $ll + $lu; ?></div>
+                                <div style="font-size:10px;color:var(--text-3);text-transform:uppercase;margin-top:2px;">Late / —</div>
+                            </div>
+                        </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead><tr><th>Member</th><th>Status</th></tr></thead>
+                                <tbody>
+                                    <?php foreach ($latest_attendance as $row): ?>
+                                    <tr>
+                                        <td class="name-cell"><?php echo h($row['full_name']); ?></td>
+                                        <td>
+                                            <?php
+                                                $s  = $row['status'] ?? null;
+                                                $bc = $s === 'present' ? 'badge-green' : ($s === 'absent' ? 'badge-red' : ($s === 'late' ? 'badge-amber' : 'badge-gray'));
+                                            ?>
+                                            <span class="badge <?php echo $bc; ?>"><?php echo h($s ?? '—'); ?></span>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    <?php else: ?>
+                        <div class="empty-state"><div class="empty-icon">📅</div><p>No sessions recorded yet for this period.</p></div>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <!-- Attendance overview + top attenders -->
+            <div class="report-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+
+                <!-- Attendance overview -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">
@@ -1979,7 +1741,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                         <span class="badge badge-blue"><?php echo h($period); ?></span>
                     </div>
                     <div class="card-body">
-                        <!-- Numbers row -->
                         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
                             <div style="text-align:center;background:var(--green-dim);border:1px solid rgba(45,212,160,.2);border-radius:var(--radius);padding:14px 10px;">
                                 <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--green);"><?php echo (int)($att['present_count'] ?? 0); ?></div>
@@ -1995,7 +1756,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                             </div>
                         </div>
 
-                        <!-- Progress bars -->
                         <?php foreach ([
                             ['Present', $pct_present, 'var(--green)'],
                             ['Absent',  $pct_absent,  'var(--red)'],
@@ -2019,74 +1779,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                     </div>
                 </div>
 
-                <!-- Payment Summary -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <rect x="1" y="4" width="22" height="16" rx="2" stroke-width="2"/>
-                                <path d="M1 10h22" stroke-width="2"/>
-                            </svg>
-                            Payment Overview
-                        </div>
-                        <span class="badge badge-blue"><?php echo h($period); ?></span>
-                    </div>
-                    <div class="card-body">
-                        <!-- Numbers row -->
-                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
-                            <div style="text-align:center;background:var(--green-dim);border:1px solid rgba(45,212,160,.2);border-radius:var(--radius);padding:14px 10px;">
-                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--green);"><?php echo (int)($pay['paid_count'] ?? 0); ?></div>
-                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Paid</div>
-                            </div>
-                            <div style="text-align:center;background:var(--amber-dim);border:1px solid rgba(245,158,11,.2);border-radius:var(--radius);padding:14px 10px;">
-                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--amber);"><?php echo (int)($pay['partial_count'] ?? 0); ?></div>
-                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Partial</div>
-                            </div>
-                            <div style="text-align:center;background:var(--red-dim);border:1px solid rgba(248,113,113,.2);border-radius:var(--border));border-radius:var(--radius);padding:14px 10px;">
-                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--red);"><?php echo (int)($pay['unpaid_count'] ?? 0); ?></div>
-                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Unpaid</div>
-                            </div>
-                        </div>
-
-                        <!-- Progress bars -->
-                        <?php foreach ([
-                            ['Paid',    $pct_paid,    'var(--green)'],
-                            ['Partial', $pct_partial, 'var(--amber)'],
-                            ['Unpaid',  $pct_unpaid,  'var(--red)'],
-                        ] as [$label, $pct, $color]): ?>
-                        <div style="margin-bottom:12px;">
-                            <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
-                                <span style="font-size:12px;color:var(--text-3);"><?php echo $label; ?></span>
-                                <span style="font-size:12px;font-weight:700;color:var(--text-2);"><?php echo $pct; ?>%</span>
-                            </div>
-                            <div style="height:6px;background:var(--surface-2);border-radius:100px;overflow:hidden;">
-                                <div style="height:100%;width:<?php echo $pct; ?>%;background:<?php echo $color; ?>;border-radius:100px;transition:width .6s ease;"></div>
-                            </div>
-                        </div>
-                        <?php endforeach; ?>
-
-                        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
-                            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-                                <span style="font-size:12px;color:var(--text-3);">Total expected</span>
-                                <span style="font-size:13px;font-weight:700;color:var(--text-1);">$<?php echo money($pay['total_expected'] ?? 0); ?></span>
-                            </div>
-                            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-                                <span style="font-size:12px;color:var(--text-3);">Total collected</span>
-                                <span style="font-size:13px;font-weight:700;color:var(--green);">$<?php echo money($pay['total_paid'] ?? 0); ?></span>
-                            </div>
-                            <div style="display:flex;justify-content:space-between;">
-                                <span style="font-size:12px;color:var(--text-3);">Still outstanding</span>
-                                <span style="font-size:13px;font-weight:700;color:var(--red);">$<?php echo money($pay['total_remaining'] ?? 0); ?></span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- ── Bottom detail tables ── -->
-            <div class="report-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
-
-                <!-- Top Attenders -->
+                <!-- Top attenders -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">🏅 Top Attenders</div>
@@ -2096,18 +1789,12 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                         <?php if (count($summary['top_attenders']) > 0): ?>
                         <table>
                             <thead>
-                                <tr>
-                                    <th>#</th>
-                                    <th>Member</th>
-                                    <th>Present</th>
-                                    <th>Absent</th>
-                                    <th>Late</th>
-                                </tr>
+                                <tr><th>#</th><th>Member</th><th>Present</th><th>Absent</th><th>Late</th></tr>
                             </thead>
                             <tbody>
                                 <?php foreach ($summary['top_attenders'] as $i => $row): ?>
                                 <tr>
-                                    <td style="color:var(--text-3);font-size:12px;"><?php echo $i + 1; ?></td>
+                                    <td style="color:var(--text-3);font-size:12px;"><?php echo $i+1; ?></td>
                                     <td class="name-cell"><?php echo h($row['full_name']); ?></td>
                                     <td><span class="badge badge-green"><?php echo (int)$row['present']; ?></span></td>
                                     <td><span class="badge badge-red"><?php echo (int)$row['absent']; ?></span></td>
@@ -2118,40 +1805,6 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                         </table>
                         <?php else: ?>
                             <div class="empty-state"><div class="empty-icon">📅</div><p>No attendance data for this period.</p></div>
-                        <?php endif; ?>
-                    </div>
-                </div>
-
-                <!-- Outstanding Payments -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">⚠️ Unpaid / Partial</div>
-                        <span class="badge badge-red">needs attention</span>
-                    </div>
-                    <div class="table-wrap">
-                        <?php if (count($summary['unpaid_members']) > 0): ?>
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Member</th>
-                                    <th>Expected</th>
-                                    <th>Paid</th>
-                                    <th>Remaining</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($summary['unpaid_members'] as $row): ?>
-                                <tr>
-                                    <td class="name-cell"><?php echo h($row['full_name']); ?></td>
-                                    <td class="mono">$<?php echo money($row['expected_amount']); ?></td>
-                                    <td class="mono">$<?php echo money($row['paid_amount'] ?? 0); ?></td>
-                                    <td><span class="badge badge-red">$<?php echo money($row['remaining']); ?></span></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                        <?php else: ?>
-                            <div class="empty-state"><div class="empty-icon">🎉</div><p>All bills are settled for this period!</p></div>
                         <?php endif; ?>
                     </div>
                 </div>
@@ -2180,14 +1833,28 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         const rows = document.querySelectorAll('#membersTable tbody tr');
         let visible = 0;
         rows.forEach(row => {
-            const text = row.textContent.toLowerCase();
-            const show = !q || text.includes(q);
+            const show = !q || row.textContent.toLowerCase().includes(q);
             row.style.display = show ? '' : 'none';
             if (show) visible++;
         });
         const badge = document.getElementById('memberCount');
         if (badge) badge.textContent = visible + ' ' + (q ? 'found' : 'total');
     }
+
+    // Select-all sessions checkboxes
+    function toggleAll(cb) {
+        document.querySelectorAll('.session-check').forEach(c => c.checked = cb.checked);
+    }
+
+    // Keep select-all in sync if individual boxes change
+    document.addEventListener('change', function(e) {
+        if (e.target.classList.contains('session-check')) {
+            const all  = document.querySelectorAll('.session-check');
+            const chkd = document.querySelectorAll('.session-check:checked');
+            const sa   = document.getElementById('selectAll');
+            if (sa) sa.checked = all.length === chkd.length;
+        }
+    });
 
     // Mobile sidebar
     function toggleSidebar() {
