@@ -1,69 +1,116 @@
 <?php
+/**
+ * INTEGRATED ACADEMY MANAGEMENT SYSTEM (AMS)
+ * Single PHP File - Complete Sports Club Management Platform
+ * 
+ * Features:
+ * - Member Management (CRUD operations)
+ * - Session-Based Attendance Tracking
+ * - Automated Financial Ledgering
+ * - Payment Recording & Tracking
+ * - Comprehensive Reporting (CSV Export)
+ * - Role-Based Access Control (Admin/Coach)
+ * - Cyberpunk Design System
+ * 
+ * Database: PostgreSQL/MySQL
+ * Schema: schema1.sql
+ */
+
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+session_start();
 
-function db() {
+// ============ DATABASE CONNECTION ============
+
+function getDatabase() {
     $databaseUrl = getenv("DATABASE_URL");
-    if (!$databaseUrl) die("DATABASE_URL is missing.");
+    if (!$databaseUrl) {
+        die("ERROR: DATABASE_URL environment variable is not set. Please configure Neon PostgreSQL connection string.");
+    }
 
-    $url = parse_url($databaseUrl);
-    $port = $url['port'] ?? 5432;
-    $dsn = "pgsql:host={$url['host']};port={$port};dbname=" . ltrim($url['path'], '/') . ";sslmode=require";
-
-    return new PDO($dsn, $url['user'], $url['pass'], [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-    ]);
+    try {
+        // Parse Neon PostgreSQL connection string
+        // Format: postgresql://user:password@host/dbname?sslmode=require
+        $url = parse_url($databaseUrl);
+        $host = $url['host'] ?? 'localhost';
+        $port = $url['port'] ?? 5432;
+        $dbname = ltrim($url['path'], '/');
+        $user = $url['user'] ?? 'postgres';
+        $pass = $url['pass'] ?? '';
+        
+        // Build PostgreSQL DSN
+        $dsn = "pgsql:host={$host};port={$port};dbname={$dbname};sslmode=require";
+        
+        $pdo = new PDO($dsn, $user, $pass, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+        ]);
+        return $pdo;
+    } catch (PDOException $e) {
+        die("Database connection failed: " . $e->getMessage() . "\n\nMake sure your DATABASE_URL is set correctly for Neon PostgreSQL.");
+    }
 }
 
-function h($v){ return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
-function js($v){ return json_encode($v, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT); }
-function money($v){ return 'RWF ' . number_format((float)$v, 0); }
-function current_period(){ return date('Y-m'); }
-function valid_period($p){ return preg_match('/^\d{4}-\d{2}$/', (string)$p) ? $p : current_period(); }
-function valid_view($v){ return in_array($v, ['dashboard','attendance','payments','members','reports'], true) ? $v : 'dashboard'; }
-function redirect_app($period, $session = '', $view = 'dashboard'){
+$pdo = getDatabase();
+
+// ============ UTILITY FUNCTIONS ============
+
+function h($v) { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
+function js($v) { return json_encode($v, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_AMP|JSON_HEX_QUOT); }
+function money($v) { return number_format((float)$v, 2); }
+function current_period() { return date('Y-m'); }
+function valid_period($p) { return preg_match('/^\d{4}-\d{2}$/', (string)$p) ? $p : current_period(); }
+function valid_view($v) { return in_array($v, ['dashboard','attendance','payments','members','reports'], true) ? $v : 'dashboard'; }
+
+function redirect_app($period, $view = 'dashboard', $msg = '') {
     $url = 'index.php?period=' . urlencode(valid_period($period)) . '&view=' . urlencode(valid_view($view));
-    if ($session !== '' && $session !== null) $url .= '&session=' . urlencode((string)$session);
+    if ($msg) $url .= '&msg=' . urlencode($msg);
     header("Location: $url");
     exit;
 }
-function due_date_from_day($period,$day){
-    $day=max(1,min(31,(int)$day));
-    $last=(int)date('t',strtotime($period.'-01'));
-    return $period.'-'.str_pad(min($day,$last),2,'0',STR_PAD_LEFT);
+
+function due_date_from_day($period, $day) {
+    $day = max(1, min(31, (int)$day));
+    $last = (int)date('t', strtotime($period . '-01'));
+    return $period . '-' . str_pad(min($day, $last), 2, '0', STR_PAD_LEFT);
 }
-function remaining_amount($expected,$paid,$manual){
-    if ($manual !== null && $manual !== '') return max(0,(float)$manual);
-    return max(0,(float)$expected-(float)$paid);
+
+function remaining_amount($expected, $paid, $manual) {
+    if ($manual !== null && $manual !== '') return max(0, (float)$manual);
+    return max(0, (float)$expected - (float)$paid);
 }
-function bill_status($expected,$paid,$remaining){
+
+function bill_status($expected, $paid, $remaining) {
     if ((float)$expected <= 0) return 'NO BILL';
     if ((float)$remaining <= 0 && (float)$paid > 0) return 'PAID';
     if ((float)$paid > 0 && (float)$remaining > 0) return 'PARTIAL';
     return 'UNPAID';
 }
-function overdue_days($due,$status){
-    if (in_array($status,['PAID','NO BILL'],true)) return 0;
-    $today=new DateTime(date('Y-m-d'));
-    $d=new DateTime($due);
+
+function overdue_days($due, $status) {
+    if (in_array($status, ['PAID', 'NO BILL'], true)) return 0;
+    $today = new DateTime(date('Y-m-d'));
+    $d = new DateTime($due);
     return $today > $d ? (int)$d->diff($today)->days : 0;
 }
-function is_true($v){
-    return $v === true || $v === 1 || $v === '1' || $v === 't' || $v === 'true';
-}
 
-function ensure_schema($pdo){
+// ============ SCHEMA INITIALIZATION ============
+
+function ensure_schema($pdo) {
+    // PostgreSQL schema initialization
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS members(
             id SERIAL PRIMARY KEY,
-            full_name TEXT NOT NULL,
+            full_name VARCHAR(255) NOT NULL UNIQUE,
             phone TEXT,
             default_monthly_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-            default_due_day INTEGER NOT NULL DEFAULT 5,
+            default_due_day INT NOT NULL DEFAULT 5,
             monthly_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-            due_day INTEGER NOT NULL DEFAULT 5,
-            is_active BOOLEAN NOT NULL DEFAULT TRUE
+            due_day INT NOT NULL DEFAULT 5,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            next_due_date DATE NOT NULL,
+            balance_remaining NUMERIC(12,2) NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS sessions(
@@ -74,14 +121,16 @@ function ensure_schema($pdo){
 
         CREATE TABLE IF NOT EXISTS attendance(
             id SERIAL PRIMARY KEY,
-            session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-            member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+            session_id INT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            member_id INT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+            status VARCHAR(20) DEFAULT 'present',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(session_id, member_id)
         );
 
         CREATE TABLE IF NOT EXISTS monthly_bills(
             id SERIAL PRIMARY KEY,
-            member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+            member_id INT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
             period CHAR(7) NOT NULL,
             expected_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
             paid_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
@@ -89,722 +138,1119 @@ function ensure_schema($pdo){
             due_date DATE NOT NULL,
             paid_at TIMESTAMP,
             note TEXT,
-            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(member_id, period)
+        );
+
+        CREATE TABLE IF NOT EXISTS payment_logs(
+            id SERIAL PRIMARY KEY,
+            member_id INT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+            payment_date DATE NOT NULL,
+            due_date_before DATE NOT NULL,
+            next_due_date_after DATE NOT NULL,
+            amount_due NUMERIC(12,2) NOT NULL DEFAULT 0,
+            amount_paid NUMERIC(12,2) NOT NULL DEFAULT 0,
+            remaining_after NUMERIC(12,2) NOT NULL DEFAULT 0,
+            advanced_cycle BOOLEAN DEFAULT TRUE,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS payments(
+            id SERIAL PRIMARY KEY,
+            member_id INT,
+            amount NUMERIC(10,2) NOT NULL,
+            due_date DATE NOT NULL,
+            status VARCHAR(20) DEFAULT 'unpaid',
+            paid_at TIMESTAMP,
+            period CHAR(7) NOT NULL,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE INDEX IF NOT EXISTS idx_bills_period ON monthly_bills(period);
         CREATE INDEX IF NOT EXISTS idx_attendance_member ON attendance(member_id);
         CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
+        CREATE INDEX IF NOT EXISTS idx_payment_logs_member ON payment_logs(member_id);
+        CREATE INDEX IF NOT EXISTS idx_payments_period ON payments(period);
     ");
 }
 
-function billing_rows($pdo,$period){
-    $stmt=$pdo->prepare("
+ensure_schema($pdo);
+
+// ============ MEMBER OPERATIONS ============
+
+function get_all_members($pdo) {
+    $stmt = $pdo->query("SELECT * FROM members ORDER BY full_name ASC");
+    return $stmt->fetchAll();
+}
+
+function get_active_members($pdo) {
+    $stmt = $pdo->query("SELECT * FROM members WHERE is_active = TRUE ORDER BY full_name ASC");
+    return $stmt->fetchAll();
+}
+
+function get_member($pdo, $id) {
+    $stmt = $pdo->prepare("SELECT * FROM members WHERE id = ?");
+    $stmt->execute([$id]);
+    return $stmt->fetch();
+}
+
+function create_member($pdo, $data) {
+    $nextDueDate = date('Y-m-d', strtotime('+1 month', strtotime(date('Y-m-01'))));
+    $stmt = $pdo->prepare("        INSERT INTO members (full_name, phone, monthly_fee, due_day, default_monthly_fee, default_due_day, next_due_date, balance_remaining)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    ");
+    return $stmt->execute([
+        $data['full_name'],
+        $data['phone'] ?? null,
+        $data['monthly_fee'] ?? 0,
+        $data['due_day'] ?? 5,
+        $data['monthly_fee'] ?? 0,
+        $data['due_day'] ?? 5,
+        $nextDueDate,
+        $data['monthly_fee'] ?? 0
+    ]);
+}
+
+function update_member($pdo, $id, $data) {
+    $stmt = $pdo->prepare("
+        UPDATE members SET full_name = ?, phone = ?, monthly_fee = ?, due_day = ? WHERE id = ?
+    ");
+    return $stmt->execute([
+        $data['full_name'],
+        $data['phone'] ?? null,
+        $data['monthly_fee'] ?? 0,
+        $data['due_day'] ?? 5,
+        $id
+    ]);
+}
+
+function deactivate_member($pdo, $id) {
+    $stmt = $pdo->prepare("UPDATE members SET is_active = FALSE WHERE id = ?");
+    return $stmt->execute([$id]);
+}
+
+// ============ SESSION OPERATIONS ============
+
+function get_all_sessions($pdo) {
+    $stmt = $pdo->query("SELECT * FROM sessions ORDER BY date DESC");
+    return $stmt->fetchAll();
+}
+
+function create_session($pdo, $name, $date) {
+    $stmt = $pdo->prepare("INSERT INTO sessions (name, date) VALUES (?, ?)");
+    return $stmt->execute([$name, $date]);
+}
+
+function delete_session($pdo, $id) {
+    $stmt = $pdo->prepare("DELETE FROM sessions WHERE id = ?");
+    return $stmt->execute([$id]);
+}
+
+// ============ ATTENDANCE OPERATIONS ============
+
+function log_attendance($pdo, $session_id, $member_id, $status = 'present') {
+    $stmt = $pdo->prepare("        INSERT INTO attendance (session_id, member_id, status) VALUES ($1, $2, $3)
+        ON CONFLICT (session_id, member_id) DO UPDATE SET status = $3
+    ");
+    return $stmt->execute([$session_id, $member_id, $status]);
+}
+
+function get_attendance_by_session($pdo, $session_id) {
+    $stmt = $pdo->prepare("SELECT * FROM attendance WHERE session_id = ?");
+    $stmt->execute([$session_id]);
+    return $stmt->fetchAll();
+}
+
+function get_attendance_by_member($pdo, $member_id) {
+    $stmt = $pdo->prepare("
+        SELECT a.*, s.name, s.date FROM attendance a
+        JOIN sessions s ON s.id = a.session_id
+        WHERE a.member_id = ? ORDER BY s.date DESC
+    ");
+    $stmt->execute([$member_id]);
+    return $stmt->fetchAll();
+}
+
+// ============ BILLING OPERATIONS ============
+
+function billing_rows($pdo, $period) {
+    $stmt = $pdo->prepare("
         SELECT m.*, b.expected_amount, b.paid_amount, b.manual_remaining_amount,
                b.due_date, b.paid_at, b.note
         FROM members m
-        LEFT JOIN monthly_bills b ON b.member_id=m.id AND b.period=?
+        LEFT JOIN monthly_bills b ON b.member_id = m.id AND b.period = ?
         ORDER BY m.full_name ASC
     ");
     $stmt->execute([$period]);
-    $rows=[];
+    $rows = [];
 
-    foreach($stmt->fetchAll() as $r){
+    foreach ($stmt->fetchAll() as $r) {
         $expected = $r['expected_amount'] !== null ? (float)$r['expected_amount'] : (float)$r['default_monthly_fee'];
         $paid = $r['paid_amount'] !== null ? (float)$r['paid_amount'] : 0;
-        $due = $r['due_date'] ?: due_date_from_day($period,$r['default_due_day']);
-        $remaining = remaining_amount($expected,$paid,$r['manual_remaining_amount']);
-        $status = bill_status($expected,$paid,$remaining);
+        $due = $r['due_date'] ?: due_date_from_day($period, $r['default_due_day']);
+        $remaining = remaining_amount($expected, $paid, $r['manual_remaining_amount']);
+        $status = bill_status($expected, $paid, $remaining);
 
-        $r['effective_expected']=$expected;
-        $r['effective_paid']=$paid;
-        $r['effective_due_date']=$due;
-        $r['effective_remaining']=$remaining;
-        $r['effective_status']=$status;
-        $r['overdue_days']=overdue_days($due,$status);
-        $rows[]=$r;
+        $r['effective_expected'] = $expected;
+        $r['effective_paid'] = $paid;
+        $r['effective_due_date'] = $due;
+        $r['effective_remaining'] = $remaining;
+        $r['effective_status'] = $status;
+        $r['overdue_days'] = overdue_days($due, $status);
+        $rows[] = $r;
     }
     return $rows;
 }
 
-function csv_headers($name){
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename="'.$name.'"');
-}
-
-try{
-    $pdo=db();
-    ensure_schema($pdo);
-
-    $period=valid_period($_GET['period'] ?? current_period());
-    $active_view=valid_view($_GET['view'] ?? 'dashboard');
-
-    if(isset($_GET['export_type'])){
-        $type=$_GET['export_type'];
-
-        if(in_array($type,['payment_report','debtors_report','full_summary'],true)){
-            csv_headers($type.'_'.$period.'.csv');
-            $out=fopen('php://output','w');
-            fputcsv($out,['Athlete','Phone','Period','Expected','Paid','Remaining','Due Date','Status','Overdue Days','Note']);
-
-            foreach(billing_rows($pdo,$period) as $r){
-                if($type==='debtors_report' && !in_array($r['effective_status'],['UNPAID','PARTIAL'],true)) continue;
-                fputcsv($out,[$r['full_name'],$r['phone'],$period,$r['effective_expected'],$r['effective_paid'],$r['effective_remaining'],$r['effective_due_date'],$r['effective_status'],$r['overdue_days'],$r['note']]);
-            }
-            exit;
-        }
-
-        if($type==='monthly_attendance_report'){
-            csv_headers('monthly_attendance_'.$period.'.csv');
-            $out=fopen('php://output','w');
-            fputcsv($out,['Athlete','Period','Times Attended']);
-
-            $stmt=$pdo->prepare("
-                SELECT m.full_name, COUNT(DISTINCT a.session_id) AS total
-                FROM members m
-                LEFT JOIN attendance a ON a.member_id=m.id
-                LEFT JOIN sessions s ON s.id=a.session_id
-                WHERE m.is_active=TRUE
-                  AND (s.id IS NULL OR TO_CHAR(s.date,'YYYY-MM')=?)
-                GROUP BY m.id,m.full_name
-                ORDER BY total DESC,m.full_name ASC
-            ");
-            $stmt->execute([$period]);
-            while($row=$stmt->fetch()) fputcsv($out,[$row['full_name'],$period,$row['total']]);
-            exit;
-        }
-
-        if($type==='two_session_report'){
-            $sid1=(int)($_GET['sid1'] ?? 0);
-            $sid2=(int)($_GET['sid2'] ?? 0);
-            if($sid1 <= 0 || $sid2 <= 0 || $sid1 === $sid2) die('Choose two different sessions.');
-
-            $stmt=$pdo->prepare("SELECT id,name,date FROM sessions WHERE id IN (?,?) ORDER BY date ASC,id ASC");
-            $stmt->execute([$sid1,$sid2]);
-            $picked=$stmt->fetchAll();
-            if(count($picked) < 2) die('One of the selected sessions was not found.');
-
-            $sessionNames=[];
-            foreach($picked as $ss){
-                $sessionNames[(int)$ss['id']]=$ss['date'].' - '.$ss['name'];
-            }
-
-            csv_headers('two_session_attendance_'.$sid1.'_and_'.$sid2.'.csv');
-            $out=fopen('php://output','w');
-            fputcsv($out,['Athlete','Phone','Session 1','Session 1 Status','Session 2','Session 2 Status','Times Attended','Overall']);
-
-            $stmt=$pdo->prepare("
-                SELECT
-                    m.id,
-                    m.full_name,
-                    m.phone,
-                    MAX(CASE WHEN a.session_id=? THEN 1 ELSE 0 END) AS attended_s1,
-                    MAX(CASE WHEN a.session_id=? THEN 1 ELSE 0 END) AS attended_s2,
-                    COUNT(DISTINCT CASE WHEN a.session_id IN (?,?) THEN a.session_id END) AS total_attended
-                FROM members m
-                LEFT JOIN attendance a ON a.member_id=m.id AND a.session_id IN (?,?)
-                WHERE m.is_active=TRUE
-                GROUP BY m.id,m.full_name,m.phone
-                ORDER BY total_attended DESC,m.full_name ASC
-            ");
-            $stmt->execute([$sid1,$sid2,$sid1,$sid2,$sid1,$sid2]);
-            while($row=$stmt->fetch()){
-                $s1=(int)$row['attended_s1']===1 ? 'PRESENT':'ABSENT';
-                $s2=(int)$row['attended_s2']===1 ? 'PRESENT':'ABSENT';
-                $total=(int)$row['total_attended'];
-                $overall=$total===2 ? 'ATTENDED BOTH' : ($total===1 ? 'ATTENDED ONE':'MISSED BOTH');
-                fputcsv($out,[$row['full_name'],$row['phone'],$sessionNames[$sid1] ?? $sid1,$s1,$sessionNames[$sid2] ?? $sid2,$s2,$total,$overall]);
-            }
-            exit;
-        }
-
-        if($type==='manager_summary'){
-            $rows=array_filter(billing_rows($pdo,$period),fn($r)=>is_true($r['is_active']));
-            $expected=$paid=$remaining=$paidCount=$partialCount=$unpaidCount=$overdueCount=0;
-
-            foreach($rows as $r){
-                $expected += $r['effective_expected'];
-                $paid += $r['effective_paid'];
-                $remaining += $r['effective_remaining'];
-                if($r['effective_status']==='PAID') $paidCount++;
-                if($r['effective_status']==='PARTIAL') $partialCount++;
-                if($r['effective_status']==='UNPAID') $unpaidCount++;
-                if($r['overdue_days']>0) $overdueCount++;
-            }
-
-            csv_headers('manager_summary_'.$period.'.csv');
-            $out=fopen('php://output','w');
-            foreach([
-                ['Period',$period],
-                ['Active members',count($rows)],
-                ['Expected income',$expected],
-                ['Collected income',$paid],
-                ['Remaining balance',$remaining],
-                ['Paid members',$paidCount],
-                ['Partial members',$partialCount],
-                ['Unpaid members',$unpaidCount],
-                ['Overdue members',$overdueCount],
-            ] as $line) fputcsv($out,$line);
-            exit;
-        }
-
-        if($type==='filtered_status'){
-            $sid=(int)($_GET['sid'] ?? 0);
-            $status=($_GET['status'] ?? 'PRESENT') === 'ABSENT' ? 'ABSENT':'PRESENT';
-            csv_headers('session_'.strtolower($status).'.csv');
-            $out=fopen('php://output','w');
-            fputcsv($out,['Athlete']);
-
-            $sql=$status==='PRESENT'
-                ? "SELECT m.full_name FROM members m JOIN attendance a ON a.member_id=m.id WHERE a.session_id=? ORDER BY m.full_name"
-                : "SELECT m.full_name FROM members m WHERE m.is_active=TRUE AND m.id NOT IN (SELECT member_id FROM attendance WHERE session_id=?) ORDER BY m.full_name";
-
-            $stmt=$pdo->prepare($sql);
-            $stmt->execute([$sid]);
-            while($row=$stmt->fetch()) fputcsv($out,[$row['full_name']]);
-            exit;
-        }
-    }
-
-    if($_SERVER['REQUEST_METHOD']==='POST'){
-        $posted_period=valid_period($_POST['period'] ?? $period);
-        $posted_session=$_POST['sid'] ?? ($_POST['session'] ?? ($_GET['session'] ?? ''));
-        $posted_view=valid_view($_POST['view'] ?? ($_GET['view'] ?? 'dashboard'));
-
-        if(isset($_POST['save_athlete'])){
-            $name=trim($_POST['full_name'] ?? '');
-            if($name !== ''){
-                $phone=trim($_POST['phone'] ?? '');
-                $feeRaw=trim((string)($_POST['default_monthly_fee'] ?? ''));
-                $dayRaw=trim((string)($_POST['default_due_day'] ?? ''));
-                $fee=$feeRaw === '' ? 0 : (float)$feeRaw;
-                $day=$dayRaw === '' ? 5 : (int)$dayRaw;
-
-                $pdo->prepare("
-                    INSERT INTO members(full_name,phone,default_monthly_fee,default_due_day,monthly_fee,due_day)
-                    VALUES(?,?,?,?,?,?)
-                ")->execute([$name,$phone,$fee,$day,$fee,$day]);
-            }
-            redirect_app($posted_period, $posted_session, 'members');
-        }
-
-        if(isset($_POST['update_athlete'])){
-            $fee=(float)($_POST['default_monthly_fee'] ?? 0);
-            $day=(int)($_POST['default_due_day'] ?? 5);
-            $pdo->prepare("
-                UPDATE members SET full_name=?, phone=?, default_monthly_fee=?, default_due_day=?, monthly_fee=?, due_day=?, is_active=?
-                WHERE id=?
-            ")->execute([
-                trim($_POST['full_name']),
-                trim($_POST['phone'] ?? ''),
-                $fee,$day,$fee,$day,
-                isset($_POST['is_active']) ? 1 : 0,
-                (int)$_POST['mid']
-            ]);
-            redirect_app($posted_period, $posted_session, 'members');
-        }
-
-        if(isset($_POST['delete_athlete'])){
-            $pdo->prepare("DELETE FROM members WHERE id=?")->execute([(int)$_POST['mid']]);
-            redirect_app($posted_period, $posted_session, 'members');
-        }
-
-        if(isset($_POST['save_session'])){
-            $sname=trim($_POST['s_name'] ?? '');
-            $sdate=$_POST['s_date'] ?? date('Y-m-d');
-            if($sname !== ''){
-                $stmt=$pdo->prepare("INSERT INTO sessions(name,date) VALUES(?,?) RETURNING id");
-                $stmt->execute([$sname,$sdate]);
-                $posted_session=$stmt->fetchColumn();
-            }
-            redirect_app($posted_period, $posted_session, 'attendance');
-        }
-
-        if(isset($_POST['mark'])){
-            $pdo->prepare("INSERT INTO attendance(session_id,member_id) VALUES(?,?) ON CONFLICT DO NOTHING")
-                ->execute([(int)$_POST['sid'],(int)$_POST['mid']]);
-            redirect_app($posted_period, $_POST['sid'], 'attendance');
-        }
-
-        if(isset($_POST['clear_attendance'])){
-            $pdo->prepare("DELETE FROM attendance WHERE session_id=? AND member_id=?")
-                ->execute([(int)$_POST['sid'],(int)$_POST['mid']]);
-            redirect_app($posted_period, $_POST['sid'], 'attendance');
-        }
-
-        if(isset($_POST['save_bill'])){
-            $expected=(float)($_POST['expected_amount'] ?? 0);
-            $paid=(float)($_POST['paid_amount'] ?? 0);
-            $manualRaw=trim((string)($_POST['manual_remaining_amount'] ?? ''));
-            $manual=$manualRaw==='' ? null : (float)$manualRaw;
-            $p=valid_period($_POST['period'] ?? $period);
-            $due=$_POST['due_date'] ?: due_date_from_day($p,5);
-            $finalRemaining=remaining_amount($expected,$paid,$manual);
-            $paidAt=($finalRemaining<=0 && $paid>0) ? date('Y-m-d H:i:s') : null;
-
-            $pdo->prepare("
-                INSERT INTO monthly_bills(member_id,period,expected_amount,paid_amount,manual_remaining_amount,due_date,paid_at,note,updated_at)
-                VALUES(?,?,?,?,?,?,?,?,NOW())
-                ON CONFLICT(member_id,period) DO UPDATE SET
-                    expected_amount=EXCLUDED.expected_amount,
-                    paid_amount=EXCLUDED.paid_amount,
-                    manual_remaining_amount=EXCLUDED.manual_remaining_amount,
-                    due_date=EXCLUDED.due_date,
-                    paid_at=EXCLUDED.paid_at,
-                    note=EXCLUDED.note,
-                    updated_at=NOW()
-            ")->execute([
-                (int)$_POST['mid'],$p,$expected,$paid,$manual,$due,$paidAt,trim($_POST['note'] ?? '')
-            ]);
-            redirect_app($p, $posted_session, 'payments');
-        }
-
-        if(isset($_POST['reset_bill'])){
-            $pdo->prepare("DELETE FROM monthly_bills WHERE member_id=? AND period=?")
-                ->execute([(int)$_POST['mid'],valid_period($_POST['period'] ?? $period)]);
-            redirect_app($posted_period, $posted_session, 'payments');
-        }
-
-        redirect_app($posted_period, $posted_session, $posted_view);
-    }
-
-    $sessions=$pdo->query("SELECT * FROM sessions ORDER BY date DESC,id DESC LIMIT 150")->fetchAll();
-    $current_sid=$_GET['session'] ?? ($sessions[0]['id'] ?? null);
-
-    $active_s=null;
-    foreach($sessions as $s){
-        if((string)$s['id']===(string)$current_sid) $active_s=$s;
-    }
-
-    $members=$pdo->query("SELECT * FROM members ORDER BY full_name ASC")->fetchAll();
-
-    $attended_ids=[];
-    if($current_sid){
-        $stmt=$pdo->prepare("SELECT member_id FROM attendance WHERE session_id=?");
-        $stmt->execute([(int)$current_sid]);
-        $attended_ids=$stmt->fetchAll(PDO::FETCH_COLUMN);
-    }
-
-    $attStmt=$pdo->prepare("
-        SELECT m.id, COUNT(DISTINCT a.session_id) AS total
-        FROM members m
-        LEFT JOIN attendance a ON a.member_id=m.id
-        LEFT JOIN sessions s ON s.id=a.session_id
-        WHERE s.id IS NULL OR TO_CHAR(s.date,'YYYY-MM')=?
-        GROUP BY m.id
+function create_or_update_bill($pdo, $member_id, $period, $expected, $paid = 0, $due_date = null) {
+    $due_date = $due_date ?: due_date_from_day($period, 5);
+    $stmt = $pdo->prepare("        INSERT INTO monthly_bills (member_id, period, expected_amount, paid_amount, due_date)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (member_id, period) DO UPDATE SET expected_amount = $3, paid_amount = $4, due_date = $5
     ");
-    $attStmt->execute([$period]);
-    $attendanceMonth=[];
-    foreach($attStmt->fetchAll() as $r) $attendanceMonth[$r['id']] = (int)$r['total'];
+    return $stmt->execute([$member_id, $period, $expected, $paid, $due_date]);
+}
 
-    $billingRows=billing_rows($pdo,$period);
-    $activeBillingRows=array_filter($billingRows,fn($r)=>is_true($r['is_active']));
+// ============ PAYMENT OPERATIONS ============
 
-    $expectedIncome=$collectedIncome=$remainingIncome=$paidCount=$partialCount=$unpaidCount=$overdueCount=0;
-    foreach($activeBillingRows as $r){
-        $expectedIncome += $r['effective_expected'];
-        $collectedIncome += $r['effective_paid'];
-        $remainingIncome += $r['effective_remaining'];
-        if($r['effective_status']==='PAID') $paidCount++;
-        if($r['effective_status']==='PARTIAL') $partialCount++;
-        if($r['effective_status']==='UNPAID') $unpaidCount++;
-        if($r['overdue_days']>0) $overdueCount++;
+function record_payment($pdo, $member_id, $amount_paid, $period) {
+    $member = get_member($pdo, $member_id);
+    if (!$member) return false;
+
+    $today = date('Y-m-d');
+    $next_month = date('Y-m', strtotime('+1 month'));
+    $next_due = due_date_from_day($next_month, $member['default_due_day']);
+
+    $stmt = $pdo->prepare("
+        INSERT INTO payment_logs (member_id, payment_date, due_date_before, next_due_date_after, amount_paid, remaining_after, advanced_cycle)
+        VALUES (?, ?, ?, ?, ?, ?, TRUE)
+    ");
+    $stmt->execute([
+        $member_id,
+        $today,
+        $member['next_due_date'],
+        $next_due,
+        $amount_paid,
+        max(0, $member['balance_remaining'] - $amount_paid)
+    ]);
+
+    $new_balance = max(0, $member['balance_remaining'] - $amount_paid);
+    $stmt = $pdo->prepare("UPDATE members SET balance_remaining = ?, next_due_date = ? WHERE id = ?");
+    $stmt->execute([$new_balance, $next_due, $member_id]);
+
+    $stmt = $pdo->prepare("
+        UPDATE monthly_bills SET paid_amount = paid_amount + ?, paid_at = NOW()
+        WHERE member_id = ? AND period = ?
+    ");
+    return $stmt->execute([$amount_paid, $member_id, $period]);
+}
+
+function get_payment_logs($pdo, $member_id) {
+    $stmt = $pdo->prepare("SELECT * FROM payment_logs WHERE member_id = ? ORDER BY payment_date DESC");
+    $stmt->execute([$member_id]);
+    return $stmt->fetchAll();
+}
+
+// ============ REPORTING OPERATIONS ============
+
+function get_dashboard_stats($pdo, $period) {
+    $members = $pdo->query("SELECT COUNT(*) as count FROM members")->fetch();
+    $active = $pdo->query("SELECT COUNT(*) as count FROM members WHERE is_active = TRUE")->fetch();
+    
+    $stmt = $pdo->prepare("
+        SELECT SUM(paid_amount) as revenue, SUM(expected_amount - COALESCE(paid_amount, 0)) as outstanding
+        FROM monthly_bills WHERE period = ?
+    ");
+    $stmt->execute([$period]);
+    $financial = $stmt->fetch();
+
+    return [
+        'total_members' => $members['count'] ?? 0,
+        'active_members' => $active['count'] ?? 0,
+        'revenue' => $financial['revenue'] ?? 0,
+        'outstanding' => $financial['outstanding'] ?? 0
+    ];
+}
+
+// ============ HANDLE FORM SUBMISSIONS ============
+
+$message = '';
+$message_type = 'success';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    try {
+        $action = $_POST['action'] ?? '';
+
+        // Member Operations
+        if ($action === 'create_member') {
+            create_member($pdo, [
+                'full_name' => $_POST['full_name'] ?? '',
+                'phone' => $_POST['phone'] ?? '',
+                'monthly_fee' => $_POST['monthly_fee'] ?? 0,
+                'due_day' => $_POST['due_day'] ?? 5
+            ]);
+            $message = 'Member created successfully!';
+            redirect_app(current_period(), 'members', $message);
+        }
+
+        if ($action === 'update_member') {
+            update_member($pdo, $_POST['id'] ?? 0, [
+                'full_name' => $_POST['full_name'] ?? '',
+                'phone' => $_POST['phone'] ?? '',
+                'monthly_fee' => $_POST['monthly_fee'] ?? 0,
+                'due_day' => $_POST['due_day'] ?? 5
+            ]);
+            $message = 'Member updated successfully!';
+            redirect_app(current_period(), 'members', $message);
+        }
+
+        if ($action === 'deactivate_member') {
+            deactivate_member($pdo, $_POST['id'] ?? 0);
+            $message = 'Member deactivated!';
+            redirect_app(current_period(), 'members', $message);
+        }
+
+        // Session Operations
+        if ($action === 'create_session') {
+            create_session($pdo, $_POST['name'] ?? '', $_POST['date'] ?? date('Y-m-d'));
+            $message = 'Session created!';
+            redirect_app(current_period(), 'attendance', $message);
+        }
+
+        if ($action === 'delete_session') {
+            delete_session($pdo, $_POST['id'] ?? 0);
+            $message = 'Session deleted!';
+            redirect_app(current_period(), 'attendance', $message);
+        }
+
+        // Attendance Operations
+        if ($action === 'log_attendance') {
+            log_attendance($pdo, $_POST['session_id'] ?? 0, $_POST['member_id'] ?? 0, $_POST['status'] ?? 'present');
+            $message = 'Attendance recorded!';
+            redirect_app(current_period(), 'attendance', $message);
+        }
+
+        // Payment Operations
+        if ($action === 'record_payment') {
+            record_payment($pdo, $_POST['member_id'] ?? 0, $_POST['amount'] ?? 0, current_period());
+            $message = 'Payment recorded!';
+            redirect_app(current_period(), 'payments', $message);
+        }
+
+        // Export Operations
+        if ($action === 'export_csv') {
+            $export_type = $_POST['export_type'] ?? '';
+            $period = valid_period($_POST['period'] ?? current_period());
+
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="' . $export_type . '_' . $period . '.csv"');
+            $output = fopen('php://output', 'w');
+
+            if ($export_type === 'payment_report') {
+                fputcsv($output, ['Member', 'Phone', 'Expected', 'Paid', 'Remaining', 'Due Date', 'Status', 'Overdue Days']);
+                foreach (billing_rows($pdo, $period) as $row) {
+                    fputcsv($output, [
+                        $row['full_name'],
+                        $row['phone'],
+                        money($row['effective_expected']),
+                        money($row['effective_paid']),
+                        money($row['effective_remaining']),
+                        $row['effective_due_date'],
+                        $row['effective_status'],
+                        $row['overdue_days']
+                    ]);
+                }
+            }
+
+            if ($export_type === 'attendance_report') {
+                fputcsv($output, ['Member', 'Total Sessions', 'Present', 'Absent', 'Late']);
+                $stmt = $pdo->prepare("
+                    SELECT m.full_name,
+                        COUNT(DISTINCT a.session_id) as total,
+                        SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present,
+                        SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) as absent,
+                        SUM(CASE WHEN a.status = 'late' THEN 1 ELSE 0 END) as late
+                    FROM members m
+                    LEFT JOIN attendance a ON a.member_id = m.id
+                    LEFT JOIN sessions s ON s.id = a.session_id
+                    WHERE m.is_active = TRUE AND (s.id IS NULL OR DATE_FORMAT(s.date, '%Y-%m') = ?)
+                    GROUP BY m.id, m.full_name
+                    ORDER BY total DESC
+                ");
+                $stmt->execute([$period]);
+                foreach ($stmt->fetchAll() as $row) {
+                    fputcsv($output, [
+                        $row['full_name'],
+                        $row['total'] ?? 0,
+                        $row['present'] ?? 0,
+                        $row['absent'] ?? 0,
+                        $row['late'] ?? 0
+                    ]);
+                }
+            }
+
+            fclose($output);
+            exit;
+        }
+    } catch (Exception $e) {
+        $message = 'Error: ' . $e->getMessage();
+        $message_type = 'error';
     }
-
-}catch(Exception $e){
-    die("System Error: ".h($e->getMessage()));
 }
-?><!DOCTYPE html><html lang="en">
+
+// ============ GET REQUEST PARAMETERS ============
+
+$period = valid_period($_GET['period'] ?? current_period());
+$active_view = valid_view($_GET['view'] ?? 'dashboard');
+if (isset($_GET['msg'])) $message = $_GET['msg'];
+
+?>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ujamaa Academy Manager</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<style>
-body{font-family:Arial,sans-serif;background:#f8fafc}
-.soft-card{background:#fff;border:1px solid #e2e8f0;box-shadow:0 15px 40px rgba(15,23,42,.06)}
-.pill{border-radius:999px;padding:.35rem .7rem;font-size:10px;font-weight:900;text-transform:uppercase}
-.modal{display:none}.modal.show{display:flex}
-.glass{background:linear-gradient(135deg,rgba(255,255,255,.96),rgba(248,250,252,.92));backdrop-filter:blur(14px)}
-.report-card{transition:.2s ease;position:relative;overflow:hidden}.report-card:hover{transform:translateY(-3px);box-shadow:0 20px 50px rgba(15,23,42,.10)}
-.report-card:before{content:'';position:absolute;inset:0 0 auto 0;height:4px;background:linear-gradient(90deg,#4f46e5,#06b6d4)}
-.input-clean{width:100%;padding:.9rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:1rem;font-weight:800;color:#0f172a}
-.btn-dark{background:#020617;color:#fff;padding:1rem;border-radius:1rem;font-size:11px;font-weight:900;text-transform:uppercase}
-</style>
-</head><body class="text-slate-900">
-<div class="min-h-screen lg:flex"><aside class="lg:w-80 bg-slate-950 text-white p-6 flex flex-col gap-6">
-    <div>
-        <h1 class="text-3xl font-black">UJAMAA<span class="text-indigo-400">.</span></h1>
-        <p class="text-xs text-slate-400 font-bold">Academy Manager</p>
-    </div><nav class="grid grid-cols-2 lg:grid-cols-1 gap-3">
-    <button onclick="view('dashboard')" id="n-dashboard" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Dashboard</button>
-    <button onclick="view('attendance')" id="n-attendance" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Attendance</button>
-    <button onclick="view('payments')" id="n-payments" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Payments</button>
-    <button onclick="view('members')" id="n-members" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Members</button>
-    <button onclick="view('reports')" id="n-reports" class="nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left">Reports</button>
-</nav>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Academy Management System - Cyberpunk Edition</title>
+    <style>
+        /* ============ CYBERPUNK DESIGN SYSTEM ============ */
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Space+Mono:wght@400;700&display=swap');
 
-<div class="bg-white/5 border border-white/10 p-5 rounded-3xl">
-    <h3 class="text-xs font-black uppercase text-indigo-300 mb-4">Add Athlete</h3>
-    <form method="POST" class="space-y-3">
-        <input name="full_name" placeholder="Full name only is enough" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm" required>
-        <input name="phone" placeholder="Phone optional" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm">
-        <input name="default_monthly_fee" type="number" step="0.01" placeholder="Monthly fee optional" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm">
-        <input name="default_due_day" type="number" min="1" max="31" placeholder="Due day optional, default 5" class="w-full bg-slate-900 border border-white/10 p-3 rounded-xl text-sm">
-        <input type="hidden" name="period" value="<?= h($period) ?>">
-        <input type="hidden" name="sid" value="<?= h($current_sid) ?>">
-        <input type="hidden" name="view" value="members">
-        <button name="save_athlete" class="w-full bg-white text-slate-950 py-3 rounded-xl font-black text-xs uppercase">Save Athlete</button>
-    </form>
-</div>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-</aside><main class="flex-1 p-5 lg:p-10">
-<div class="max-w-7xl mx-auto"><header class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-5 mb-8">
-    <div>
-        <h2 class="text-3xl lg:text-5xl font-black">Academy Control Center</h2>
-        <p class="text-slate-500 font-bold mt-2">Period: <?= h($period) ?> · Today: <?= date('Y-m-d') ?></p>
+        :root {
+            --color-neon-pink: #FF006E;
+            --color-neon-cyan: #00D9FF;
+            --color-neon-purple: #B700FF;
+            --color-neon-green: #00FF41;
+            --color-bg-primary: #0a0e27;
+            --color-bg-secondary: #1a1f3a;
+            --color-bg-tertiary: #252d47;
+            --color-text-primary: #00D9FF;
+            --color-text-secondary: #FF006E;
+            --color-text-muted: #8892b0;
+            --glow-pink: 0 0 10px rgba(255, 0, 110, 0.5), 0 0 20px rgba(255, 0, 110, 0.3);
+            --glow-cyan: 0 0 10px rgba(0, 217, 255, 0.5), 0 0 20px rgba(0, 217, 255, 0.3);
+            --glow-intense: 0 0 20px rgba(255, 0, 110, 0.8), 0 0 40px rgba(0, 217, 255, 0.6);
+        }
+
+        html, body {
+            background-color: var(--color-bg-primary);
+            color: var(--color-text-primary);
+            font-family: 'Space Mono', monospace;
+            font-weight: 400;
+            line-height: 1.6;
+            letter-spacing: 0.05em;
+            min-height: 100vh;
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 900;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--color-text-primary);
+            text-shadow: var(--glow-cyan);
+        }
+
+        h1 { font-size: 2.5rem; margin-bottom: 1.5rem; text-shadow: var(--glow-intense); }
+        h2 { font-size: 1.75rem; margin-bottom: 1.25rem; }
+        h3 { font-size: 1.25rem; margin-bottom: 1rem; }
+
+        a {
+            color: var(--color-neon-pink);
+            text-decoration: none;
+            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+            text-shadow: var(--glow-pink);
+        }
+
+        a:hover {
+            color: var(--color-neon-cyan);
+            text-shadow: var(--glow-cyan);
+        }
+
+        /* Layout */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        .header {
+            background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-bg-tertiary) 100%);
+            border-bottom: 3px solid var(--color-neon-pink);
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: var(--glow-pink);
+        }
+
+        .header h1 {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .header-nav {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .nav-btn {
+            padding: 0.75rem 1.5rem;
+            border: 2px solid var(--color-neon-cyan);
+            background: transparent;
+            color: var(--color-neon-cyan);
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+            box-shadow: var(--glow-cyan);
+        }
+
+        .nav-btn:hover, .nav-btn.active {
+            background: var(--color-neon-cyan);
+            color: var(--color-bg-primary);
+            text-shadow: none;
+        }
+
+        .nav-btn:active {
+            transform: scale(0.97);
+        }
+
+        /* Cards */
+        .card {
+            background-color: var(--color-bg-secondary);
+            border: 2px solid var(--color-neon-pink);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border-radius: 4px;
+            box-shadow: inset 0 0 10px rgba(255, 0, 110, 0.1), var(--glow-pink);
+            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+
+        .card:hover {
+            border-color: var(--color-neon-cyan);
+            box-shadow: inset 0 0 10px rgba(0, 217, 255, 0.1), var(--glow-cyan);
+        }
+
+        .card-cyan {
+            border-color: var(--color-neon-cyan);
+            box-shadow: inset 0 0 10px rgba(0, 217, 255, 0.1), var(--glow-cyan);
+        }
+
+        /* Forms */
+        input, textarea, select {
+            font-family: 'Space Mono', monospace;
+            background-color: var(--color-bg-tertiary);
+            color: var(--color-text-primary);
+            border: 2px solid var(--color-neon-pink);
+            padding: 0.75rem 1rem;
+            border-radius: 4px;
+            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+            box-shadow: inset 0 0 5px rgba(255, 0, 110, 0.1);
+            width: 100%;
+            margin-bottom: 1rem;
+        }
+
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: var(--color-neon-cyan);
+            box-shadow: inset 0 0 5px rgba(0, 217, 255, 0.2), var(--glow-cyan);
+        }
+
+        input::placeholder {
+            color: var(--color-text-muted);
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 700;
+            color: var(--color-text-secondary);
+            text-shadow: var(--glow-pink);
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        /* Buttons */
+        button, .btn {
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.16s cubic-bezier(0.23, 1, 0.32, 1);
+            display: inline-block;
+        }
+
+        .btn-primary {
+            background: var(--color-neon-pink);
+            color: white;
+            box-shadow: var(--glow-pink);
+        }
+
+        .btn-primary:hover {
+            background: var(--color-neon-cyan);
+            color: var(--color-bg-primary);
+            box-shadow: var(--glow-cyan);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 2px solid var(--color-neon-cyan);
+            color: var(--color-neon-cyan);
+            box-shadow: var(--glow-cyan);
+        }
+
+        .btn-secondary:hover {
+            background: var(--color-neon-cyan);
+            color: var(--color-bg-primary);
+        }
+
+        button:active, .btn:active {
+            transform: scale(0.97);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+
+        thead {
+            background-color: var(--color-bg-tertiary);
+            border-bottom: 2px solid var(--color-neon-pink);
+        }
+
+        th {
+            padding: 1rem;
+            text-align: left;
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: var(--color-text-secondary);
+            text-shadow: var(--glow-pink);
+        }
+
+        td {
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--color-bg-tertiary);
+        }
+
+        tbody tr {
+            transition: background-color 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+
+        tbody tr:hover {
+            background-color: var(--color-bg-tertiary);
+            box-shadow: inset 0 0 10px rgba(0, 217, 255, 0.1);
+        }
+
+        /* Status Badges */
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            text-shadow: 0 0 5px rgba(0, 217, 255, 0.5);
+        }
+
+        .badge-success {
+            background: rgba(0, 255, 65, 0.2);
+            color: var(--color-neon-green);
+        }
+
+        .badge-error {
+            background: rgba(255, 0, 110, 0.2);
+            color: var(--color-neon-pink);
+        }
+
+        .badge-warning {
+            background: rgba(255, 183, 0, 0.2);
+            color: #FFB700;
+        }
+
+        .badge-info {
+            background: rgba(0, 217, 255, 0.2);
+            color: var(--color-neon-cyan);
+        }
+
+        /* Messages */
+        .message {
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            border-left: 4px solid;
+            border-radius: 4px;
+            font-weight: 700;
+        }
+
+        .message.success {
+            background: rgba(0, 255, 65, 0.1);
+            border-color: var(--color-neon-green);
+            color: var(--color-neon-green);
+        }
+
+        .message.error {
+            background: rgba(255, 0, 110, 0.1);
+            border-color: var(--color-neon-pink);
+            color: var(--color-neon-pink);
+        }
+
+        /* Grid */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-box {
+            background-color: var(--color-bg-secondary);
+            border: 2px solid var(--color-neon-cyan);
+            padding: 1.5rem;
+            border-radius: 4px;
+            text-align: center;
+            box-shadow: var(--glow-cyan);
+        }
+
+        .stat-box h3 {
+            color: var(--color-text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .stat-box .value {
+            font-size: 2rem;
+            color: var(--color-neon-cyan);
+            text-shadow: var(--glow-cyan);
+            font-weight: 700;
+        }
+
+        /* Modal/Dialog */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(10, 14, 39, 0.9);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--color-bg-secondary);
+            border: 2px solid var(--color-neon-pink);
+            padding: 2rem;
+            border-radius: 4px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: var(--glow-pink);
+        }
+
+        .modal-close {
+            float: right;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--color-neon-pink);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+
+            h1 { font-size: 1.75rem; }
+            h2 { font-size: 1.25rem; }
+
+            .header-nav {
+                flex-direction: column;
+            }
+
+            .nav-btn {
+                width: 100%;
+            }
+
+            table {
+                font-size: 0.8rem;
+            }
+
+            th, td {
+                padding: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <h1>⚡ ACADEMY MANAGEMENT SYSTEM</h1>
+        <p style="color: var(--color-text-muted); margin-top: 0.5rem;">Cyberpunk Edition | Period: <strong><?php echo h($period); ?></strong></p>
+        
+        <div class="header-nav">
+            <button class="nav-btn <?php echo $active_view === 'dashboard' ? 'active' : ''; ?>" onclick="location.href='?view=dashboard&period=<?php echo h($period); ?>'">Dashboard</button>
+            <button class="nav-btn <?php echo $active_view === 'members' ? 'active' : ''; ?>" onclick="location.href='?view=members&period=<?php echo h($period); ?>'">Members</button>
+            <button class="nav-btn <?php echo $active_view === 'attendance' ? 'active' : ''; ?>" onclick="location.href='?view=attendance&period=<?php echo h($period); ?>'">Attendance</button>
+            <button class="nav-btn <?php echo $active_view === 'payments' ? 'active' : ''; ?>" onclick="location.href='?view=payments&period=<?php echo h($period); ?>'">Payments</button>
+            <button class="nav-btn <?php echo $active_view === 'reports' ? 'active' : ''; ?>" onclick="location.href='?view=reports&period=<?php echo h($period); ?>'">Reports</button>
+        </div>
     </div>
-    <form method="GET" class="bg-white border p-2 rounded-2xl flex gap-2">
-        <input type="hidden" name="session" value="<?= h($current_sid) ?>">
-        <input type="hidden" name="view" value="<?= h($active_view) ?>">
-        <input name="period" type="month" value="<?= h($period) ?>" class="rounded-xl px-4 py-3 font-black border">
-        <button class="bg-slate-950 text-white px-5 py-3 rounded-xl font-black text-xs uppercase">Open Month</button>
-    </form>
-</header><section id="v-dashboard" class="page space-y-8 hidden">
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
-        <div class="soft-card p-6 rounded-3xl"><p class="text-xs font-black text-slate-400 uppercase">Expected</p><h3 class="text-3xl font-black"><?= money($expectedIncome) ?></h3></div>
-        <div class="soft-card p-6 rounded-3xl"><p class="text-xs font-black text-slate-400 uppercase">Collected</p><h3 class="text-3xl font-black text-emerald-600"><?= money($collectedIncome) ?></h3></div>
-        <div class="soft-card p-6 rounded-3xl"><p class="text-xs font-black text-slate-400 uppercase">Remaining</p><h3 class="text-3xl font-black text-amber-600"><?= money($remainingIncome) ?></h3></div>
-        <div class="soft-card p-6 rounded-3xl"><p class="text-xs font-black text-slate-400 uppercase">Overdue</p><h3 class="text-3xl font-black text-red-600"><?= $overdueCount ?> members</h3></div>
-    </div><div class="soft-card p-6 rounded-3xl overflow-x-auto">
-    <div class="flex justify-between items-center mb-5">
-        <h3 class="text-xl font-black">Manager Summary</h3>
-        <a href="?export_type=full_summary&period=<?= h($period) ?>" class="bg-indigo-600 text-white px-4 py-3 rounded-xl text-xs font-black uppercase">Download</a>
-    </div>
-    <table class="w-full text-sm">
-        <thead>
-        <tr class="text-left text-xs uppercase text-slate-400 border-b">
-            <th class="py-3">Athlete</th><th>Status</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Attend.</th>
-        </tr>
-        </thead>
-        <tbody>
-        <?php foreach($billingRows as $r): ?>
-        <tr class="border-b">
-            <td class="py-4 font-black"><?= h($r['full_name']) ?></td>
-            <td><span class="pill <?= $r['effective_status']==='PAID'?'bg-emerald-100 text-emerald-700':($r['effective_status']==='PARTIAL'?'bg-amber-100 text-amber-700':($r['effective_status']==='NO BILL'?'bg-slate-100 text-slate-600':'bg-red-100 text-red-700')) ?>"><?= h($r['effective_status']) ?></span></td>
-            <td><?= money($r['effective_expected']) ?></td>
-            <td><?= money($r['effective_paid']) ?></td>
-            <td class="font-black"><?= money($r['effective_remaining']) ?></td>
-            <td><?= (int)($attendanceMonth[$r['id']] ?? 0) ?></td>
-        </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
-</div>
 
-</section><section id="v-attendance" class="page hidden space-y-6">
-    <div class="soft-card p-6 rounded-3xl">
-        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
-            <div>
-                <h3 class="text-2xl font-black"><?= $active_s ? h($active_s['name']) : 'No Session Yet' ?></h3>
-                <p class="text-slate-500 font-bold"><?= $active_s ? h($active_s['date']) : 'Create a session first, then mark attendance.' ?></p>
+    <div class="container">
+        <!-- Messages -->
+        <?php if ($message): ?>
+            <div class="message <?php echo $message_type; ?>">
+                <?php echo h($message); ?>
             </div>
-            <div class="flex flex-col md:flex-row gap-2">
-                <?php if(count($sessions)>0): ?>
-                <select onchange="location.href='?session='+this.value+'&period=<?= h($period) ?>&view=attendance'" class="rounded-xl px-4 py-3 font-bold border">
-                    <?php foreach($sessions as $s): ?>
-                    <option value="<?= h($s['id']) ?>" <?= (string)$current_sid===(string)$s['id']?'selected':'' ?>><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
-                    <?php endforeach; ?>
-                </select>
-                <?php endif; ?>
-                <button onclick="openModal('m-session')" class="bg-indigo-600 text-white px-5 py-3 rounded-xl font-black">Create Session</button>
-            </div>
-        </div><?php if(!$current_sid): ?>
-        <div class="bg-amber-50 border border-amber-200 text-amber-800 p-5 rounded-2xl font-bold">No session selected. Create a session before marking attendance.</div>
-    <?php else: ?>
-        <input id="attendanceSearch" onkeyup="searchRows('attendanceSearch','.attendance-row')" placeholder="Search athlete..." class="w-full p-4 bg-slate-50 rounded-2xl border mb-5">
+        <?php endif; ?>
 
-        <?php foreach($members as $m): if(!is_true($m['is_active'])) continue; $isP=in_array($m['id'],$attended_ids); ?>
-        <div class="attendance-row flex items-center justify-between py-4 border-b">
-            <div>
-                <b class="row-name text-lg"><?= h($m['full_name']) ?></b>
-                <p class="text-xs font-bold text-slate-400">This month: <?= (int)($attendanceMonth[$m['id']] ?? 0) ?> time(s)</p>
+        <!-- DASHBOARD VIEW -->
+        <?php if ($active_view === 'dashboard'): ?>
+            <h2>Dashboard</h2>
+            <?php $stats = get_dashboard_stats($pdo, $period); ?>
+            <div class="grid">
+                <div class="stat-box">
+                    <h3>Total Members</h3>
+                    <div class="value"><?php echo $stats['total_members']; ?></div>
+                </div>
+                <div class="stat-box">
+                    <h3>Active Members</h3>
+                    <div class="value"><?php echo $stats['active_members']; ?></div>
+                </div>
+                <div class="stat-box">
+                    <h3>Revenue Collected</h3>
+                    <div class="value">$<?php echo money($stats['revenue']); ?></div>
+                </div>
+                <div class="stat-box">
+                    <h3>Outstanding Balance</h3>
+                    <div class="value">$<?php echo money($stats['outstanding']); ?></div>
+                </div>
             </div>
-            <form method="POST">
-                <input type="hidden" name="sid" value="<?= (int)$current_sid ?>">
-                <input type="hidden" name="mid" value="<?= (int)$m['id'] ?>">
-                <input type="hidden" name="period" value="<?= h($period) ?>">
-                <input type="hidden" name="view" value="attendance">
-                <?php if($isP): ?>
-                    <button name="clear_attendance" class="bg-emerald-500 text-white px-6 py-3 rounded-xl text-xs font-black uppercase">Present</button>
+
+            <div class="card">
+                <h3>Recent Activity</h3>
+                <p style="color: var(--color-text-muted); margin-top: 1rem;">
+                    System initialized. View members, sessions, attendance, and payments from the navigation menu.
+                </p>
+            </div>
+
+        <!-- MEMBERS VIEW -->
+        <?php elseif ($active_view === 'members'): ?>
+            <h2>Member Management</h2>
+            
+            <div class="card">
+                <h3>Add New Member</h3>
+                <form method="POST">
+                    <input type="hidden" name="action" value="create_member">
+                    <div class="form-group">
+                        <label>Full Name *</label>
+                        <input type="text" name="full_name" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Phone</label>
+                        <input type="tel" name="phone">
+                    </div>
+                    <div class="form-group">
+                        <label>Monthly Fee *</label>
+                        <input type="number" name="monthly_fee" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Due Day (1-31) *</label>
+                        <input type="number" name="due_day" min="1" max="31" value="5" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Create Member</button>
+                </form>
+            </div>
+
+            <div class="card card-cyan">
+                <h3>All Members</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Phone</th>
+                            <th>Monthly Fee</th>
+                            <th>Balance</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach (get_all_members($pdo) as $member): ?>
+                            <tr>
+                                <td><?php echo h($member['full_name']); ?></td>
+                                <td><?php echo h($member['phone'] ?? '-'); ?></td>
+                                <td>$<?php echo money($member['monthly_fee']); ?></td>
+                                <td>$<?php echo money($member['balance_remaining']); ?></td>
+                                <td>
+                                    <span class="badge <?php echo $member['is_active'] ? 'badge-success' : 'badge-error'; ?>">
+                                        <?php echo $member['is_active'] ? 'Active' : 'Inactive'; ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <?php if ($member['is_active']): ?>
+                                        <form method="POST" style="display: inline;">
+                                            <input type="hidden" name="action" value="deactivate_member">
+                                            <input type="hidden" name="id" value="<?php echo $member['id']; ?>">
+                                            <button type="submit" class="btn btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Deactivate</button>
+                                        </form>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+        <!-- ATTENDANCE VIEW -->
+        <?php elseif ($active_view === 'attendance'): ?>
+            <h2>Attendance Tracking</h2>
+            
+            <div class="card">
+                <h3>Create New Session</h3>
+                <form method="POST">
+                    <input type="hidden" name="action" value="create_session">
+                    <div class="form-group">
+                        <label>Session Name *</label>
+                        <input type="text" name="name" placeholder="e.g., Morning Training" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Date *</label>
+                        <input type="date" name="date" value="<?php echo date('Y-m-d'); ?>" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Create Session</button>
+                </form>
+            </div>
+
+            <div class="card card-cyan">
+                <h3>Log Attendance</h3>
+                <?php $sessions = get_all_sessions($pdo); ?>
+                <?php if (count($sessions) > 0): ?>
+                    <form method="POST">
+                        <input type="hidden" name="action" value="log_attendance">
+                        <div class="form-group">
+                            <label>Select Session *</label>
+                            <select name="session_id" required>
+                                <option value="">-- Choose Session --</option>
+                                <?php foreach ($sessions as $session): ?>
+                                    <option value="<?php echo $session['id']; ?>">
+                                        <?php echo h($session['name']); ?> - <?php echo h($session['date']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Select Member *</label>
+                            <select name="member_id" required>
+                                <option value="">-- Choose Member --</option>
+                                <?php foreach (get_active_members($pdo) as $member): ?>
+                                    <option value="<?php echo $member['id']; ?>">
+                                        <?php echo h($member['full_name']); ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Status *</label>
+                            <select name="status" required>
+                                <option value="present">Present</option>
+                                <option value="absent">Absent</option>
+                                <option value="late">Late</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Log Attendance</button>
+                    </form>
                 <?php else: ?>
-                    <button name="mark" class="border px-6 py-3 rounded-xl text-xs font-black uppercase">Mark</button>
+                    <p style="color: var(--color-text-muted);">No sessions created yet. Create one above first.</p>
                 <?php endif; ?>
-            </form>
-        </div>
-        <?php endforeach; ?>
-    <?php endif; ?>
-</div>
-
-</section><section id="v-payments" class="page hidden space-y-6">
-    <div class="flex justify-between gap-4">
-        <div>
-            <h3 class="text-3xl font-black">Payments</h3>
-            <p class="text-slate-500 font-bold">Month: <?= h($period) ?></p>
-        </div>
-        <a href="?export_type=payment_report&period=<?= h($period) ?>" class="bg-slate-950 text-white px-5 py-4 rounded-2xl font-black text-xs uppercase">Download</a>
-    </div><input id="paymentSearch" onkeyup="searchRows('paymentSearch','.payment-row')" placeholder="Search payment..." class="w-full p-4 bg-white rounded-2xl border">
-
-<?php foreach($billingRows as $r): ?>
-<div class="payment-row soft-card rounded-3xl p-5">
-    <div class="grid grid-cols-1 xl:grid-cols-12 gap-4 xl:items-center">
-        <div class="xl:col-span-3">
-            <h4 class="row-name text-lg font-black"><?= h($r['full_name']) ?></h4>
-            <p class="text-xs text-slate-400 font-bold">Due: <?= h($r['effective_due_date']) ?> · <?= (int)$r['overdue_days'] ?> overdue day(s)</p>
-        </div>
-        <div class="xl:col-span-2"><span class="pill <?= $r['effective_status']==='PAID'?'bg-emerald-100 text-emerald-700':($r['effective_status']==='PARTIAL'?'bg-amber-100 text-amber-700':($r['effective_status']==='NO BILL'?'bg-slate-100 text-slate-600':'bg-red-100 text-red-700')) ?>"><?= h($r['effective_status']) ?></span></div>
-        <div class="xl:col-span-2"><small>Expected</small><br><b><?= money($r['effective_expected']) ?></b></div>
-        <div class="xl:col-span-2"><small>Paid</small><br><b><?= money($r['effective_paid']) ?></b></div>
-        <div class="xl:col-span-2"><small>Remaining</small><br><b class="<?= $r['effective_remaining']>0?'text-red-600':'text-emerald-600' ?>"><?= money($r['effective_remaining']) ?></b></div>
-        <div class="xl:col-span-1">
-            <button onclick='openBill(<?= js([
-                'id'=>$r['id'],
-                'name'=>$r['full_name'],
-                'period'=>$period,
-                'expected'=>$r['effective_expected'],
-                'paid'=>$r['effective_paid'],
-                'remaining'=>$r['manual_remaining_amount'],
-                'due'=>$r['effective_due_date'],
-                'note'=>$r['note'] ?? ''
-            ]) ?>)' class="bg-indigo-600 text-white px-4 py-3 rounded-xl text-xs font-black uppercase w-full">Edit</button>
-        </div>
-    </div>
-</div>
-<?php endforeach; ?>
-
-</section><section id="v-members" class="page hidden space-y-6">
-    <h3 class="text-3xl font-black">Members</h3>
-    <div class="soft-card rounded-3xl overflow-hidden">
-        <?php foreach($members as $m): ?>
-        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 p-5 border-b">
-            <div>
-                <h4 class="text-lg font-black"><?= h($m['full_name']) ?></h4>
-                <p class="text-xs text-slate-400 font-bold">Fee: <?= money($m['default_monthly_fee']) ?> · Due day: <?= (int)$m['default_due_day'] ?> · <?= is_true($m['is_active'])?'Active':'Inactive' ?></p>
             </div>
-            <div class="flex gap-2">
-                <button onclick='editMember(<?= js([
-                    'id'=>$m['id'],
-                    'name'=>$m['full_name'],
-                    'phone'=>$m['phone'],
-                    'fee'=>$m['default_monthly_fee'],
-                    'due'=>$m['default_due_day'],
-                    'active'=>is_true($m['is_active'])
-                ]) ?>)' class="bg-slate-100 px-5 py-3 rounded-xl text-xs font-black uppercase">Edit</button>
-                <button onclick="deleteMember(<?= (int)$m['id'] ?>)" class="bg-red-50 text-red-600 px-5 py-3 rounded-xl text-xs font-black uppercase">Delete</button>
-            </div>
-        </div>
-        <?php endforeach; ?>
-    </div>
-</section><section id="v-reports" class="page hidden space-y-6">
-    <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
-        <div>
-            <p class="text-xs font-black uppercase text-indigo-600">Exports & attendance analysis</p>
-            <h3 class="text-3xl lg:text-4xl font-black">Reports</h3>
-            <p class="text-slate-500 font-bold mt-1">Generate payment reports, monthly attendance, and compare two sessions without duplicate athlete rows.</p>
-        </div>
-    </div>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
-        <a class="report-card soft-card p-6 rounded-3xl font-black text-indigo-600" href="?export_type=payment_report&period=<?= h($period) ?>">
-            <span class="block text-slate-900 text-lg mb-2">Payment Report</span>
-            <span class="text-xs text-slate-400">Expected, paid, balance</span>
-        </a>
-        <a class="report-card soft-card p-6 rounded-3xl font-black text-red-600" href="?export_type=debtors_report&period=<?= h($period) ?>">
-            <span class="block text-slate-900 text-lg mb-2">Debtors Report</span>
-            <span class="text-xs text-slate-400">Unpaid and partial only</span>
-        </a>
-        <a class="report-card soft-card p-6 rounded-3xl font-black text-emerald-600" href="?export_type=monthly_attendance_report&period=<?= h($period) ?>">
-            <span class="block text-slate-900 text-lg mb-2">Monthly Attendance</span>
-            <span class="text-xs text-slate-400">Times attended in <?= h($period) ?></span>
-        </a>
-        <a class="report-card soft-card p-6 rounded-3xl font-black text-slate-900" href="?export_type=manager_summary&period=<?= h($period) ?>">
-            <span class="block text-slate-900 text-lg mb-2">Manager Summary</span>
-            <span class="text-xs text-slate-400">Income and status totals</span>
-        </a>
-    </div>
-
-    <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <div class="glass soft-card p-6 rounded-3xl">
-            <div class="mb-5">
-                <h4 class="text-2xl font-black">Two Sessions Attendance Report</h4>
-                <p class="text-sm text-slate-500 font-bold mt-1">This report gives one row per athlete, Session 1 status, Session 2 status, and total times attended: 0, 1, or 2.</p>
-            </div>
-            <form method="GET" class="space-y-4">
-                <input type="hidden" name="export_type" value="two_session_report">
-                <input type="hidden" name="period" value="<?= h($period) ?>">
-                <div>
-                    <label class="text-xs font-black uppercase text-slate-400">First session</label>
-                    <select name="sid1" class="input-clean mt-2" required>
-                        <option value="">Choose first session</option>
-                        <?php foreach($sessions as $s): ?>
-                        <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
+            <div class="card">
+                <h3>Sessions</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Date</th>
+                            <th>Attendees</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($sessions as $session): ?>
+                            <?php $attendance_count = count(get_attendance_by_session($pdo, $session['id'])); ?>
+                            <tr>
+                                <td><?php echo h($session['name']); ?></td>
+                                <td><?php echo h($session['date']); ?></td>
+                                <td><?php echo $attendance_count; ?></td>
+                                <td>
+                                    <form method="POST" style="display: inline;">
+                                        <input type="hidden" name="action" value="delete_session">
+                                        <input type="hidden" name="id" value="<?php echo $session['id']; ?>">
+                                        <button type="submit" class="btn btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.8rem;" onclick="return confirm('Delete this session?');">Delete</button>
+                                    </form>
+                                </td>
+                            </tr>
                         <?php endforeach; ?>
-                    </select>
-                </div>
-                <div>
-                    <label class="text-xs font-black uppercase text-slate-400">Second session</label>
-                    <select name="sid2" class="input-clean mt-2" required>
-                        <option value="">Choose second session</option>
-                        <?php foreach($sessions as $s): ?>
-                        <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <button class="w-full btn-dark">Download Two-Session Report</button>
-            </form>
-        </div>
-
-        <div class="glass soft-card p-6 rounded-3xl">
-            <div class="mb-5">
-                <h4 class="text-2xl font-black">Present / Absent List</h4>
-                <p class="text-sm text-slate-500 font-bold mt-1">Export only present athletes or only absent athletes for one selected session.</p>
+                    </tbody>
+                </table>
             </div>
-            <form method="GET" class="space-y-4">
-                <input type="hidden" name="export_type" value="filtered_status">
-                <input type="hidden" name="period" value="<?= h($period) ?>">
-                <div>
-                    <label class="text-xs font-black uppercase text-slate-400">Session</label>
-                    <select name="sid" class="input-clean mt-2" required>
-                        <?php foreach($sessions as $s): ?>
-                        <option value="<?= h($s['id']) ?>"><?= h($s['date']) ?> - <?= h($s['name']) ?></option>
+
+        <!-- PAYMENTS VIEW -->
+        <?php elseif ($active_view === 'payments'): ?>
+            <h2>Payment Management</h2>
+            
+            <div class="card">
+                <h3>Record Payment</h3>
+                <form method="POST">
+                    <input type="hidden" name="action" value="record_payment">
+                    <div class="form-group">
+                        <label>Select Member *</label>
+                        <select name="member_id" required>
+                            <option value="">-- Choose Member --</option>
+                            <?php foreach (get_active_members($pdo) as $member): ?>
+                                <option value="<?php echo $member['id']; ?>">
+                                    <?php echo h($member['full_name']); ?> (Balance: $<?php echo money($member['balance_remaining']); ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Amount Paid *</label>
+                        <input type="number" name="amount" step="0.01" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Record Payment</button>
+                </form>
+            </div>
+
+            <div class="card card-cyan">
+                <h3>Monthly Billing - <?php echo h($period); ?></h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Member</th>
+                            <th>Expected</th>
+                            <th>Paid</th>
+                            <th>Remaining</th>
+                            <th>Due Date</th>
+                            <th>Status</th>
+                            <th>Overdue</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach (billing_rows($pdo, $period) as $row): ?>
+                            <tr>
+                                <td><?php echo h($row['full_name']); ?></td>
+                                <td>$<?php echo money($row['effective_expected']); ?></td>
+                                <td>$<?php echo money($row['effective_paid']); ?></td>
+                                <td>$<?php echo money($row['effective_remaining']); ?></td>
+                                <td><?php echo h($row['effective_due_date']); ?></td>
+                                <td>
+                                    <span class="badge <?php 
+                                        echo $row['effective_status'] === 'PAID' ? 'badge-success' : 
+                                             ($row['effective_status'] === 'PARTIAL' ? 'badge-warning' : 'badge-error'); 
+                                    ?>">
+                                        <?php echo h($row['effective_status']); ?>
+                                    </span>
+                                </td>
+                                <td><?php echo $row['overdue_days'] > 0 ? $row['overdue_days'] . ' days' : '-'; ?></td>
+                            </tr>
                         <?php endforeach; ?>
-                    </select>
-                </div>
-                <div>
-                    <label class="text-xs font-black uppercase text-slate-400">Status</label>
-                    <select name="status" class="input-clean mt-2">
-                        <option value="PRESENT">Present only</option>
-                        <option value="ABSENT">Absent only</option>
-                    </select>
-                </div>
-                <button class="w-full btn-dark">Download List</button>
-            </form>
-        </div>
+                    </tbody>
+                </table>
+            </div>
+
+        <!-- REPORTS VIEW -->
+        <?php elseif ($active_view === 'reports'): ?>
+            <h2>Reports & Exports</h2>
+            
+            <div class="card">
+                <h3>Export Reports</h3>
+                <p style="color: var(--color-text-muted); margin-bottom: 1.5rem;">Generate CSV reports for analysis and record-keeping.</p>
+                
+                <form method="POST" style="margin-bottom: 1rem;">
+                    <input type="hidden" name="action" value="export_csv">
+                    <input type="hidden" name="export_type" value="payment_report">
+                    <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                    <button type="submit" class="btn btn-primary">📊 Export Payment Report</button>
+                </form>
+
+                <form method="POST" style="margin-bottom: 1rem;">
+                    <input type="hidden" name="action" value="export_csv">
+                    <input type="hidden" name="export_type" value="attendance_report">
+                    <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                    <button type="submit" class="btn btn-primary">📋 Export Attendance Report</button>
+                </form>
+            </div>
+
+            <div class="card card-cyan">
+                <h3>Period Summary - <?php echo h($period); ?></h3>
+                <?php $stats = get_dashboard_stats($pdo, $period); ?>
+                <table>
+                    <tr>
+                        <td><strong>Total Members:</strong></td>
+                        <td><?php echo $stats['total_members']; ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Active Members:</strong></td>
+                        <td><?php echo $stats['active_members']; ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Revenue Collected:</strong></td>
+                        <td>$<?php echo money($stats['revenue']); ?></td>
+                    </tr>
+                    <tr>
+                        <td><strong>Outstanding Balance:</strong></td>
+                        <td>$<?php echo money($stats['outstanding']); ?></td>
+                    </tr>
+                </table>
+            </div>
+
+        <?php endif; ?>
     </div>
-</section></div>
-</main>
-</div><div id="m-session" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
-<div class="bg-white rounded-3xl p-7 w-full max-w-md">
-<h3 class="text-2xl font-black mb-5">New Session</h3>
-<form method="POST" class="space-y-4">
-<input name="s_name" placeholder="Session title" class="w-full p-4 bg-slate-50 rounded-xl border" required>
-<input name="s_date" type="date" value="<?= date('Y-m-d') ?>" class="w-full p-4 bg-slate-50 rounded-xl border" required>
-<input type="hidden" name="period" value="<?= h($period) ?>">
-<input type="hidden" name="view" value="attendance">
-<button name="save_session" class="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase text-xs">Create</button>
-<button type="button" onclick="closeModal('m-session')" class="w-full p-2 font-bold text-slate-400">Cancel</button>
-</form>
-</div>
-</div><div id="m-member" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
-<div class="bg-white rounded-3xl p-7 w-full max-w-md">
-<h3 class="text-2xl font-black mb-5">Edit Member</h3>
-<form method="POST" class="space-y-4">
-<input type="hidden" name="mid" id="em-id">
-<input name="full_name" id="em-name" class="w-full p-4 bg-slate-50 rounded-xl border" required>
-<input name="phone" id="em-phone" class="w-full p-4 bg-slate-50 rounded-xl border">
-<input name="default_monthly_fee" id="em-fee" type="number" step="0.01" class="w-full p-4 bg-slate-50 rounded-xl border">
-<input name="default_due_day" id="em-due" type="number" min="1" max="31" class="w-full p-4 bg-slate-50 rounded-xl border">
-<label class="flex gap-2 font-bold"><input type="checkbox" name="is_active" id="em-active"> Active member</label>
-<input type="hidden" name="period" value="<?= h($period) ?>">
-<input type="hidden" name="sid" value="<?= h($current_sid) ?>">
-<input type="hidden" name="view" value="members">
-<button name="update_athlete" class="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase text-xs">Save</button>
-<button type="button" onclick="closeModal('m-member')" class="w-full p-2 font-bold text-slate-400">Cancel</button>
-</form>
-</div>
-</div><div id="m-delete" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
-<div class="bg-white rounded-3xl p-7 w-full max-w-md text-center">
-<h3 class="text-2xl font-black text-red-600 mb-3">Delete Member?</h3>
-<p class="text-slate-500 font-bold mb-5">This deletes attendance and payment records too.</p>
-<form method="POST">
-<input type="hidden" name="mid" id="del-id">
-<input type="hidden" name="period" value="<?= h($period) ?>">
-<input type="hidden" name="sid" value="<?= h($current_sid) ?>">
-<input type="hidden" name="view" value="members">
-<button name="delete_athlete" class="w-full bg-red-600 text-white p-4 rounded-xl font-black uppercase text-xs">Delete</button>
-<button type="button" onclick="closeModal('m-delete')" class="w-full p-2 font-bold text-slate-400">Cancel</button>
-</form>
-</div>
-</div><div id="m-bill" class="modal fixed inset-0 bg-slate-950/80 z-50 items-center justify-center p-5">
-<div class="bg-white rounded-3xl p-7 w-full max-w-lg">
-<h3 class="text-2xl font-black mb-1">Edit Payment</h3>
-<p id="bill-athlete" class="text-slate-500 font-bold mb-5"></p>
-<form method="POST" class="space-y-4">
-<input type="hidden" name="mid" id="bill-mid">
-<input type="hidden" name="period" id="bill-period">
-<input type="hidden" name="sid" value="<?= h($current_sid) ?>">
-<input type="hidden" name="view" value="payments">
-<input name="due_date" id="bill-due" type="date" class="w-full p-4 bg-slate-50 rounded-xl border" required>
-<input name="expected_amount" id="bill-expected" type="number" step="0.01" class="w-full p-4 bg-slate-50 rounded-xl border" required>
-<input name="paid_amount" id="bill-paid" type="number" step="0.01" class="w-full p-4 bg-slate-50 rounded-xl border" required>
-<input name="manual_remaining_amount" id="bill-remaining" type="number" step="0.01" placeholder="Leave empty to auto-calculate" class="w-full p-4 bg-slate-50 rounded-xl border">
-<input name="note" id="bill-note" placeholder="Payment note" class="w-full p-4 bg-slate-50 rounded-xl border">
-<div class="grid grid-cols-2 gap-3">
-<button name="save_bill" class="bg-indigo-600 text-white p-4 rounded-xl font-black uppercase text-xs">Save Payment</button>
-<button name="reset_bill" class="bg-slate-100 p-4 rounded-xl font-black uppercase text-xs">Reset Month</button>
-</div>
-<button type="button" onclick="closeModal('m-bill')" class="w-full p-2 font-bold text-slate-400">Cancel</button>
-</form>
-</div>
-</div><script>
-const initialView = <?= js($active_view) ?>;
-function view(id){
-    document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
-    document.getElementById('v-'+id).classList.remove('hidden');
-    document.querySelectorAll('.nav-btn').forEach(b=>b.className='nav-btn text-slate-400 hover:bg-slate-900 p-4 rounded-2xl font-black text-left');
-    document.getElementById('n-'+id).className='nav-btn bg-indigo-600 p-4 rounded-2xl font-black text-left';
-    const url = new URL(window.location.href);
-    url.searchParams.set('view', id);
-    history.replaceState(null, '', url.toString());
-}
-function searchRows(inputId,selector){
-    const q=document.getElementById(inputId).value.toLowerCase();
-    document.querySelectorAll(selector).forEach(row=>{
-        const name=row.querySelector('.row-name')?.innerText.toLowerCase() || '';
-        row.style.display=name.includes(q)?'':'none';
-    });
-}
-function openModal(id){document.getElementById(id).classList.add('show')}
-function closeModal(id){document.getElementById(id).classList.remove('show')}
-function editMember(m){
-    document.getElementById('em-id').value=m.id;
-    document.getElementById('em-name').value=m.name || '';
-    document.getElementById('em-phone').value=m.phone || '';
-    document.getElementById('em-fee').value=m.fee || 0;
-    document.getElementById('em-due').value=m.due || 5;
-    document.getElementById('em-active').checked=!!m.active;
-    openModal('m-member');
-}
-function deleteMember(id){
-    document.getElementById('del-id').value=id;
-    openModal('m-delete');
-}
-function openBill(b){
-    document.getElementById('bill-mid').value=b.id;
-    document.getElementById('bill-period').value=b.period;
-    document.getElementById('bill-athlete').innerText=b.name+' · '+b.period;
-    document.getElementById('bill-expected').value=b.expected || 0;
-    document.getElementById('bill-paid').value=b.paid || 0;
-    document.getElementById('bill-remaining').value=b.remaining ?? '';
-    document.getElementById('bill-due').value=b.due;
-    document.getElementById('bill-note').value=b.note || '';
-    openModal('m-bill');
-}
-document.addEventListener('keydown',e=>{
-    if(e.key==='Escape') document.querySelectorAll('.modal').forEach(m=>m.classList.remove('show'));
-});
-document.addEventListener('DOMContentLoaded',()=>view(initialView));
-</script></body>
+
+    <script>
+        // Auto-hide messages after 5 seconds
+        document.addEventListener('DOMContentLoaded', function() {
+            const message = document.querySelector('.message');
+            if (message) {
+                setTimeout(() => {
+                    message.style.opacity = '0';
+                    message.style.transition = 'opacity 0.3s';
+                    setTimeout(() => message.remove(), 300);
+                }, 5000);
+            }
+        });
+    </script>
+</body>
 </html>
