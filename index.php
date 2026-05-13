@@ -384,30 +384,30 @@ function get_monthly_summary($pdo, $period) {
             SUM(expected_amount) as total_expected,
             SUM(COALESCE(paid_amount,0)) as total_paid,
             SUM(expected_amount - COALESCE(paid_amount,0)) as total_remaining
-        FROM monthly_bills WHERE period = ?
+        FROM monthly_bills WHERE period = $1
     ");
     $stmt->execute([$period]);
     $pay = $stmt->fetch();
 
-    // Attendance summary for sessions in this period
+    // Attendance summary — aggregate from attendance table directly, filter by session date
     $stmt = $pdo->prepare("
         SELECT
-            COUNT(DISTINCT s.id) as total_sessions,
-            COUNT(a.id)          as total_records,
-            SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present_count,
-            SUM(CASE WHEN a.status = 'absent'  THEN 1 ELSE 0 END) as absent_count,
-            SUM(CASE WHEN a.status = 'late'    THEN 1 ELSE 0 END) as late_count
-        FROM sessions s
-        INNER JOIN attendance a ON a.session_id = s.id
-        WHERE TO_CHAR(s.date, 'YYYY-MM') = ?
+            COUNT(DISTINCT att.session_id) as total_sessions,
+            COUNT(att.id)                  as total_records,
+            SUM(CASE WHEN att.status = 'present' THEN 1 ELSE 0 END) as present_count,
+            SUM(CASE WHEN att.status = 'absent'  THEN 1 ELSE 0 END) as absent_count,
+            SUM(CASE WHEN att.status = 'late'    THEN 1 ELSE 0 END) as late_count
+        FROM attendance att
+        WHERE att.session_id IN (
+            SELECT id FROM sessions WHERE TO_CHAR(date, 'YYYY-MM') = $1
+        )
     ");
     $stmt->execute([$period]);
     $att = $stmt->fetch();
 
     // If no attendance rows exist yet, fill defaults
-    if (!$att || $att['total_records'] === null) {
-        // Count sessions separately (they may exist without attendance)
-        $s2 = $pdo->prepare("SELECT COUNT(*) as c FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ?");
+    if (!$att || (int)($att['total_records'] ?? 0) === 0) {
+        $s2 = $pdo->prepare("SELECT COUNT(*) as c FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = $1");
         $s2->execute([$period]);
         $sc = $s2->fetch();
         $att = [
@@ -419,7 +419,7 @@ function get_monthly_summary($pdo, $period) {
         ];
     }
 
-    // Top attenders this period — join only sessions in this period, then aggregate
+    // Top attenders — subquery aggregates attendance for the period, then join to members
     $stmt = $pdo->prepare("
         SELECT m.full_name,
             COALESCE(agg.sessions_attended, 0) as sessions_attended,
@@ -428,18 +428,19 @@ function get_monthly_summary($pdo, $period) {
             COALESCE(agg.late,    0) as late
         FROM members m
         LEFT JOIN (
-            SELECT a.member_id,
-                COUNT(a.id) as sessions_attended,
-                SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present,
-                SUM(CASE WHEN a.status = 'absent'  THEN 1 ELSE 0 END) as absent,
-                SUM(CASE WHEN a.status = 'late'    THEN 1 ELSE 0 END) as late
-            FROM attendance a
-            INNER JOIN sessions s ON s.id = a.session_id
-            WHERE TO_CHAR(s.date, 'YYYY-MM') = ?
-            GROUP BY a.member_id
+            SELECT att.member_id,
+                COUNT(att.id) as sessions_attended,
+                SUM(CASE WHEN att.status = 'present' THEN 1 ELSE 0 END) as present,
+                SUM(CASE WHEN att.status = 'absent'  THEN 1 ELSE 0 END) as absent,
+                SUM(CASE WHEN att.status = 'late'    THEN 1 ELSE 0 END) as late
+            FROM attendance att
+            WHERE att.session_id IN (
+                SELECT id FROM sessions WHERE TO_CHAR(date, 'YYYY-MM') = $1
+            )
+            GROUP BY att.member_id
         ) agg ON agg.member_id = m.id
         WHERE m.is_active = TRUE
-        ORDER BY agg.present DESC NULLS LAST, agg.sessions_attended DESC NULLS LAST
+        ORDER BY COALESCE(agg.present, 0) DESC, COALESCE(agg.sessions_attended, 0) DESC
         LIMIT 10
     ");
     $stmt->execute([$period]);
@@ -453,7 +454,7 @@ function get_monthly_summary($pdo, $period) {
             b.due_date
         FROM monthly_bills b
         JOIN members m ON m.id = b.member_id
-        WHERE b.period = ? AND b.expected_amount > 0
+        WHERE b.period = $1 AND b.expected_amount > 0
           AND COALESCE(b.paid_amount,0) < b.expected_amount
         ORDER BY remaining DESC
         LIMIT 10
