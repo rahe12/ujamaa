@@ -10,7 +10,6 @@
  * - Payment Recording & Tracking
  * - Comprehensive Reporting (CSV Export)
  * - Role-Based Access Control (Admin/Coach)
- * - Cyberpunk Design System
  * 
  * Database: PostgreSQL/MySQL
  * Schema: schema1.sql
@@ -29,8 +28,6 @@ function getDatabase() {
     }
 
     try {
-        // Parse Neon PostgreSQL connection string
-        // Format: postgresql://user:password@host/dbname?sslmode=require
         $url = parse_url($databaseUrl);
         $host = $url['host'] ?? 'localhost';
         $port = $url['port'] ?? 5432;
@@ -38,7 +35,6 @@ function getDatabase() {
         $user = $url['user'] ?? 'postgres';
         $pass = $url['pass'] ?? '';
         
-        // Build PostgreSQL DSN
         $dsn = "pgsql:host={$host};port={$port};dbname={$dbname};sslmode=require";
         
         $pdo = new PDO($dsn, $user, $pass, [
@@ -97,7 +93,6 @@ function overdue_days($due, $status) {
 // ============ SCHEMA INITIALIZATION ============
 
 function ensure_schema($pdo) {
-    // PostgreSQL schema initialization
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS members(
             id SERIAL PRIMARY KEY,
@@ -199,7 +194,8 @@ function get_member($pdo, $id) {
 
 function create_member($pdo, $data) {
     $nextDueDate = date('Y-m-d', strtotime('+1 month', strtotime(date('Y-m-01'))));
-    $stmt = $pdo->prepare("        INSERT INTO members (full_name, phone, monthly_fee, due_day, default_monthly_fee, default_due_day, next_due_date, balance_remaining)
+    $stmt = $pdo->prepare("
+        INSERT INTO members (full_name, phone, monthly_fee, due_day, default_monthly_fee, default_due_day, next_due_date, balance_remaining)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     ");
     return $stmt->execute([
@@ -252,7 +248,8 @@ function delete_session($pdo, $id) {
 // ============ ATTENDANCE OPERATIONS ============
 
 function log_attendance($pdo, $session_id, $member_id, $status = 'present') {
-    $stmt = $pdo->prepare("        INSERT INTO attendance (session_id, member_id, status) VALUES ($1, $2, $3)
+    $stmt = $pdo->prepare("
+        INSERT INTO attendance (session_id, member_id, status) VALUES ($1, $2, $3)
         ON CONFLICT (session_id, member_id) DO UPDATE SET status = $3
     ");
     return $stmt->execute([$session_id, $member_id, $status]);
@@ -307,7 +304,8 @@ function billing_rows($pdo, $period) {
 
 function create_or_update_bill($pdo, $member_id, $period, $expected, $paid = 0, $due_date = null) {
     $due_date = $due_date ?: due_date_from_day($period, 5);
-    $stmt = $pdo->prepare("        INSERT INTO monthly_bills (member_id, period, expected_amount, paid_amount, due_date)
+    $stmt = $pdo->prepare("
+        INSERT INTO monthly_bills (member_id, period, expected_amount, paid_amount, due_date)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (member_id, period) DO UPDATE SET expected_amount = $3, paid_amount = $4, due_date = $5
     ");
@@ -384,7 +382,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $action = $_POST['action'] ?? '';
 
-        // Member Operations
         if ($action === 'create_member') {
             create_member($pdo, [
                 'full_name' => $_POST['full_name'] ?? '',
@@ -413,7 +410,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect_app(current_period(), 'members', $message);
         }
 
-        // Session Operations
         if ($action === 'create_session') {
             create_session($pdo, $_POST['name'] ?? '', $_POST['date'] ?? date('Y-m-d'));
             $message = 'Session created!';
@@ -426,21 +422,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             redirect_app(current_period(), 'attendance', $message);
         }
 
-        // Attendance Operations
         if ($action === 'log_attendance') {
             log_attendance($pdo, $_POST['session_id'] ?? 0, $_POST['member_id'] ?? 0, $_POST['status'] ?? 'present');
             $message = 'Attendance recorded!';
             redirect_app(current_period(), 'attendance', $message);
         }
 
-        // Payment Operations
         if ($action === 'record_payment') {
             record_payment($pdo, $_POST['member_id'] ?? 0, $_POST['amount'] ?? 0, current_period());
             $message = 'Payment recorded!';
             redirect_app(current_period(), 'payments', $message);
         }
 
-        // Export Operations
         if ($action === 'export_csv') {
             $export_type = $_POST['export_type'] ?? '';
             $period = valid_period($_POST['period'] ?? current_period());
@@ -513,744 +506,1407 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Academy Management System - Cyberpunk Edition</title>
+    <title>AMS — Academy Management System</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&display=swap" rel="stylesheet">
     <style>
-        /* ============ CYBERPUNK DESIGN SYSTEM ============ */
-        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Space+Mono:wght@400;700&display=swap');
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
         :root {
-            --color-neon-pink: #FF006E;
-            --color-neon-cyan: #00D9FF;
-            --color-neon-purple: #B700FF;
-            --color-neon-green: #00FF41;
-            --color-bg-primary: #0a0e27;
-            --color-bg-secondary: #1a1f3a;
-            --color-bg-tertiary: #252d47;
-            --color-text-primary: #00D9FF;
-            --color-text-secondary: #FF006E;
-            --color-text-muted: #8892b0;
-            --glow-pink: 0 0 10px rgba(255, 0, 110, 0.5), 0 0 20px rgba(255, 0, 110, 0.3);
-            --glow-cyan: 0 0 10px rgba(0, 217, 255, 0.5), 0 0 20px rgba(0, 217, 255, 0.3);
-            --glow-intense: 0 0 20px rgba(255, 0, 110, 0.8), 0 0 40px rgba(0, 217, 255, 0.6);
+            --bg:          #0f1117;
+            --surface:     #181c27;
+            --surface-2:   #1f2333;
+            --border:      #272d42;
+            --border-hover:#3a4261;
+
+            --accent:      #4f7dff;
+            --accent-dim:  rgba(79,125,255,.12);
+            --accent-glow: rgba(79,125,255,.35);
+
+            --green:       #2dd4a0;
+            --green-dim:   rgba(45,212,160,.12);
+            --amber:       #f59e0b;
+            --amber-dim:   rgba(245,158,11,.12);
+            --red:         #f87171;
+            --red-dim:     rgba(248,113,113,.12);
+
+            --text-1:      #e8ecf4;
+            --text-2:      #8b92a8;
+            --text-3:      #555e78;
+
+            --radius-sm:   6px;
+            --radius:      10px;
+            --radius-lg:   16px;
+
+            --sidebar-w:   240px;
+            --header-h:    64px;
+
+            --transition:  all .18s cubic-bezier(.4,0,.2,1);
         }
 
         html, body {
-            background-color: var(--color-bg-primary);
-            color: var(--color-text-primary);
-            font-family: 'Space Mono', monospace;
-            font-weight: 400;
+            background: var(--bg);
+            color: var(--text-1);
+            font-family: 'DM Sans', sans-serif;
+            font-size: 15px;
             line-height: 1.6;
-            letter-spacing: 0.05em;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ──────────── LAYOUT SHELL ──────────── */
+        .shell {
+            display: flex;
             min-height: 100vh;
         }
 
-        h1, h2, h3, h4, h5, h6 {
-            font-family: 'Orbitron', sans-serif;
-            font-weight: 900;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            color: var(--color-text-primary);
-            text-shadow: var(--glow-cyan);
+        /* ──────────── SIDEBAR ──────────── */
+        .sidebar {
+            width: var(--sidebar-w);
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            top: 0; left: 0;
+            height: 100vh;
+            z-index: 200;
+            transition: transform .25s ease;
         }
 
-        h1 { font-size: 2.5rem; margin-bottom: 1.5rem; text-shadow: var(--glow-intense); }
-        h2 { font-size: 1.75rem; margin-bottom: 1.25rem; }
-        h3 { font-size: 1.25rem; margin-bottom: 1rem; }
-
-        a {
-            color: var(--color-neon-pink);
-            text-decoration: none;
-            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
-            text-shadow: var(--glow-pink);
-        }
-
-        a:hover {
-            color: var(--color-neon-cyan);
-            text-shadow: var(--glow-cyan);
-        }
-
-        /* Layout */
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 2rem;
-        }
-
-        .header {
-            background: linear-gradient(135deg, var(--color-bg-secondary) 0%, var(--color-bg-tertiary) 100%);
-            border-bottom: 3px solid var(--color-neon-pink);
-            padding: 2rem;
-            margin-bottom: 2rem;
-            box-shadow: var(--glow-pink);
-        }
-
-        .header h1 {
+        .sidebar-brand {
             display: flex;
             align-items: center;
-            gap: 1rem;
+            gap: 10px;
+            padding: 20px 20px 16px;
+            border-bottom: 1px solid var(--border);
         }
 
-        .header-nav {
+        .brand-icon {
+            width: 36px; height: 36px;
+            background: var(--accent);
+            border-radius: var(--radius-sm);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+            box-shadow: 0 0 16px var(--accent-glow);
+        }
+
+        .brand-text {
+            font-family: 'Syne', sans-serif;
+            font-weight: 800;
+            font-size: 16px;
+            letter-spacing: .02em;
+            color: var(--text-1);
+            line-height: 1.2;
+        }
+
+        .brand-sub {
+            font-size: 10px;
+            font-weight: 400;
+            color: var(--text-3);
+            letter-spacing: .06em;
+            text-transform: uppercase;
+        }
+
+        .sidebar-nav {
+            flex: 1;
+            padding: 12px 10px;
+            overflow-y: auto;
+        }
+
+        .nav-label {
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: .1em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            padding: 8px 10px 4px;
+            margin-top: 6px;
+        }
+
+        .nav-item {
             display: flex;
-            gap: 1rem;
-            margin-top: 1.5rem;
+            align-items: center;
+            gap: 10px;
+            padding: 9px 12px;
+            border-radius: var(--radius-sm);
+            color: var(--text-2);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            width: 100%;
+            text-align: left;
+            transition: var(--transition);
+            margin-bottom: 2px;
+        }
+
+        .nav-item:hover {
+            background: var(--surface-2);
+            color: var(--text-1);
+        }
+
+        .nav-item.active {
+            background: var(--accent-dim);
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        .nav-icon {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+            opacity: .7;
+        }
+
+        .nav-item.active .nav-icon { opacity: 1; }
+
+        .sidebar-footer {
+            padding: 14px 20px;
+            border-top: 1px solid var(--border);
+        }
+
+        .period-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 8px 12px;
+            font-size: 12px;
+            color: var(--text-2);
+        }
+
+        .period-dot {
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 6px var(--green);
+            flex-shrink: 0;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%,100% { opacity: 1; }
+            50% { opacity: .4; }
+        }
+
+        /* ──────────── MAIN AREA ──────────── */
+        .main {
+            margin-left: var(--sidebar-w);
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        /* ──────────── TOPBAR ──────────── */
+        .topbar {
+            height: var(--header-h);
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 28px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .menu-toggle {
+            display: none;
+            background: none;
+            border: none;
+            color: var(--text-2);
+            cursor: pointer;
+            padding: 6px;
+            border-radius: var(--radius-sm);
+        }
+
+        .page-title {
+            font-family: 'Syne', sans-serif;
+            font-weight: 700;
+            font-size: 18px;
+            color: var(--text-1);
+        }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .avatar {
+            width: 34px; height: 34px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700;
+            font-size: 13px;
+            color: #fff;
+            cursor: pointer;
+        }
+
+        /* ──────────── CONTENT ──────────── */
+        .content {
+            flex: 1;
+            padding: 28px;
+            max-width: 1200px;
+            width: 100%;
+        }
+
+        /* ──────────── ALERT MESSAGES ──────────── */
+        .alert {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+            border-radius: var(--radius);
+            margin-bottom: 24px;
+            font-size: 14px;
+            font-weight: 500;
+            animation: slideDown .3s ease;
+        }
+
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        .alert-success {
+            background: var(--green-dim);
+            border: 1px solid rgba(45,212,160,.3);
+            color: var(--green);
+        }
+
+        .alert-error {
+            background: var(--red-dim);
+            border: 1px solid rgba(248,113,113,.3);
+            color: var(--red);
+        }
+
+        /* ──────────── SECTION HEADER ──────────── */
+        .section-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            gap: 16px;
             flex-wrap: wrap;
         }
 
-        .nav-btn {
-            padding: 0.75rem 1.5rem;
-            border: 2px solid var(--color-neon-cyan);
-            background: transparent;
-            color: var(--color-neon-cyan);
-            font-family: 'Orbitron', sans-serif;
+        .section-title {
+            font-family: 'Syne', sans-serif;
             font-weight: 700;
+            font-size: 22px;
+            color: var(--text-1);
+        }
+
+        .section-subtitle {
+            font-size: 13px;
+            color: var(--text-3);
+            margin-top: 2px;
+        }
+
+        /* ──────────── STAT CARDS ──────────── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 20px 22px;
+            position: relative;
+            overflow: hidden;
+            transition: var(--transition);
+        }
+
+        .stat-card:hover {
+            border-color: var(--border-hover);
+            transform: translateY(-1px);
+        }
+
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+        }
+
+        .stat-card.blue::before  { background: var(--accent); }
+        .stat-card.green::before { background: var(--green); }
+        .stat-card.amber::before { background: var(--amber); }
+        .stat-card.red::before   { background: var(--red); }
+
+        .stat-icon {
+            width: 38px; height: 38px;
+            border-radius: var(--radius-sm);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 18px;
+            margin-bottom: 14px;
+        }
+
+        .stat-icon.blue  { background: var(--accent-dim); }
+        .stat-icon.green { background: var(--green-dim); }
+        .stat-icon.amber { background: var(--amber-dim); }
+        .stat-icon.red   { background: var(--red-dim); }
+
+        .stat-value {
+            font-family: 'Syne', sans-serif;
+            font-weight: 800;
+            font-size: 28px;
+            color: var(--text-1);
+            line-height: 1;
+            margin-bottom: 6px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-3);
+            font-weight: 500;
+            letter-spacing: .02em;
             text-transform: uppercase;
-            cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
-            box-shadow: var(--glow-cyan);
         }
 
-        .nav-btn:hover, .nav-btn.active {
-            background: var(--color-neon-cyan);
-            color: var(--color-bg-primary);
-            text-shadow: none;
-        }
-
-        .nav-btn:active {
-            transform: scale(0.97);
-        }
-
-        /* Cards */
+        /* ──────────── CARD ──────────── */
         .card {
-            background-color: var(--color-bg-secondary);
-            border: 2px solid var(--color-neon-pink);
-            padding: 1.5rem;
-            margin-bottom: 1.5rem;
-            border-radius: 4px;
-            box-shadow: inset 0 0 10px rgba(255, 0, 110, 0.1), var(--glow-pink);
-            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
         }
 
-        .card:hover {
-            border-color: var(--color-neon-cyan);
-            box-shadow: inset 0 0 10px rgba(0, 217, 255, 0.1), var(--glow-cyan);
+        .card + .card { margin-top: 20px; }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 18px 22px;
+            border-bottom: 1px solid var(--border);
         }
 
-        .card-cyan {
-            border-color: var(--color-neon-cyan);
-            box-shadow: inset 0 0 10px rgba(0, 217, 255, 0.1), var(--glow-cyan);
-        }
-
-        /* Forms */
-        input, textarea, select {
-            font-family: 'Space Mono', monospace;
-            background-color: var(--color-bg-tertiary);
-            color: var(--color-text-primary);
-            border: 2px solid var(--color-neon-pink);
-            padding: 0.75rem 1rem;
-            border-radius: 4px;
-            transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
-            box-shadow: inset 0 0 5px rgba(255, 0, 110, 0.1);
-            width: 100%;
-            margin-bottom: 1rem;
-        }
-
-        input:focus, textarea:focus, select:focus {
-            outline: none;
-            border-color: var(--color-neon-cyan);
-            box-shadow: inset 0 0 5px rgba(0, 217, 255, 0.2), var(--glow-cyan);
-        }
-
-        input::placeholder {
-            color: var(--color-text-muted);
-        }
-
-        label {
-            display: block;
-            margin-bottom: 0.5rem;
+        .card-title {
+            font-family: 'Syne', sans-serif;
             font-weight: 700;
-            color: var(--color-text-secondary);
-            text-shadow: var(--glow-pink);
+            font-size: 15px;
+            color: var(--text-1);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-body {
+            padding: 22px;
+        }
+
+        /* ──────────── FORM ELEMENTS ──────────── */
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+
+        .form-grid.cols-3 {
+            grid-template-columns: repeat(3, 1fr);
         }
 
         .form-group {
-            margin-bottom: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
         }
 
-        /* Buttons */
-        button, .btn {
-            font-family: 'Orbitron', sans-serif;
-            font-weight: 700;
-            letter-spacing: 0.05em;
+        .form-group.full { grid-column: 1 / -1; }
+
+        label {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: .04em;
             text-transform: uppercase;
-            padding: 0.75rem 1.5rem;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            transition: all 0.16s cubic-bezier(0.23, 1, 0.32, 1);
-            display: inline-block;
+            color: var(--text-3);
         }
+
+        input[type="text"],
+        input[type="tel"],
+        input[type="number"],
+        input[type="date"],
+        input[type="email"],
+        select,
+        textarea {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-1);
+            font-family: 'DM Sans', sans-serif;
+            font-size: 14px;
+            padding: 10px 14px;
+            width: 100%;
+            transition: var(--transition);
+            outline: none;
+            appearance: none;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-dim);
+        }
+
+        input::placeholder { color: var(--text-3); }
+
+        select {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b92a8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        /* ──────────── BUTTONS ──────────── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 9px 18px;
+            border-radius: var(--radius-sm);
+            font-family: 'DM Sans', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            text-decoration: none;
+            transition: var(--transition);
+            white-space: nowrap;
+        }
+
+        .btn:active { transform: scale(.97); }
 
         .btn-primary {
-            background: var(--color-neon-pink);
-            color: white;
-            box-shadow: var(--glow-pink);
+            background: var(--accent);
+            color: #fff;
+            box-shadow: 0 1px 8px var(--accent-glow);
         }
 
         .btn-primary:hover {
-            background: var(--color-neon-cyan);
-            color: var(--color-bg-primary);
-            box-shadow: var(--glow-cyan);
+            background: #6b93ff;
+            box-shadow: 0 2px 14px var(--accent-glow);
         }
 
-        .btn-secondary {
-            background: transparent;
-            border: 2px solid var(--color-neon-cyan);
-            color: var(--color-neon-cyan);
-            box-shadow: var(--glow-cyan);
+        .btn-ghost {
+            background: var(--surface-2);
+            color: var(--text-2);
+            border: 1px solid var(--border);
         }
 
-        .btn-secondary:hover {
-            background: var(--color-neon-cyan);
-            color: var(--color-bg-primary);
+        .btn-ghost:hover {
+            background: var(--border);
+            color: var(--text-1);
         }
 
-        button:active, .btn:active {
-            transform: scale(0.97);
+        .btn-danger {
+            background: var(--red-dim);
+            color: var(--red);
+            border: 1px solid rgba(248,113,113,.25);
         }
 
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+        .btn-danger:hover {
+            background: rgba(248,113,113,.22);
         }
 
-        /* Tables */
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        /* ──────────── TABLE ──────────── */
+        .table-wrap {
+            overflow-x: auto;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.9rem;
-            margin-bottom: 1.5rem;
+            font-size: 13.5px;
         }
 
-        thead {
-            background-color: var(--color-bg-tertiary);
-            border-bottom: 2px solid var(--color-neon-pink);
+        thead tr {
+            border-bottom: 1px solid var(--border);
         }
 
         th {
-            padding: 1rem;
+            padding: 10px 16px;
             text-align: left;
-            font-family: 'Orbitron', sans-serif;
+            font-size: 11px;
             font-weight: 700;
+            letter-spacing: .07em;
             text-transform: uppercase;
-            color: var(--color-text-secondary);
-            text-shadow: var(--glow-pink);
+            color: var(--text-3);
+            white-space: nowrap;
         }
 
         td {
-            padding: 0.75rem 1rem;
-            border-bottom: 1px solid var(--color-bg-tertiary);
+            padding: 13px 16px;
+            color: var(--text-2);
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
         }
 
+        tbody tr:last-child td { border-bottom: none; }
+
         tbody tr {
-            transition: background-color 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+            transition: background .12s;
         }
 
         tbody tr:hover {
-            background-color: var(--color-bg-tertiary);
-            box-shadow: inset 0 0 10px rgba(0, 217, 255, 0.1);
+            background: var(--surface-2);
         }
 
-        /* Status Badges */
+        td.name-cell {
+            color: var(--text-1);
+            font-weight: 500;
+        }
+
+        td .mono {
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        /* ──────────── BADGES ──────────── */
         .badge {
-            display: inline-block;
-            padding: 0.25rem 0.75rem;
-            border-radius: 4px;
-            font-size: 0.75rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 10px;
+            border-radius: 100px;
+            font-size: 11px;
             font-weight: 700;
+            letter-spacing: .04em;
             text-transform: uppercase;
-            text-shadow: 0 0 5px rgba(0, 217, 255, 0.5);
         }
 
-        .badge-success {
-            background: rgba(0, 255, 65, 0.2);
-            color: var(--color-neon-green);
+        .badge::before {
+            content: '';
+            width: 5px; height: 5px;
+            border-radius: 50%;
         }
 
-        .badge-error {
-            background: rgba(255, 0, 110, 0.2);
-            color: var(--color-neon-pink);
+        .badge-green  { background: var(--green-dim); color: var(--green); }
+        .badge-green::before  { background: var(--green); }
+
+        .badge-red    { background: var(--red-dim);   color: var(--red); }
+        .badge-red::before    { background: var(--red); }
+
+        .badge-amber  { background: var(--amber-dim); color: var(--amber); }
+        .badge-amber::before  { background: var(--amber); }
+
+        .badge-blue   { background: var(--accent-dim);color: var(--accent); }
+        .badge-blue::before   { background: var(--accent); }
+
+        .badge-gray   { background: var(--surface-2); color: var(--text-3); }
+        .badge-gray::before   { background: var(--text-3); }
+
+        /* ──────────── DIVIDER ──────────── */
+        .divider {
+            height: 1px;
+            background: var(--border);
+            margin: 20px 0;
         }
 
-        .badge-warning {
-            background: rgba(255, 183, 0, 0.2);
-            color: #FFB700;
-        }
-
-        .badge-info {
-            background: rgba(0, 217, 255, 0.2);
-            color: var(--color-neon-cyan);
-        }
-
-        /* Messages */
-        .message {
-            padding: 1rem;
-            margin-bottom: 1.5rem;
-            border-left: 4px solid;
-            border-radius: 4px;
-            font-weight: 700;
-        }
-
-        .message.success {
-            background: rgba(0, 255, 65, 0.1);
-            border-color: var(--color-neon-green);
-            color: var(--color-neon-green);
-        }
-
-        .message.error {
-            background: rgba(255, 0, 110, 0.1);
-            border-color: var(--color-neon-pink);
-            color: var(--color-neon-pink);
-        }
-
-        /* Grid */
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 1.5rem;
-            margin-bottom: 2rem;
-        }
-
-        .stat-box {
-            background-color: var(--color-bg-secondary);
-            border: 2px solid var(--color-neon-cyan);
-            padding: 1.5rem;
-            border-radius: 4px;
+        /* ──────────── EMPTY STATE ──────────── */
+        .empty-state {
             text-align: center;
-            box-shadow: var(--glow-cyan);
+            padding: 48px 24px;
+            color: var(--text-3);
         }
 
-        .stat-box h3 {
-            color: var(--color-text-muted);
-            font-size: 0.9rem;
-            margin-bottom: 0.5rem;
+        .empty-icon {
+            font-size: 36px;
+            margin-bottom: 12px;
+            opacity: .5;
         }
 
-        .stat-box .value {
-            font-size: 2rem;
-            color: var(--color-neon-cyan);
-            text-shadow: var(--glow-cyan);
-            font-weight: 700;
+        .empty-state p { font-size: 14px; }
+
+        /* ──────────── LAYOUT SPLIT ──────────── */
+        .two-col {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 20px;
+            align-items: start;
         }
 
-        /* Modal/Dialog */
-        .modal {
+        /* ──────────── SUMMARY TABLE ──────────── */
+        .summary-table td:first-child {
+            color: var(--text-3);
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            width: 55%;
+        }
+
+        .summary-table td:last-child {
+            color: var(--text-1);
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        /* ──────────── EXPORT BUTTONS ──────────── */
+        .export-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        .export-card {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            transition: var(--transition);
+        }
+
+        .export-card:hover {
+            border-color: var(--accent);
+            background: var(--accent-dim);
+        }
+
+        .export-card-title {
+            font-weight: 600;
+            font-size: 14px;
+            color: var(--text-1);
+        }
+
+        .export-card-desc {
+            font-size: 12px;
+            color: var(--text-3);
+            line-height: 1.5;
+        }
+
+        /* ──────────── OVERLAY / MOBILE ──────────── */
+        .overlay {
             display: none;
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(10, 14, 39, 0.9);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
+            inset: 0;
+            background: rgba(0,0,0,.6);
+            z-index: 150;
         }
 
-        .modal.active {
-            display: flex;
+        /* ──────────── RESPONSIVE ──────────── */
+        @media (max-width: 1024px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .two-col    { grid-template-columns: 1fr; }
+            .form-grid  { grid-template-columns: 1fr; }
+            .form-grid.cols-3 { grid-template-columns: 1fr 1fr; }
         }
 
-        .modal-content {
-            background: var(--color-bg-secondary);
-            border: 2px solid var(--color-neon-pink);
-            padding: 2rem;
-            border-radius: 4px;
-            max-width: 500px;
-            width: 90%;
-            box-shadow: var(--glow-pink);
-        }
-
-        .modal-close {
-            float: right;
-            font-size: 1.5rem;
-            cursor: pointer;
-            color: var(--color-neon-pink);
-        }
-
-        /* Responsive */
         @media (max-width: 768px) {
-            .container {
-                padding: 1rem;
+            :root { --sidebar-w: 240px; }
+
+            .sidebar {
+                transform: translateX(-100%);
             }
 
-            h1 { font-size: 1.75rem; }
-            h2 { font-size: 1.25rem; }
-
-            .header-nav {
-                flex-direction: column;
+            .sidebar.open {
+                transform: translateX(0);
             }
 
-            .nav-btn {
-                width: 100%;
-            }
+            .overlay.active { display: block; }
 
-            table {
-                font-size: 0.8rem;
-            }
+            .menu-toggle { display: flex; }
 
-            th, td {
-                padding: 0.5rem;
-            }
+            .main { margin-left: 0; }
+
+            .content { padding: 16px; }
+
+            .topbar { padding: 0 16px; }
+
+            .stats-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+
+            .stat-value { font-size: 22px; }
+
+            .export-grid { grid-template-columns: 1fr; }
+        }
+
+        @media (max-width: 480px) {
+            .stats-grid { grid-template-columns: 1fr; }
+            .form-grid.cols-3 { grid-template-columns: 1fr; }
         }
     </style>
 </head>
 <body>
-    <!-- Header -->
-    <div class="header">
-        <h1>⚡ ACADEMY MANAGEMENT SYSTEM</h1>
-        <p style="color: var(--color-text-muted); margin-top: 0.5rem;">Cyberpunk Edition | Period: <strong><?php echo h($period); ?></strong></p>
-        
-        <div class="header-nav">
-            <button class="nav-btn <?php echo $active_view === 'dashboard' ? 'active' : ''; ?>" onclick="location.href='?view=dashboard&period=<?php echo h($period); ?>'">Dashboard</button>
-            <button class="nav-btn <?php echo $active_view === 'members' ? 'active' : ''; ?>" onclick="location.href='?view=members&period=<?php echo h($period); ?>'">Members</button>
-            <button class="nav-btn <?php echo $active_view === 'attendance' ? 'active' : ''; ?>" onclick="location.href='?view=attendance&period=<?php echo h($period); ?>'">Attendance</button>
-            <button class="nav-btn <?php echo $active_view === 'payments' ? 'active' : ''; ?>" onclick="location.href='?view=payments&period=<?php echo h($period); ?>'">Payments</button>
-            <button class="nav-btn <?php echo $active_view === 'reports' ? 'active' : ''; ?>" onclick="location.href='?view=reports&period=<?php echo h($period); ?>'">Reports</button>
+
+<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
+
+<!-- ──────────── SIDEBAR ──────────── -->
+<div class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+        <div class="brand-icon">🏟️</div>
+        <div>
+            <div class="brand-text">AMS</div>
+            <div class="brand-sub">Academy Portal</div>
         </div>
     </div>
 
-    <div class="container">
-        <!-- Messages -->
+    <nav class="sidebar-nav">
+        <div class="nav-label">Main</div>
+        <a href="?view=dashboard&period=<?php echo h($period); ?>"
+           class="nav-item <?php echo $active_view === 'dashboard' ? 'active' : ''; ?>">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="7" height="7" rx="1" stroke-width="2"/>
+                <rect x="14" y="3" width="7" height="7" rx="1" stroke-width="2"/>
+                <rect x="3" y="14" width="7" height="7" rx="1" stroke-width="2"/>
+                <rect x="14" y="14" width="7" height="7" rx="1" stroke-width="2"/>
+            </svg>
+            Dashboard
+        </a>
+
+        <div class="nav-label">Management</div>
+        <a href="?view=members&period=<?php echo h($period); ?>"
+           class="nav-item <?php echo $active_view === 'members' ? 'active' : ''; ?>">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke-width="2" stroke-linecap="round"/>
+                <circle cx="9" cy="7" r="4" stroke-width="2"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Members
+        </a>
+
+        <a href="?view=attendance&period=<?php echo h($period); ?>"
+           class="nav-item <?php echo $active_view === 'attendance' ? 'active' : ''; ?>">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M9 11l3 3L22 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Attendance
+        </a>
+
+        <a href="?view=payments&period=<?php echo h($period); ?>"
+           class="nav-item <?php echo $active_view === 'payments' ? 'active' : ''; ?>">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <rect x="1" y="4" width="22" height="16" rx="2" stroke-width="2"/>
+                <path d="M1 10h22" stroke-width="2"/>
+            </svg>
+            Payments
+        </a>
+
+        <div class="nav-label">Analytics</div>
+        <a href="?view=reports&period=<?php echo h($period); ?>"
+           class="nav-item <?php echo $active_view === 'reports' ? 'active' : ''; ?>">
+            <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M18 20V10M12 20V4M6 20v-6" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            Reports
+        </a>
+    </nav>
+
+    <div class="sidebar-footer">
+        <div class="period-badge">
+            <div class="period-dot"></div>
+            <div>
+                <div style="font-size:11px;font-weight:600;color:var(--text-2);">Current Period</div>
+                <div style="font-size:13px;font-weight:700;color:var(--text-1);"><?php echo h($period); ?></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ──────────── MAIN ──────────── -->
+<div class="main">
+
+    <!-- TOPBAR -->
+    <div class="topbar">
+        <div class="topbar-left">
+            <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Menu">
+                <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-width="2" stroke-linecap="round" d="M4 6h16M4 12h16M4 18h16"/>
+                </svg>
+            </button>
+            <span class="page-title">
+                <?php
+                $titles = [
+                    'dashboard'  => 'Dashboard',
+                    'members'    => 'Members',
+                    'attendance' => 'Attendance',
+                    'payments'   => 'Payments',
+                    'reports'    => 'Reports',
+                ];
+                echo h($titles[$active_view] ?? 'Dashboard');
+                ?>
+            </span>
+        </div>
+        <div class="topbar-right">
+            <div class="avatar" title="Admin">A</div>
+        </div>
+    </div>
+
+    <!-- CONTENT -->
+    <div class="content">
+
         <?php if ($message): ?>
-            <div class="message <?php echo $message_type; ?>">
+            <div class="alert <?php echo $message_type === 'error' ? 'alert-error' : 'alert-success'; ?>" id="alert-msg">
+                <?php echo $message_type === 'error' ? '⚠️' : '✅'; ?>
                 <?php echo h($message); ?>
             </div>
         <?php endif; ?>
 
-        <!-- DASHBOARD VIEW -->
+        <!-- ═══════════════ DASHBOARD ═══════════════ -->
         <?php if ($active_view === 'dashboard'): ?>
-            <h2>Dashboard</h2>
             <?php $stats = get_dashboard_stats($pdo, $period); ?>
-            <div class="grid">
-                <div class="stat-box">
-                    <h3>Total Members</h3>
-                    <div class="value"><?php echo $stats['total_members']; ?></div>
+
+            <div class="section-header">
+                <div>
+                    <div class="section-title">Overview</div>
+                    <div class="section-subtitle">Period: <?php echo h($period); ?></div>
                 </div>
-                <div class="stat-box">
-                    <h3>Active Members</h3>
-                    <div class="value"><?php echo $stats['active_members']; ?></div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-card blue">
+                    <div class="stat-icon blue">👥</div>
+                    <div class="stat-value"><?php echo $stats['total_members']; ?></div>
+                    <div class="stat-label">Total Members</div>
                 </div>
-                <div class="stat-box">
-                    <h3>Revenue Collected</h3>
-                    <div class="value">$<?php echo money($stats['revenue']); ?></div>
+                <div class="stat-card green">
+                    <div class="stat-icon green">✅</div>
+                    <div class="stat-value"><?php echo $stats['active_members']; ?></div>
+                    <div class="stat-label">Active Members</div>
                 </div>
-                <div class="stat-box">
-                    <h3>Outstanding Balance</h3>
-                    <div class="value">$<?php echo money($stats['outstanding']); ?></div>
+                <div class="stat-card amber">
+                    <div class="stat-icon amber">💰</div>
+                    <div class="stat-value">$<?php echo money($stats['revenue']); ?></div>
+                    <div class="stat-label">Revenue Collected</div>
+                </div>
+                <div class="stat-card red">
+                    <div class="stat-icon red">📋</div>
+                    <div class="stat-value">$<?php echo money($stats['outstanding']); ?></div>
+                    <div class="stat-label">Outstanding Balance</div>
                 </div>
             </div>
 
             <div class="card">
-                <h3>Recent Activity</h3>
-                <p style="color: var(--color-text-muted); margin-top: 1rem;">
-                    System initialized. View members, sessions, attendance, and payments from the navigation menu.
-                </p>
+                <div class="card-header">
+                    <div class="card-title">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" stroke-width="2"/>
+                            <path d="M12 6v6l4 2" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        Recent Activity
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="empty-state">
+                        <div class="empty-icon">🚀</div>
+                        <p>System is live. Use the navigation to manage members, sessions, attendance, and payments.</p>
+                    </div>
+                </div>
             </div>
 
-        <!-- MEMBERS VIEW -->
+        <!-- ═══════════════ MEMBERS ═══════════════ -->
         <?php elseif ($active_view === 'members'): ?>
-            <h2>Member Management</h2>
-            
-            <div class="card">
-                <h3>Add New Member</h3>
-                <form method="POST">
-                    <input type="hidden" name="action" value="create_member">
-                    <div class="form-group">
-                        <label>Full Name *</label>
-                        <input type="text" name="full_name" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Phone</label>
-                        <input type="tel" name="phone">
-                    </div>
-                    <div class="form-group">
-                        <label>Monthly Fee *</label>
-                        <input type="number" name="monthly_fee" step="0.01" required>
-                    </div>
-                    <div class="form-group">
-                        <label>Due Day (1-31) *</label>
-                        <input type="number" name="due_day" min="1" max="31" value="5" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Create Member</button>
-                </form>
+
+            <div class="section-header">
+                <div>
+                    <div class="section-title">Members</div>
+                    <div class="section-subtitle">Manage academy membership roster</div>
+                </div>
             </div>
 
-            <div class="card card-cyan">
-                <h3>All Members</h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Phone</th>
-                            <th>Monthly Fee</th>
-                            <th>Balance</th>
-                            <th>Status</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach (get_all_members($pdo) as $member): ?>
-                            <tr>
-                                <td><?php echo h($member['full_name']); ?></td>
-                                <td><?php echo h($member['phone'] ?? '-'); ?></td>
-                                <td>$<?php echo money($member['monthly_fee']); ?></td>
-                                <td>$<?php echo money($member['balance_remaining']); ?></td>
-                                <td>
-                                    <span class="badge <?php echo $member['is_active'] ? 'badge-success' : 'badge-error'; ?>">
-                                        <?php echo $member['is_active'] ? 'Active' : 'Inactive'; ?>
-                                    </span>
-                                </td>
-                                <td>
-                                    <?php if ($member['is_active']): ?>
-                                        <form method="POST" style="display: inline;">
-                                            <input type="hidden" name="action" value="deactivate_member">
-                                            <input type="hidden" name="id" value="<?php echo $member['id']; ?>">
-                                            <button type="submit" class="btn btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Deactivate</button>
-                                        </form>
-                                    <?php endif; ?>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+            <div class="two-col">
+                <!-- Form -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 5v14M5 12h14" stroke-width="2.5" stroke-linecap="round"/>
+                            </svg>
+                            Add New Member
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST">
+                            <input type="hidden" name="action" value="create_member">
+                            <div class="form-grid">
+                                <div class="form-group full">
+                                    <label>Full Name *</label>
+                                    <input type="text" name="full_name" placeholder="e.g. John Doe" required>
+                                </div>
+                                <div class="form-group full">
+                                    <label>Phone Number</label>
+                                    <input type="tel" name="phone" placeholder="+1 555 000 0000">
+                                </div>
+                                <div class="form-group">
+                                    <label>Monthly Fee *</label>
+                                    <input type="number" name="monthly_fee" step="0.01" placeholder="0.00" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Due Day (1–31) *</label>
+                                    <input type="number" name="due_day" min="1" max="31" value="5" required>
+                                </div>
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">Create Member</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Table -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke-width="2" stroke-linecap="round"/>
+                                <circle cx="9" cy="7" r="4" stroke-width="2"/>
+                            </svg>
+                            All Members
+                        </div>
+                        <span class="badge badge-blue"><?php echo count(get_all_members($pdo)); ?> total</span>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Phone</th>
+                                    <th>Fee / mo</th>
+                                    <th>Balance</th>
+                                    <th>Status</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach (get_all_members($pdo) as $member): ?>
+                                    <tr>
+                                        <td class="name-cell"><?php echo h($member['full_name']); ?></td>
+                                        <td><?php echo h($member['phone'] ?? '—'); ?></td>
+                                        <td class="mono">$<?php echo money($member['monthly_fee']); ?></td>
+                                        <td class="mono">$<?php echo money($member['balance_remaining']); ?></td>
+                                        <td>
+                                            <span class="badge <?php echo $member['is_active'] ? 'badge-green' : 'badge-gray'; ?>">
+                                                <?php echo $member['is_active'] ? 'Active' : 'Inactive'; ?>
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <?php if ($member['is_active']): ?>
+                                                <form method="POST" style="margin:0;">
+                                                    <input type="hidden" name="action" value="deactivate_member">
+                                                    <input type="hidden" name="id" value="<?php echo $member['id']; ?>">
+                                                    <button type="submit" class="btn btn-danger btn-sm">Deactivate</button>
+                                                </form>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
 
-        <!-- ATTENDANCE VIEW -->
+        <!-- ═══════════════ ATTENDANCE ═══════════════ -->
         <?php elseif ($active_view === 'attendance'): ?>
-            <h2>Attendance Tracking</h2>
-            
-            <div class="card">
-                <h3>Create New Session</h3>
-                <form method="POST">
-                    <input type="hidden" name="action" value="create_session">
-                    <div class="form-group">
-                        <label>Session Name *</label>
-                        <input type="text" name="name" placeholder="e.g., Morning Training" required>
+
+            <div class="section-header">
+                <div>
+                    <div class="section-title">Attendance</div>
+                    <div class="section-subtitle">Track member sessions and participation</div>
+                </div>
+            </div>
+
+            <?php $sessions = get_all_sessions($pdo); ?>
+
+            <div class="two-col">
+                <div style="display:flex;flex-direction:column;gap:20px;">
+
+                    <!-- Create Session -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <rect x="3" y="4" width="18" height="18" rx="2" stroke-width="2"/>
+                                    <path d="M16 2v4M8 2v4M3 10h18" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                                New Session
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <form method="POST">
+                                <input type="hidden" name="action" value="create_session">
+                                <div class="form-group" style="margin-bottom:14px;">
+                                    <label>Session Name *</label>
+                                    <input type="text" name="name" placeholder="e.g. Morning Training" required>
+                                </div>
+                                <div class="form-group">
+                                    <label>Date *</label>
+                                    <input type="date" name="date" value="<?php echo date('Y-m-d'); ?>" required>
+                                </div>
+                                <div class="form-actions">
+                                    <button type="submit" class="btn btn-primary">Create Session</button>
+                                </div>
+                            </form>
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label>Date *</label>
-                        <input type="date" name="date" value="<?php echo date('Y-m-d'); ?>" required>
+
+                    <!-- Log Attendance -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path d="M9 11l3 3L22 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                                Log Attendance
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <?php if (count($sessions) > 0): ?>
+                                <form method="POST">
+                                    <input type="hidden" name="action" value="log_attendance">
+                                    <div class="form-group" style="margin-bottom:14px;">
+                                        <label>Session *</label>
+                                        <select name="session_id" required>
+                                            <option value="">— Choose Session —</option>
+                                            <?php foreach ($sessions as $s): ?>
+                                                <option value="<?php echo $s['id']; ?>">
+                                                    <?php echo h($s['name']); ?> · <?php echo h($s['date']); ?>
+                                                </option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom:14px;">
+                                        <label>Member *</label>
+                                        <select name="member_id" required>
+                                            <option value="">— Choose Member —</option>
+                                            <?php foreach (get_active_members($pdo) as $m): ?>
+                                                <option value="<?php echo $m['id']; ?>"><?php echo h($m['full_name']); ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Status *</label>
+                                        <select name="status" required>
+                                            <option value="present">Present</option>
+                                            <option value="absent">Absent</option>
+                                            <option value="late">Late</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-actions">
+                                        <button type="submit" class="btn btn-primary">Record Attendance</button>
+                                    </div>
+                                </form>
+                            <?php else: ?>
+                                <div class="empty-state" style="padding:24px 0;">
+                                    <div class="empty-icon">📅</div>
+                                    <p>Create a session first to log attendance.</p>
+                                </div>
+                            <?php endif; ?>
+                        </div>
                     </div>
-                    <button type="submit" class="btn btn-primary">Create Session</button>
-                </form>
+                </div>
+
+                <!-- Sessions Table -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                            Sessions
+                        </div>
+                        <span class="badge badge-blue"><?php echo count($sessions); ?> sessions</span>
+                    </div>
+                    <div class="table-wrap">
+                        <?php if (count($sessions) > 0): ?>
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Session</th>
+                                        <th>Date</th>
+                                        <th>Attendees</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($sessions as $s): ?>
+                                        <?php $cnt = count(get_attendance_by_session($pdo, $s['id'])); ?>
+                                        <tr>
+                                            <td class="name-cell"><?php echo h($s['name']); ?></td>
+                                            <td><?php echo h($s['date']); ?></td>
+                                            <td><span class="badge badge-blue"><?php echo $cnt; ?></span></td>
+                                            <td>
+                                                <form method="POST" style="margin:0;">
+                                                    <input type="hidden" name="action" value="delete_session">
+                                                    <input type="hidden" name="id" value="<?php echo $s['id']; ?>">
+                                                    <button type="submit" class="btn btn-danger btn-sm"
+                                                            onclick="return confirm('Delete this session and all its attendance records?')">
+                                                        Delete
+                                                    </button>
+                                                </form>
+                                            </td>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php else: ?>
+                            <div class="empty-state">
+                                <div class="empty-icon">📅</div>
+                                <p>No sessions yet. Create one to get started.</p>
+                            </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
             </div>
 
-            <div class="card card-cyan">
-                <h3>Log Attendance</h3>
-                <?php $sessions = get_all_sessions($pdo); ?>
-                <?php if (count($sessions) > 0): ?>
-                    <form method="POST">
-                        <input type="hidden" name="action" value="log_attendance">
-                        <div class="form-group">
-                            <label>Select Session *</label>
-                            <select name="session_id" required>
-                                <option value="">-- Choose Session --</option>
-                                <?php foreach ($sessions as $session): ?>
-                                    <option value="<?php echo $session['id']; ?>">
-                                        <?php echo h($session['name']); ?> - <?php echo h($session['date']); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Select Member *</label>
-                            <select name="member_id" required>
-                                <option value="">-- Choose Member --</option>
-                                <?php foreach (get_active_members($pdo) as $member): ?>
-                                    <option value="<?php echo $member['id']; ?>">
-                                        <?php echo h($member['full_name']); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Status *</label>
-                            <select name="status" required>
-                                <option value="present">Present</option>
-                                <option value="absent">Absent</option>
-                                <option value="late">Late</option>
-                            </select>
-                        </div>
-                        <button type="submit" class="btn btn-primary">Log Attendance</button>
-                    </form>
-                <?php else: ?>
-                    <p style="color: var(--color-text-muted);">No sessions created yet. Create one above first.</p>
-                <?php endif; ?>
-            </div>
-
-            <div class="card">
-                <h3>Sessions</h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Date</th>
-                            <th>Attendees</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($sessions as $session): ?>
-                            <?php $attendance_count = count(get_attendance_by_session($pdo, $session['id'])); ?>
-                            <tr>
-                                <td><?php echo h($session['name']); ?></td>
-                                <td><?php echo h($session['date']); ?></td>
-                                <td><?php echo $attendance_count; ?></td>
-                                <td>
-                                    <form method="POST" style="display: inline;">
-                                        <input type="hidden" name="action" value="delete_session">
-                                        <input type="hidden" name="id" value="<?php echo $session['id']; ?>">
-                                        <button type="submit" class="btn btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.8rem;" onclick="return confirm('Delete this session?');">Delete</button>
-                                    </form>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-
-        <!-- PAYMENTS VIEW -->
+        <!-- ═══════════════ PAYMENTS ═══════════════ -->
         <?php elseif ($active_view === 'payments'): ?>
-            <h2>Payment Management</h2>
-            
-            <div class="card">
-                <h3>Record Payment</h3>
-                <form method="POST">
-                    <input type="hidden" name="action" value="record_payment">
-                    <div class="form-group">
-                        <label>Select Member *</label>
-                        <select name="member_id" required>
-                            <option value="">-- Choose Member --</option>
-                            <?php foreach (get_active_members($pdo) as $member): ?>
-                                <option value="<?php echo $member['id']; ?>">
-                                    <?php echo h($member['full_name']); ?> (Balance: $<?php echo money($member['balance_remaining']); ?>)
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Amount Paid *</label>
-                        <input type="number" name="amount" step="0.01" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary">Record Payment</button>
-                </form>
+
+            <div class="section-header">
+                <div>
+                    <div class="section-title">Payments</div>
+                    <div class="section-subtitle">Monthly billing and payment tracking — <?php echo h($period); ?></div>
+                </div>
             </div>
 
-            <div class="card card-cyan">
-                <h3>Monthly Billing - <?php echo h($period); ?></h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Member</th>
-                            <th>Expected</th>
-                            <th>Paid</th>
-                            <th>Remaining</th>
-                            <th>Due Date</th>
-                            <th>Status</th>
-                            <th>Overdue</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach (billing_rows($pdo, $period) as $row): ?>
-                            <tr>
-                                <td><?php echo h($row['full_name']); ?></td>
-                                <td>$<?php echo money($row['effective_expected']); ?></td>
-                                <td>$<?php echo money($row['effective_paid']); ?></td>
-                                <td>$<?php echo money($row['effective_remaining']); ?></td>
-                                <td><?php echo h($row['effective_due_date']); ?></td>
-                                <td>
-                                    <span class="badge <?php 
-                                        echo $row['effective_status'] === 'PAID' ? 'badge-success' : 
-                                             ($row['effective_status'] === 'PARTIAL' ? 'badge-warning' : 'badge-error'); 
-                                    ?>">
-                                        <?php echo h($row['effective_status']); ?>
-                                    </span>
-                                </td>
-                                <td><?php echo $row['overdue_days'] > 0 ? $row['overdue_days'] . ' days' : '-'; ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+            <div class="two-col">
+                <!-- Record Payment Form -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 5v14M5 12h14" stroke-width="2.5" stroke-linecap="round"/>
+                            </svg>
+                            Record Payment
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST">
+                            <input type="hidden" name="action" value="record_payment">
+                            <div class="form-group" style="margin-bottom:14px;">
+                                <label>Member *</label>
+                                <select name="member_id" required>
+                                    <option value="">— Choose Member —</option>
+                                    <?php foreach (get_active_members($pdo) as $m): ?>
+                                        <option value="<?php echo $m['id']; ?>">
+                                            <?php echo h($m['full_name']); ?> · Balance: $<?php echo money($m['balance_remaining']); ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Amount Paid *</label>
+                                <input type="number" name="amount" step="0.01" placeholder="0.00" required>
+                            </div>
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary">Record Payment</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Billing Table -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <rect x="1" y="4" width="22" height="16" rx="2" stroke-width="2"/>
+                                <path d="M1 10h22" stroke-width="2"/>
+                            </svg>
+                            Monthly Billing
+                        </div>
+                        <span class="badge badge-blue"><?php echo h($period); ?></span>
+                    </div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Member</th>
+                                    <th>Expected</th>
+                                    <th>Paid</th>
+                                    <th>Remaining</th>
+                                    <th>Due Date</th>
+                                    <th>Status</th>
+                                    <th>Overdue</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach (billing_rows($pdo, $period) as $row): ?>
+                                    <?php
+                                        $badge = 'badge-gray';
+                                        if ($row['effective_status'] === 'PAID')    $badge = 'badge-green';
+                                        if ($row['effective_status'] === 'PARTIAL') $badge = 'badge-amber';
+                                        if ($row['effective_status'] === 'UNPAID')  $badge = 'badge-red';
+                                    ?>
+                                    <tr>
+                                        <td class="name-cell"><?php echo h($row['full_name']); ?></td>
+                                        <td class="mono">$<?php echo money($row['effective_expected']); ?></td>
+                                        <td class="mono">$<?php echo money($row['effective_paid']); ?></td>
+                                        <td class="mono">$<?php echo money($row['effective_remaining']); ?></td>
+                                        <td><?php echo h($row['effective_due_date']); ?></td>
+                                        <td><span class="badge <?php echo $badge; ?>"><?php echo h($row['effective_status']); ?></span></td>
+                                        <td>
+                                            <?php if ($row['overdue_days'] > 0): ?>
+                                                <span class="badge badge-red"><?php echo $row['overdue_days']; ?>d</span>
+                                            <?php else: ?>
+                                                <span style="color:var(--text-3);">—</span>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
 
-        <!-- REPORTS VIEW -->
+        <!-- ═══════════════ REPORTS ═══════════════ -->
         <?php elseif ($active_view === 'reports'): ?>
-            <h2>Reports & Exports</h2>
-            
-            <div class="card">
-                <h3>Export Reports</h3>
-                <p style="color: var(--color-text-muted); margin-bottom: 1.5rem;">Generate CSV reports for analysis and record-keeping.</p>
-                
-                <form method="POST" style="margin-bottom: 1rem;">
-                    <input type="hidden" name="action" value="export_csv">
-                    <input type="hidden" name="export_type" value="payment_report">
-                    <input type="hidden" name="period" value="<?php echo h($period); ?>">
-                    <button type="submit" class="btn btn-primary">📊 Export Payment Report</button>
-                </form>
 
-                <form method="POST" style="margin-bottom: 1rem;">
-                    <input type="hidden" name="action" value="export_csv">
-                    <input type="hidden" name="export_type" value="attendance_report">
-                    <input type="hidden" name="period" value="<?php echo h($period); ?>">
-                    <button type="submit" class="btn btn-primary">📋 Export Attendance Report</button>
-                </form>
+            <?php $stats = get_dashboard_stats($pdo, $period); ?>
+
+            <div class="section-header">
+                <div>
+                    <div class="section-title">Reports</div>
+                    <div class="section-subtitle">Export data and view period summaries</div>
+                </div>
             </div>
 
-            <div class="card card-cyan">
-                <h3>Period Summary - <?php echo h($period); ?></h3>
-                <?php $stats = get_dashboard_stats($pdo, $period); ?>
-                <table>
-                    <tr>
-                        <td><strong>Total Members:</strong></td>
-                        <td><?php echo $stats['total_members']; ?></td>
-                    </tr>
-                    <tr>
-                        <td><strong>Active Members:</strong></td>
-                        <td><?php echo $stats['active_members']; ?></td>
-                    </tr>
-                    <tr>
-                        <td><strong>Revenue Collected:</strong></td>
-                        <td>$<?php echo money($stats['revenue']); ?></td>
-                    </tr>
-                    <tr>
-                        <td><strong>Outstanding Balance:</strong></td>
-                        <td>$<?php echo money($stats['outstanding']); ?></td>
-                    </tr>
-                </table>
+            <div class="two-col">
+                <div style="display:flex;flex-direction:column;gap:20px;">
+                    <!-- Export -->
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                                Export CSV
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <p style="font-size:13px;color:var(--text-3);margin-bottom:18px;">
+                                Generate downloadable reports for the period <strong style="color:var(--text-2);"><?php echo h($period); ?></strong>.
+                            </p>
+                            <div class="export-grid">
+                                <div class="export-card">
+                                    <div class="export-card-title">📊 Payment Report</div>
+                                    <div class="export-card-desc">Full billing breakdown with amounts, due dates, statuses, and overdue data.</div>
+                                    <form method="POST" style="margin:0;">
+                                        <input type="hidden" name="action" value="export_csv">
+                                        <input type="hidden" name="export_type" value="payment_report">
+                                        <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                                        <button type="submit" class="btn btn-primary btn-sm" style="width:100%;justify-content:center;">
+                                            Download
+                                        </button>
+                                    </form>
+                                </div>
+                                <div class="export-card">
+                                    <div class="export-card-title">📋 Attendance Report</div>
+                                    <div class="export-card-desc">Member attendance counts: present, absent, and late for this period.</div>
+                                    <form method="POST" style="margin:0;">
+                                        <input type="hidden" name="action" value="export_csv">
+                                        <input type="hidden" name="export_type" value="attendance_report">
+                                        <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                                        <button type="submit" class="btn btn-primary btn-sm" style="width:100%;justify-content:center;">
+                                            Download
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Period Summary -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path d="M18 20V10M12 20V4M6 20v-6" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                            Period Summary
+                        </div>
+                        <span class="badge badge-blue"><?php echo h($period); ?></span>
+                    </div>
+                    <div class="card-body">
+                        <div class="stats-grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-bottom:0;">
+                            <div class="stat-card blue" style="padding:16px;">
+                                <div class="stat-icon blue" style="width:30px;height:30px;font-size:14px;margin-bottom:10px;">👥</div>
+                                <div class="stat-value" style="font-size:22px;"><?php echo $stats['total_members']; ?></div>
+                                <div class="stat-label">Total</div>
+                            </div>
+                            <div class="stat-card green" style="padding:16px;">
+                                <div class="stat-icon green" style="width:30px;height:30px;font-size:14px;margin-bottom:10px;">✅</div>
+                                <div class="stat-value" style="font-size:22px;"><?php echo $stats['active_members']; ?></div>
+                                <div class="stat-label">Active</div>
+                            </div>
+                            <div class="stat-card amber" style="padding:16px;">
+                                <div class="stat-icon amber" style="width:30px;height:30px;font-size:14px;margin-bottom:10px;">💰</div>
+                                <div class="stat-value" style="font-size:20px;">$<?php echo money($stats['revenue']); ?></div>
+                                <div class="stat-label">Revenue</div>
+                            </div>
+                            <div class="stat-card red" style="padding:16px;">
+                                <div class="stat-icon red" style="width:30px;height:30px;font-size:14px;margin-bottom:10px;">📋</div>
+                                <div class="stat-value" style="font-size:20px;">$<?php echo money($stats['outstanding']); ?></div>
+                                <div class="stat-label">Outstanding</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
         <?php endif; ?>
-    </div>
+    </div><!-- /content -->
+</div><!-- /main -->
 
-    <script>
-        // Auto-hide messages after 5 seconds
-        document.addEventListener('DOMContentLoaded', function() {
-            const message = document.querySelector('.message');
-            if (message) {
-                setTimeout(() => {
-                    message.style.opacity = '0';
-                    message.style.transition = 'opacity 0.3s';
-                    setTimeout(() => message.remove(), 300);
-                }, 5000);
-            }
-        });
-    </script>
+<script>
+    // Auto-dismiss alert
+    (function() {
+        const a = document.getElementById('alert-msg');
+        if (a) {
+            setTimeout(() => {
+                a.style.transition = 'opacity .4s';
+                a.style.opacity = '0';
+                setTimeout(() => a.remove(), 400);
+            }, 5000);
+        }
+    })();
+
+    // Mobile sidebar
+    function toggleSidebar() {
+        document.getElementById('sidebar').classList.toggle('open');
+        document.getElementById('overlay').classList.toggle('active');
+    }
+
+    function closeSidebar() {
+        document.getElementById('sidebar').classList.remove('open');
+        document.getElementById('overlay').classList.remove('active');
+    }
+</script>
 </body>
 </html>
