@@ -373,6 +373,79 @@ function get_dashboard_stats($pdo, $period) {
     ];
 }
 
+function get_monthly_summary($pdo, $period) {
+    // Payment summary
+    $stmt = $pdo->prepare("
+        SELECT
+            COUNT(*) as total_bills,
+            SUM(CASE WHEN (COALESCE(paid_amount,0) >= expected_amount AND expected_amount > 0) THEN 1 ELSE 0 END) as paid_count,
+            SUM(CASE WHEN (paid_amount > 0 AND paid_amount < expected_amount) THEN 1 ELSE 0 END) as partial_count,
+            SUM(CASE WHEN (COALESCE(paid_amount,0) = 0 AND expected_amount > 0) THEN 1 ELSE 0 END) as unpaid_count,
+            SUM(expected_amount) as total_expected,
+            SUM(COALESCE(paid_amount,0)) as total_paid,
+            SUM(expected_amount - COALESCE(paid_amount,0)) as total_remaining
+        FROM monthly_bills WHERE period = ?
+    ");
+    $stmt->execute([$period]);
+    $pay = $stmt->fetch();
+
+    // Attendance summary for sessions in this period
+    $stmt = $pdo->prepare("
+        SELECT
+            COUNT(DISTINCT s.id) as total_sessions,
+            COUNT(a.id) as total_records,
+            SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present_count,
+            SUM(CASE WHEN a.status = 'absent'  THEN 1 ELSE 0 END) as absent_count,
+            SUM(CASE WHEN a.status = 'late'    THEN 1 ELSE 0 END) as late_count
+        FROM sessions s
+        LEFT JOIN attendance a ON a.session_id = s.id
+        WHERE TO_CHAR(s.date, 'YYYY-MM') = ?
+    ");
+    $stmt->execute([$period]);
+    $att = $stmt->fetch();
+
+    // Top attenders this period
+    $stmt = $pdo->prepare("
+        SELECT m.full_name,
+            COUNT(a.id) as sessions_attended,
+            SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present,
+            SUM(CASE WHEN a.status = 'absent'  THEN 1 ELSE 0 END) as absent,
+            SUM(CASE WHEN a.status = 'late'    THEN 1 ELSE 0 END) as late
+        FROM members m
+        LEFT JOIN attendance a ON a.member_id = m.id
+        LEFT JOIN sessions s ON s.id = a.session_id AND TO_CHAR(s.date, 'YYYY-MM') = ?
+        WHERE m.is_active = TRUE
+        GROUP BY m.id, m.full_name
+        ORDER BY present DESC, sessions_attended DESC
+        LIMIT 10
+    ");
+    $stmt->execute([$period]);
+    $top_attenders = $stmt->fetchAll();
+
+    // Members with unpaid/partial bills
+    $stmt = $pdo->prepare("
+        SELECT m.full_name, m.phone,
+            b.expected_amount, b.paid_amount,
+            (b.expected_amount - COALESCE(b.paid_amount,0)) as remaining,
+            b.due_date
+        FROM monthly_bills b
+        JOIN members m ON m.id = b.member_id
+        WHERE b.period = ? AND b.expected_amount > 0
+          AND COALESCE(b.paid_amount,0) < b.expected_amount
+        ORDER BY remaining DESC
+        LIMIT 10
+    ");
+    $stmt->execute([$period]);
+    $unpaid_members = $stmt->fetchAll();
+
+    return [
+        'payment'       => $pay,
+        'attendance'    => $att,
+        'top_attenders' => $top_attenders,
+        'unpaid_members'=> $unpaid_members,
+    ];
+}
+
 // ============ HANDLE FORM SUBMISSIONS ============
 
 $message = '';
@@ -1219,10 +1292,11 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
 
         /* ──────────── RESPONSIVE ──────────── */
         @media (max-width: 1024px) {
-            .stats-grid { grid-template-columns: repeat(2, 1fr); }
-            .two-col    { grid-template-columns: 1fr; }
-            .form-grid  { grid-template-columns: 1fr; }
+            .stats-grid  { grid-template-columns: repeat(2, 1fr); }
+            .two-col     { grid-template-columns: 1fr; }
+            .form-grid   { grid-template-columns: 1fr; }
             .form-grid.cols-3 { grid-template-columns: 1fr 1fr; }
+            .report-row  { grid-template-columns: 1fr !important; }
         }
 
         @media (max-width: 768px) {
@@ -1478,7 +1552,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
 
                 <!-- Table -->
                 <div class="card">
-                    <div class="card-header">
+                    <div class="card-header" style="flex-wrap:wrap;gap:10px;">
                         <div class="card-title">
                             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke-width="2" stroke-linecap="round"/>
@@ -1486,10 +1560,22 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                             </svg>
                             All Members
                         </div>
-                        <span class="badge badge-blue"><?php echo count(get_all_members($pdo)); ?> total</span>
+                        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                            <div style="position:relative;">
+                                <svg style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--text-3);"
+                                     width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <circle cx="11" cy="11" r="8" stroke-width="2"/>
+                                    <path d="M21 21l-4.35-4.35" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                                <input type="text" id="memberSearch" placeholder="Search members…"
+                                       style="padding:7px 12px 7px 32px;width:200px;margin:0;font-size:13px;"
+                                       oninput="filterMembers()">
+                            </div>
+                            <span class="badge badge-blue" id="memberCount"><?php echo count(get_all_members($pdo)); ?> total</span>
+                        </div>
                     </div>
                     <div class="table-wrap">
-                        <table>
+                        <table id="membersTable">
                             <thead>
                                 <tr>
                                     <th>Name</th>
@@ -1787,95 +1873,262 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         <!-- ═══════════════ REPORTS ═══════════════ -->
         <?php elseif ($active_view === 'reports'): ?>
 
-            <?php $stats = get_dashboard_stats($pdo, $period); ?>
+            <?php
+                $stats   = get_dashboard_stats($pdo, $period);
+                $summary = get_monthly_summary($pdo, $period);
+                $pay     = $summary['payment'];
+                $att     = $summary['attendance'];
+
+                $total_records = max(1, (int)($att['total_records'] ?? 1));
+                $pct_present = $total_records > 0 ? round((($att['present_count'] ?? 0) / $total_records) * 100) : 0;
+                $pct_absent  = $total_records > 0 ? round((($att['absent_count']  ?? 0) / $total_records) * 100) : 0;
+                $pct_late    = $total_records > 0 ? round((($att['late_count']    ?? 0) / $total_records) * 100) : 0;
+
+                $total_bills = max(1, (int)($pay['total_bills'] ?? 1));
+                $pct_paid    = $total_bills > 0 ? round((($pay['paid_count']    ?? 0) / $total_bills) * 100) : 0;
+                $pct_partial = $total_bills > 0 ? round((($pay['partial_count'] ?? 0) / $total_bills) * 100) : 0;
+                $pct_unpaid  = $total_bills > 0 ? round((($pay['unpaid_count']  ?? 0) / $total_bills) * 100) : 0;
+
+                $collection_rate = ((float)($pay['total_expected'] ?? 0)) > 0
+                    ? round(((float)($pay['total_paid'] ?? 0) / (float)$pay['total_expected']) * 100, 1)
+                    : 0;
+            ?>
 
             <div class="section-header">
                 <div>
-                    <div class="section-title">Reports</div>
-                    <div class="section-subtitle">Export data and view period summaries</div>
+                    <div class="section-title">Monthly Report</div>
+                    <div class="section-subtitle">Full overview for period <strong><?php echo h($period); ?></strong></div>
+                </div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                    <form method="POST" style="margin:0;">
+                        <input type="hidden" name="action" value="export_csv">
+                        <input type="hidden" name="export_type" value="payment_report">
+                        <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                        <button type="submit" class="btn btn-ghost btn-sm">📊 Export Payments</button>
+                    </form>
+                    <form method="POST" style="margin:0;">
+                        <input type="hidden" name="action" value="export_csv">
+                        <input type="hidden" name="export_type" value="attendance_report">
+                        <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                        <button type="submit" class="btn btn-ghost btn-sm">📋 Export Attendance</button>
+                    </form>
                 </div>
             </div>
 
-            <div class="two-col">
-                <div style="display:flex;flex-direction:column;gap:20px;">
-                    <!-- Export -->
-                    <div class="card">
-                        <div class="card-header">
-                            <div class="card-title">
-                                <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                </svg>
-                                Export CSV
-                            </div>
-                        </div>
-                        <div class="card-body">
-                            <p style="font-size:13px;color:var(--text-3);margin-bottom:18px;">
-                                Generate downloadable reports for the period <strong style="color:var(--text-2);"><?php echo h($period); ?></strong>.
-                            </p>
-                            <div class="export-grid">
-                                <div class="export-card">
-                                    <div class="export-card-title">📊 Payment Report</div>
-                                    <div class="export-card-desc">Full billing breakdown with amounts, due dates, statuses, and overdue data.</div>
-                                    <form method="POST" style="margin:0;">
-                                        <input type="hidden" name="action" value="export_csv">
-                                        <input type="hidden" name="export_type" value="payment_report">
-                                        <input type="hidden" name="period" value="<?php echo h($period); ?>">
-                                        <button type="submit" class="btn btn-primary btn-sm" style="width:100%;justify-content:center;">
-                                            Download
-                                        </button>
-                                    </form>
-                                </div>
-                                <div class="export-card">
-                                    <div class="export-card-title">📋 Attendance Report</div>
-                                    <div class="export-card-desc">Member attendance counts: present, absent, and late for this period.</div>
-                                    <form method="POST" style="margin:0;">
-                                        <input type="hidden" name="action" value="export_csv">
-                                        <input type="hidden" name="export_type" value="attendance_report">
-                                        <input type="hidden" name="period" value="<?php echo h($period); ?>">
-                                        <button type="submit" class="btn btn-primary btn-sm" style="width:100%;justify-content:center;">
-                                            Download
-                                        </button>
-                                    </form>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+            <!-- ── Top KPIs ── -->
+            <div class="stats-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:20px;">
+                <div class="stat-card blue">
+                    <div class="stat-icon blue">👥</div>
+                    <div class="stat-value"><?php echo $stats['active_members']; ?></div>
+                    <div class="stat-label">Active Members</div>
                 </div>
+                <div class="stat-card green">
+                    <div class="stat-icon green">📅</div>
+                    <div class="stat-value"><?php echo (int)($att['total_sessions'] ?? 0); ?></div>
+                    <div class="stat-label">Sessions Held</div>
+                </div>
+                <div class="stat-card amber">
+                    <div class="stat-icon amber">💰</div>
+                    <div class="stat-value">$<?php echo money($pay['total_paid'] ?? 0); ?></div>
+                    <div class="stat-label">Collected</div>
+                </div>
+                <div class="stat-card red">
+                    <div class="stat-icon red">⏳</div>
+                    <div class="stat-value"><?php echo $collection_rate; ?>%</div>
+                    <div class="stat-label">Collection Rate</div>
+                </div>
+            </div>
 
-                <!-- Period Summary -->
+            <!-- ── Two summary cards side by side ── -->
+            <div class="report-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
+
+                <!-- Attendance Summary -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">
                             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path d="M18 20V10M12 20V4M6 20v-6" stroke-width="2" stroke-linecap="round"/>
+                                <path d="M9 11l3 3L22 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke-width="2" stroke-linecap="round"/>
                             </svg>
-                            Period Summary
+                            Attendance Overview
                         </div>
                         <span class="badge badge-blue"><?php echo h($period); ?></span>
                     </div>
                     <div class="card-body">
-                        <div class="stats-grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-bottom:0;">
-                            <div class="stat-card blue" style="padding:16px;">
-                                <div class="stat-icon blue" style="width:30px;height:30px;font-size:14px;margin-bottom:10px;">👥</div>
-                                <div class="stat-value" style="font-size:22px;"><?php echo $stats['total_members']; ?></div>
-                                <div class="stat-label">Total</div>
+                        <!-- Numbers row -->
+                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
+                            <div style="text-align:center;background:var(--green-dim);border:1px solid rgba(45,212,160,.2);border-radius:var(--radius);padding:14px 10px;">
+                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--green);"><?php echo (int)($att['present_count'] ?? 0); ?></div>
+                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Present</div>
                             </div>
-                            <div class="stat-card green" style="padding:16px;">
-                                <div class="stat-icon green" style="width:30px;height:30px;font-size:14px;margin-bottom:10px;">✅</div>
-                                <div class="stat-value" style="font-size:22px;"><?php echo $stats['active_members']; ?></div>
-                                <div class="stat-label">Active</div>
+                            <div style="text-align:center;background:var(--red-dim);border:1px solid rgba(248,113,113,.2);border-radius:var(--radius);padding:14px 10px;">
+                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--red);"><?php echo (int)($att['absent_count'] ?? 0); ?></div>
+                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Absent</div>
                             </div>
-                            <div class="stat-card amber" style="padding:16px;">
-                                <div class="stat-icon amber" style="width:30px;height:30px;font-size:14px;margin-bottom:10px;">💰</div>
-                                <div class="stat-value" style="font-size:20px;">$<?php echo money($stats['revenue']); ?></div>
-                                <div class="stat-label">Revenue</div>
-                            </div>
-                            <div class="stat-card red" style="padding:16px;">
-                                <div class="stat-icon red" style="width:30px;height:30px;font-size:14px;margin-bottom:10px;">📋</div>
-                                <div class="stat-value" style="font-size:20px;">$<?php echo money($stats['outstanding']); ?></div>
-                                <div class="stat-label">Outstanding</div>
+                            <div style="text-align:center;background:var(--amber-dim);border:1px solid rgba(245,158,11,.2);border-radius:var(--radius);padding:14px 10px;">
+                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--amber);"><?php echo (int)($att['late_count'] ?? 0); ?></div>
+                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Late</div>
                             </div>
                         </div>
+
+                        <!-- Progress bars -->
+                        <?php foreach ([
+                            ['Present', $pct_present, 'var(--green)'],
+                            ['Absent',  $pct_absent,  'var(--red)'],
+                            ['Late',    $pct_late,    'var(--amber)'],
+                        ] as [$label, $pct, $color]): ?>
+                        <div style="margin-bottom:12px;">
+                            <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+                                <span style="font-size:12px;color:var(--text-3);"><?php echo $label; ?></span>
+                                <span style="font-size:12px;font-weight:700;color:var(--text-2);"><?php echo $pct; ?>%</span>
+                            </div>
+                            <div style="height:6px;background:var(--surface-2);border-radius:100px;overflow:hidden;">
+                                <div style="height:100%;width:<?php echo $pct; ?>%;background:<?php echo $color; ?>;border-radius:100px;transition:width .6s ease;"></div>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+
+                        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:flex;justify-content:space-between;">
+                            <span style="font-size:12px;color:var(--text-3);">Total attendance records</span>
+                            <span style="font-size:13px;font-weight:700;color:var(--text-1);"><?php echo (int)($att['total_records'] ?? 0); ?></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Payment Summary -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <rect x="1" y="4" width="22" height="16" rx="2" stroke-width="2"/>
+                                <path d="M1 10h22" stroke-width="2"/>
+                            </svg>
+                            Payment Overview
+                        </div>
+                        <span class="badge badge-blue"><?php echo h($period); ?></span>
+                    </div>
+                    <div class="card-body">
+                        <!-- Numbers row -->
+                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
+                            <div style="text-align:center;background:var(--green-dim);border:1px solid rgba(45,212,160,.2);border-radius:var(--radius);padding:14px 10px;">
+                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--green);"><?php echo (int)($pay['paid_count'] ?? 0); ?></div>
+                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Paid</div>
+                            </div>
+                            <div style="text-align:center;background:var(--amber-dim);border:1px solid rgba(245,158,11,.2);border-radius:var(--radius);padding:14px 10px;">
+                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--amber);"><?php echo (int)($pay['partial_count'] ?? 0); ?></div>
+                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Partial</div>
+                            </div>
+                            <div style="text-align:center;background:var(--red-dim);border:1px solid rgba(248,113,113,.2);border-radius:var(--border));border-radius:var(--radius);padding:14px 10px;">
+                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--red);"><?php echo (int)($pay['unpaid_count'] ?? 0); ?></div>
+                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Unpaid</div>
+                            </div>
+                        </div>
+
+                        <!-- Progress bars -->
+                        <?php foreach ([
+                            ['Paid',    $pct_paid,    'var(--green)'],
+                            ['Partial', $pct_partial, 'var(--amber)'],
+                            ['Unpaid',  $pct_unpaid,  'var(--red)'],
+                        ] as [$label, $pct, $color]): ?>
+                        <div style="margin-bottom:12px;">
+                            <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+                                <span style="font-size:12px;color:var(--text-3);"><?php echo $label; ?></span>
+                                <span style="font-size:12px;font-weight:700;color:var(--text-2);"><?php echo $pct; ?>%</span>
+                            </div>
+                            <div style="height:6px;background:var(--surface-2);border-radius:100px;overflow:hidden;">
+                                <div style="height:100%;width:<?php echo $pct; ?>%;background:<?php echo $color; ?>;border-radius:100px;transition:width .6s ease;"></div>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+
+                        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);">
+                            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                                <span style="font-size:12px;color:var(--text-3);">Total expected</span>
+                                <span style="font-size:13px;font-weight:700;color:var(--text-1);">$<?php echo money($pay['total_expected'] ?? 0); ?></span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                                <span style="font-size:12px;color:var(--text-3);">Total collected</span>
+                                <span style="font-size:13px;font-weight:700;color:var(--green);">$<?php echo money($pay['total_paid'] ?? 0); ?></span>
+                            </div>
+                            <div style="display:flex;justify-content:space-between;">
+                                <span style="font-size:12px;color:var(--text-3);">Still outstanding</span>
+                                <span style="font-size:13px;font-weight:700;color:var(--red);">$<?php echo money($pay['total_remaining'] ?? 0); ?></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Bottom detail tables ── -->
+            <div class="report-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+
+                <!-- Top Attenders -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">🏅 Top Attenders</div>
+                        <span class="badge badge-green">this period</span>
+                    </div>
+                    <div class="table-wrap">
+                        <?php if (count($summary['top_attenders']) > 0): ?>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>#</th>
+                                    <th>Member</th>
+                                    <th>Present</th>
+                                    <th>Absent</th>
+                                    <th>Late</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($summary['top_attenders'] as $i => $row): ?>
+                                <tr>
+                                    <td style="color:var(--text-3);font-size:12px;"><?php echo $i + 1; ?></td>
+                                    <td class="name-cell"><?php echo h($row['full_name']); ?></td>
+                                    <td><span class="badge badge-green"><?php echo (int)$row['present']; ?></span></td>
+                                    <td><span class="badge badge-red"><?php echo (int)$row['absent']; ?></span></td>
+                                    <td><span class="badge badge-amber"><?php echo (int)$row['late']; ?></span></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                        <?php else: ?>
+                            <div class="empty-state"><div class="empty-icon">📅</div><p>No attendance data for this period.</p></div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <!-- Outstanding Payments -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title">⚠️ Unpaid / Partial</div>
+                        <span class="badge badge-red">needs attention</span>
+                    </div>
+                    <div class="table-wrap">
+                        <?php if (count($summary['unpaid_members']) > 0): ?>
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Member</th>
+                                    <th>Expected</th>
+                                    <th>Paid</th>
+                                    <th>Remaining</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($summary['unpaid_members'] as $row): ?>
+                                <tr>
+                                    <td class="name-cell"><?php echo h($row['full_name']); ?></td>
+                                    <td class="mono">$<?php echo money($row['expected_amount']); ?></td>
+                                    <td class="mono">$<?php echo money($row['paid_amount'] ?? 0); ?></td>
+                                    <td><span class="badge badge-red">$<?php echo money($row['remaining']); ?></span></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                        <?php else: ?>
+                            <div class="empty-state"><div class="empty-icon">🎉</div><p>All bills are settled for this period!</p></div>
+                        <?php endif; ?>
                     </div>
                 </div>
             </div>
@@ -1896,6 +2149,21 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
             }, 5000);
         }
     })();
+
+    // Member search filter
+    function filterMembers() {
+        const q = document.getElementById('memberSearch').value.toLowerCase().trim();
+        const rows = document.querySelectorAll('#membersTable tbody tr');
+        let visible = 0;
+        rows.forEach(row => {
+            const text = row.textContent.toLowerCase();
+            const show = !q || text.includes(q);
+            row.style.display = show ? '' : 'none';
+            if (show) visible++;
+        });
+        const badge = document.getElementById('memberCount');
+        if (badge) badge.textContent = visible + ' ' + (q ? 'found' : 'total');
+    }
 
     // Mobile sidebar
     function toggleSidebar() {
