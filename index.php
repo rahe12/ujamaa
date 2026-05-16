@@ -577,6 +577,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 fputcsv($output, $footer);
             }
 
+            // ── 1b. Filtered Attendance (present / absent / late only) ────────
+            elseif ($export_type === 'attendance_filtered') {
+                $filter_status = $_POST['filter_status'] ?? 'present'; // present|absent|late|all
+                $selected_ids  = array_filter(array_map('intval', $_POST['session_ids'] ?? []));
+
+                if (count($selected_ids) > 0) {
+                    $ph2 = implode(',', array_fill(0, count($selected_ids), '?'));
+                    $stmt_sessions = $pdo->prepare("SELECT * FROM sessions WHERE id IN ($ph2) ORDER BY date ASC");
+                    $stmt_sessions->execute($selected_ids);
+                } else {
+                    $stmt_sessions = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date ASC");
+                    $stmt_sessions->execute([$period]);
+                }
+                $export_sessions  = $stmt_sessions->fetchAll();
+                $session_ids_used = array_column($export_sessions, 'id');
+
+                $att_map = [];
+                if (count($session_ids_used) > 0) {
+                    $ph3      = implode(',', array_fill(0, count($session_ids_used), '?'));
+                    $stmt_att = $pdo->prepare("SELECT * FROM attendance WHERE session_id IN ($ph3)");
+                    $stmt_att->execute($session_ids_used);
+                    foreach ($stmt_att->fetchAll() as $a) {
+                        $att_map[$a['session_id']][$a['member_id']] = $a['status'];
+                    }
+                }
+
+                $status_label = strtoupper($filter_status);
+                fputcsv($output, [$status_label . ' Members Report — Period: ' . $period]);
+                fputcsv($output, ['Generated: ' . date('Y-m-d H:i:s')]);
+                fputcsv($output, ['Filter: ' . $status_label . ' only']);
+                fputcsv($output, []);
+
+                if ($filter_status === 'all') {
+                    // All statuses — one row per member per session they have a record
+                    fputcsv($output, ['Member', 'Session', 'Date', 'Status']);
+                    foreach (get_active_members($pdo) as $m) {
+                        foreach ($export_sessions as $es) {
+                            $s = $att_map[$es['id']][$m['id']] ?? null;
+                            if ($s !== null) {
+                                fputcsv($output, [$m['full_name'], $es['name'], $es['date'], $s]);
+                            }
+                        }
+                    }
+                } else {
+                    // Filtered: only rows matching the chosen status
+                    fputcsv($output, ['Member', 'Session', 'Date', 'Status']);
+                    $count_rows = 0;
+                    foreach (get_active_members($pdo) as $m) {
+                        foreach ($export_sessions as $es) {
+                            $s = $att_map[$es['id']][$m['id']] ?? null;
+                            if ($s === $filter_status) {
+                                fputcsv($output, [$m['full_name'], $es['name'], $es['date'], $s]);
+                                $count_rows++;
+                            }
+                        }
+                    }
+                    fputcsv($output, []);
+                    fputcsv($output, ['Total ' . $status_label . ' records:', $count_rows]);
+                }
+            }
+
             // ── 2. Member Attendance Summary ─────────────────────────────────
             elseif ($export_type === 'member_summary') {
                 $stmt_sessions = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date ASC");
@@ -1437,6 +1498,31 @@ $active_members_json = js(array_values(array_map(function($m) {
             font-size: 13px;
             margin: 0;
         }
+
+        /* ── EXPORT BUTTON CARDS ── */
+        .export-btn-card {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            padding: 12px 14px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            cursor: pointer;
+            font-family: 'DM Sans', sans-serif;
+            text-align: left;
+            transition: var(--transition);
+        }
+
+        .export-btn-card:hover {
+            background: var(--bg);
+            border-width: 2px;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 14px rgba(0,0,0,.25);
+        }
+
+        .export-btn-card:active { transform: scale(.97); }
 
         @media (max-width:1024px) {
             .stats-grid  { grid-template-columns: repeat(2,1fr); }
@@ -2417,37 +2503,101 @@ $active_members_json = js(array_values(array_map(function($m) {
                     </div>
                     <div class="card-body">
                         <?php if (count($period_sessions) > 0): ?>
-                        <form method="POST">
-                            <input type="hidden" name="action" value="export_csv">
-                            <input type="hidden" name="export_type" value="attendance_report">
-                            <input type="hidden" name="period" value="<?php echo h($period); ?>">
 
-                            <div style="margin-bottom:14px;">
-                                <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer;">
-                                    <input type="checkbox" id="selectAll" onchange="toggleAll(this)"
-                                           style="width:15px;height:15px;accent-color:var(--accent);">
-                                    <span style="font-size:12px;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:.04em;">Select All Sessions</span>
+                        <!-- Step 1: pick sessions -->
+                        <div style="margin-bottom:16px;">
+                            <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">① Select Sessions</div>
+                            <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;">
+                                <input type="checkbox" id="selectAll" onchange="toggleAll(this)"
+                                       style="width:15px;height:15px;accent-color:var(--accent);">
+                                <span style="font-size:12px;font-weight:600;color:var(--text-2);">Select All</span>
+                            </label>
+                            <div class="session-list">
+                                <?php foreach ($period_sessions as $s): ?>
+                                <label class="session-check-label">
+                                    <input type="checkbox" name="session_ids_export[]"
+                                           value="<?php echo $s['id']; ?>"
+                                           class="session-check">
+                                    <div>
+                                        <div style="font-size:13px;font-weight:600;color:var(--text-1);"><?php echo h($s['name']); ?></div>
+                                        <div style="font-size:11px;color:var(--text-3);"><?php echo h($s['date']); ?></div>
+                                    </div>
                                 </label>
-
-                                <div class="session-list">
-                                    <?php foreach ($period_sessions as $s): ?>
-                                    <label class="session-check-label">
-                                        <input type="checkbox" name="session_ids[]"
-                                               value="<?php echo $s['id']; ?>"
-                                               class="session-check">
-                                        <div>
-                                            <div style="font-size:13px;font-weight:600;color:var(--text-1);"><?php echo h($s['name']); ?></div>
-                                            <div style="font-size:11px;color:var(--text-3);"><?php echo h($s['date']); ?></div>
-                                        </div>
-                                    </label>
-                                    <?php endforeach; ?>
-                                </div>
+                                <?php endforeach; ?>
                             </div>
+                        </div>
 
-                            <button type="submit" class="btn btn-primary" style="width:100%;">
-                                ⬇️ Download Selected as CSV
-                            </button>
-                        </form>
+                        <!-- Step 2: pick report type -->
+                        <div style="margin-bottom:16px;">
+                            <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">② Choose Report Type</div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+
+                                <!-- Full Matrix -->
+                                <form method="POST" class="export-form">
+                                    <input type="hidden" name="action" value="export_csv">
+                                    <input type="hidden" name="export_type" value="attendance_report">
+                                    <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                                    <div class="session-ids-placeholder"></div>
+                                    <button type="submit" class="export-btn-card" style="border-color:var(--accent);color:var(--accent);">
+                                        <span style="font-size:20px;">📊</span>
+                                        <div>
+                                            <div style="font-weight:700;font-size:12px;">Full Matrix</div>
+                                            <div style="font-size:10px;opacity:.7;">All statuses · grid view</div>
+                                        </div>
+                                    </button>
+                                </form>
+
+                                <!-- Present Only -->
+                                <form method="POST" class="export-form">
+                                    <input type="hidden" name="action" value="export_csv">
+                                    <input type="hidden" name="export_type" value="attendance_filtered">
+                                    <input type="hidden" name="filter_status" value="present">
+                                    <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                                    <div class="session-ids-placeholder"></div>
+                                    <button type="submit" class="export-btn-card" style="border-color:var(--green);color:var(--green);">
+                                        <span style="font-size:20px;">✅</span>
+                                        <div>
+                                            <div style="font-weight:700;font-size:12px;">Present Only</div>
+                                            <div style="font-size:10px;opacity:.7;">Who attended</div>
+                                        </div>
+                                    </button>
+                                </form>
+
+                                <!-- Absent Only -->
+                                <form method="POST" class="export-form">
+                                    <input type="hidden" name="action" value="export_csv">
+                                    <input type="hidden" name="export_type" value="attendance_filtered">
+                                    <input type="hidden" name="filter_status" value="absent">
+                                    <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                                    <div class="session-ids-placeholder"></div>
+                                    <button type="submit" class="export-btn-card" style="border-color:var(--red);color:var(--red);">
+                                        <span style="font-size:20px;">❌</span>
+                                        <div>
+                                            <div style="font-weight:700;font-size:12px;">Absent Only</div>
+                                            <div style="font-size:10px;opacity:.7;">Who missed sessions</div>
+                                        </div>
+                                    </button>
+                                </form>
+
+                                <!-- Late Only -->
+                                <form method="POST" class="export-form">
+                                    <input type="hidden" name="action" value="export_csv">
+                                    <input type="hidden" name="export_type" value="attendance_filtered">
+                                    <input type="hidden" name="filter_status" value="late">
+                                    <input type="hidden" name="period" value="<?php echo h($period); ?>">
+                                    <div class="session-ids-placeholder"></div>
+                                    <button type="submit" class="export-btn-card" style="border-color:var(--amber);color:var(--amber);">
+                                        <span style="font-size:20px;">⏰</span>
+                                        <div>
+                                            <div style="font-weight:700;font-size:12px;">Late Only</div>
+                                            <div style="font-size:10px;opacity:.7;">Who arrived late</div>
+                                        </div>
+                                    </button>
+                                </form>
+
+                            </div>
+                        </div>
+
                         <?php else: ?>
                             <div class="empty-state"><div class="empty-icon">📅</div><p>No sessions this period.</p></div>
                         <?php endif; ?>
@@ -2725,7 +2875,43 @@ $active_members_json = js(array_values(array_map(function($m) {
         }
     })();
 
-    // ── REPORTS: Tab switcher ──
+    // ── Export: sync session checkboxes into every export form ──
+    (function () {
+        // When any .session-check changes, mirror into all .export-form placeholders
+        function syncExportForms() {
+            const checked = Array.from(document.querySelectorAll('.session-check:checked'))
+                                 .map(cb => cb.value);
+
+            document.querySelectorAll('.export-form').forEach(form => {
+                const placeholder = form.querySelector('.session-ids-placeholder');
+                if (!placeholder) return;
+                placeholder.innerHTML = '';
+                checked.forEach(id => {
+                    const inp = document.createElement('input');
+                    inp.type  = 'hidden';
+                    inp.name  = 'session_ids[]';
+                    inp.value = id;
+                    placeholder.appendChild(inp);
+                });
+            });
+        }
+
+        document.addEventListener('change', function (e) {
+            if (e.target.classList.contains('session-check') || e.target.id === 'selectAll') {
+                syncExportForms();
+            }
+        });
+
+        // Guard: warn if no session selected on submit
+        document.addEventListener('submit', function (e) {
+            if (!e.target.classList.contains('export-form')) return;
+            const checked = document.querySelectorAll('.session-check:checked');
+            if (checked.length === 0) {
+                e.preventDefault();
+                alert('Please select at least one session before downloading.');
+            }
+        });
+    })();
     function switchTab(tab, btn) {
         // Toggle tab content
         const matrix  = document.getElementById('tab-matrix');
