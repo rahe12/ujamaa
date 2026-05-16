@@ -2,6 +2,9 @@
 /**
  * INTEGRATED ACADEMY MANAGEMENT SYSTEM (AMS)
  * Single PHP File - Complete Sports Club Management Platform
+ *
+ * CHANGE: When attendance is logged for a session, any active member
+ * NOT explicitly marked is automatically recorded as 'absent'.
  */
 
 error_reporting(E_ALL);
@@ -238,12 +241,37 @@ function delete_session($pdo, $id) {
 
 // ============ ATTENDANCE OPERATIONS ============
 
+/**
+ * Log attendance for one member in a session.
+ *
+ * AUTO-ABSENT RULE:
+ * After recording the chosen member's status, every OTHER active member
+ * that has NO record yet for this session is automatically inserted as 'absent'.
+ * Members who already have a record are never overwritten.
+ */
 function log_attendance($pdo, $session_id, $member_id, $status = 'present') {
+    // 1. Insert / update the selected member's status
     $stmt = $pdo->prepare("
         INSERT INTO attendance (session_id, member_id, status) VALUES (?, ?, ?)
         ON CONFLICT (session_id, member_id) DO UPDATE SET status = EXCLUDED.status
     ");
-    return $stmt->execute([$session_id, $member_id, $status]);
+    $stmt->execute([$session_id, $member_id, $status]);
+
+    // 2. Auto-absent: insert 'absent' for every active member not yet recorded in this session
+    $stmt2 = $pdo->prepare("
+        INSERT INTO attendance (session_id, member_id, status)
+        SELECT ?, m.id, 'absent'
+        FROM members m
+        WHERE m.is_active = TRUE
+          AND m.id != ?
+          AND NOT EXISTS (
+              SELECT 1 FROM attendance a
+              WHERE a.session_id = ? AND a.member_id = m.id
+          )
+    ");
+    $stmt2->execute([$session_id, $member_id, $session_id]);
+
+    return true;
 }
 
 function get_attendance_by_session($pdo, $session_id) {
@@ -486,7 +514,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($action === 'log_attendance') {
             log_attendance($pdo, $_POST['session_id'] ?? 0, $_POST['member_id'] ?? 0, $_POST['status'] ?? 'present');
-            redirect_app(current_period(), 'attendance', 'Attendance recorded!');
+            redirect_app(current_period(), 'attendance', 'Attendance recorded! Unmarked members auto-marked absent.');
         }
 
         if ($action === 'record_payment') {
@@ -541,7 +569,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $row    = [$m['full_name']];
                     $totals = ['present' => 0, 'absent' => 0, 'late' => 0];
                     foreach ($export_sessions as $es) {
-                        $status = $att_map[$es['id']][$m['id']] ?? 'not recorded';
+                        // Now that auto-absent fills gaps, unrecorded = absent in export too
+                        $status = $att_map[$es['id']][$m['id']] ?? 'absent';
                         $row[]  = $status;
                         if ($status === 'present') $totals['present']++;
                         elseif ($status === 'absent') $totals['absent']++;
@@ -563,7 +592,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 foreach ($export_sessions as $es) {
                     $p = $a = $l = 0;
                     foreach (get_active_members($pdo) as $m) {
-                        $s = $att_map[$es['id']][$m['id']] ?? null;
+                        $s = $att_map[$es['id']][$m['id']] ?? 'absent';
                         if ($s === 'present') { $p++; $grand['present']++; }
                         elseif ($s === 'absent') { $a++; $grand['absent']++; }
                         elseif ($s === 'late') { $l++; $grand['late']++; }
@@ -579,7 +608,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // ── 1b. Filtered Attendance (present / absent / late only) ────────
             elseif ($export_type === 'attendance_filtered') {
-                $filter_status = $_POST['filter_status'] ?? 'present'; // present|absent|late|all
+                $filter_status = $_POST['filter_status'] ?? 'present';
                 $selected_ids  = array_filter(array_map('intval', $_POST['session_ids'] ?? []));
 
                 if (count($selected_ids) > 0) {
@@ -610,23 +639,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 fputcsv($output, []);
 
                 if ($filter_status === 'all') {
-                    // All statuses — one row per member per session they have a record
                     fputcsv($output, ['Member', 'Session', 'Date', 'Status']);
                     foreach (get_active_members($pdo) as $m) {
                         foreach ($export_sessions as $es) {
-                            $s = $att_map[$es['id']][$m['id']] ?? null;
-                            if ($s !== null) {
-                                fputcsv($output, [$m['full_name'], $es['name'], $es['date'], $s]);
-                            }
+                            // Treat unrecorded as absent
+                            $s = $att_map[$es['id']][$m['id']] ?? 'absent';
+                            fputcsv($output, [$m['full_name'], $es['name'], $es['date'], $s]);
                         }
                     }
                 } else {
-                    // Filtered: only rows matching the chosen status
                     fputcsv($output, ['Member', 'Session', 'Date', 'Status']);
                     $count_rows = 0;
                     foreach (get_active_members($pdo) as $m) {
                         foreach ($export_sessions as $es) {
-                            $s = $att_map[$es['id']][$m['id']] ?? null;
+                            $s = $att_map[$es['id']][$m['id']] ?? 'absent';
                             if ($s === $filter_status) {
                                 fputcsv($output, [$m['full_name'], $es['name'], $es['date'], $s]);
                                 $count_rows++;
@@ -665,22 +691,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 foreach (get_active_members($pdo) as $m) {
                     $p = $ab = $l = 0;
                     foreach ($session_ids_all as $sid) {
-                        $s = $att_map[$sid][$m['id']] ?? null;
+                        $s = $att_map[$sid][$m['id']] ?? 'absent';
                         if ($s === 'present') $p++;
                         elseif ($s === 'absent') $ab++;
                         elseif ($s === 'late') $l++;
                     }
-                    $not_recorded = $total_sessions - $p - $ab - $l;
+                    $not_recorded = 0; // auto-absent fills all gaps
                     $rate = $total_sessions > 0 ? round(($p / $total_sessions) * 100) : 0;
                     fputcsv($output, [$idx++, $m['full_name'], $p, $ab, $l, $not_recorded, $total_sessions, $rate . '%']);
                 }
 
-                // Grand totals row
                 fputcsv($output, []);
                 $gp = $ga = $gl = 0;
                 foreach (get_active_members($pdo) as $m) {
                     foreach ($session_ids_all as $sid) {
-                        $s = $att_map[$sid][$m['id']] ?? null;
+                        $s = $att_map[$sid][$m['id']] ?? 'absent';
                         if ($s === 'present') $gp++;
                         elseif ($s === 'absent') $ga++;
                         elseif ($s === 'late') $gl++;
@@ -1246,7 +1271,6 @@ $active_members_json = js(array_values(array_map(function($m) {
 
         /* ── ATTENDANCE REPORT ENHANCED STYLES ── */
 
-        /* Tab switcher */
         .report-tabs {
             display: flex;
             gap: 4px;
@@ -1279,7 +1303,6 @@ $active_members_json = js(array_values(array_map(function($m) {
 
         .report-tab:not(.active):hover { color: var(--text-1); background: var(--border); }
 
-        /* Mini attendance dot grid */
         .att-dot-grid {
             display: flex;
             gap: 4px;
@@ -1308,7 +1331,6 @@ $active_members_json = js(array_values(array_map(function($m) {
         .att-dot.late    { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,.3); }
         .att-dot.none    { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border); }
 
-        /* Progress bar inside table */
         .inline-bar-wrap {
             display: flex;
             align-items: center;
@@ -1330,7 +1352,6 @@ $active_members_json = js(array_values(array_map(function($m) {
             transition: width .5s ease;
         }
 
-        /* Attendance heatmap grid — full member × session matrix */
         .matrix-wrap {
             overflow-x: auto;
             border-radius: var(--radius);
@@ -1406,7 +1427,6 @@ $active_members_json = js(array_values(array_map(function($m) {
         .matrix-pill.late    { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,.25); }
         .matrix-pill.none    { color: var(--text-3); font-size: 14px; font-weight: 400; }
 
-        /* Summary totals row */
         .matrix-table tfoot td {
             background: var(--surface-2);
             font-weight: 700;
@@ -1419,7 +1439,6 @@ $active_members_json = js(array_values(array_map(function($m) {
             background: var(--surface-2);
         }
 
-        /* Filter row */
         .report-filter-row {
             display: flex;
             gap: 10px;
@@ -1447,7 +1466,6 @@ $active_members_json = js(array_values(array_map(function($m) {
         .filter-chip.red-chip.active    { border-color: var(--red);   background: var(--red-dim);   color: var(--red); }
         .filter-chip.amber-chip.active  { border-color: var(--amber); background: var(--amber-dim); color: var(--amber); }
 
-        /* Summary panel above matrix */
         .summary-strips {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -1477,7 +1495,6 @@ $active_members_json = js(array_values(array_map(function($m) {
         .strip-count.red   { color: var(--red); }
         .strip-count.amber { color: var(--amber); }
 
-        /* Search inside report */
         .report-search-wrap {
             position: relative;
             flex: 1;
@@ -1523,6 +1540,23 @@ $active_members_json = js(array_values(array_map(function($m) {
         }
 
         .export-btn-card:active { transform: scale(.97); }
+
+        /* ── INFO BANNER ── */
+        .info-banner {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px 16px;
+            background: var(--accent-dim);
+            border: 1px solid rgba(79,125,255,.3);
+            border-radius: var(--radius-sm);
+            margin-bottom: 18px;
+            font-size: 13px;
+            color: var(--accent);
+            line-height: 1.5;
+        }
+
+        .info-banner svg { flex-shrink: 0; margin-top: 1px; }
 
         @media (max-width:1024px) {
             .stats-grid  { grid-template-columns: repeat(2,1fr); }
@@ -1836,6 +1870,19 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
+            <!-- Auto-absent info banner -->
+            <div class="info-banner">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="10" stroke-width="2"/>
+                    <path d="M12 8v4M12 16h.01" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                <span>
+                    <strong>Auto-Absent:</strong> When you record attendance for any member in a session,
+                    all other active members with no record for that session are automatically marked <strong>Absent</strong>.
+                    You can still override individual records by logging them again.
+                </span>
+            </div>
+
             <?php $sessions = get_all_sessions($pdo); ?>
 
             <div class="two-col">
@@ -2101,7 +2148,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-        <!-- ═══════════ REPORTS ═══════════ (ENHANCED) ═══════════ -->
+        <!-- ═══════════ REPORTS ═══════════ -->
         <?php elseif ($active_view === 'reports'): ?>
 
             <?php
@@ -2115,16 +2162,13 @@ $active_members_json = js(array_values(array_map(function($m) {
                 $pct_absent    = $total_records > 0 ? round((($att['absent_count']  ?? 0) / $safe_total) * 100) : 0;
                 $pct_late      = $total_records > 0 ? round((($att['late_count']    ?? 0) / $safe_total) * 100) : 0;
 
-                // All sessions for this period
                 $stmt = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date ASC");
                 $stmt->execute([$period]);
                 $period_sessions = $stmt->fetchAll();
                 $session_ids_period = array_column($period_sessions, 'id');
 
-                // ── Full member × session attendance matrix ──
                 $active_members_list = get_active_members($pdo);
 
-                // Build att_map[session_id][member_id] = status
                 $att_map = [];
                 if (count($session_ids_period) > 0) {
                     $ph = implode(',', array_fill(0, count($session_ids_period), '?'));
@@ -2135,8 +2179,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                     }
                 }
 
-                // Per-member totals
-                $member_totals = []; // [member_id] => [present, absent, late, total]
+                $member_totals = [];
                 foreach ($active_members_list as $m) {
                     $p = $ab = $l = 0;
                     foreach ($session_ids_period as $sid) {
@@ -2148,8 +2191,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                     $member_totals[$m['id']] = ['present'=>$p,'absent'=>$ab,'late'=>$l,'total'=>$p+$ab+$l];
                 }
 
-                // Per-session totals
-                $session_totals = []; // [session_id] => [present, absent, late]
+                $session_totals = [];
                 foreach ($session_ids_period as $sid) {
                     $p = $ab = $l = 0;
                     foreach ($active_members_list as $m) {
@@ -2161,7 +2203,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                     $session_totals[$sid] = ['present'=>$p,'absent'=>$ab,'late'=>$l];
                 }
 
-                // Latest session for the existing "Latest Session" card
                 $period_sessions_desc = array_reverse($period_sessions);
                 $latest_session = count($period_sessions_desc) > 0 ? $period_sessions_desc[0] : null;
                 $latest_attendance = [];
@@ -2185,7 +2226,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-            <!-- KPI row -->
             <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
                 <div class="stat-card blue">
                     <div class="stat-icon blue">👥</div>
@@ -2204,7 +2244,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-            <!-- ── MAIN ATTENDANCE REPORT CARD (NEW) ── -->
             <div class="card" style="margin-bottom:20px;">
                 <div class="card-header">
                     <div class="card-title">
@@ -2216,7 +2255,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                     </div>
                     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                         <span class="badge badge-blue"><?php echo h($period); ?></span>
-                        <!-- Tab switcher -->
                         <div class="report-tabs" id="reportTabs">
                             <button class="report-tab active" onclick="switchTab('matrix', this)">Member × Session</button>
                             <button class="report-tab" onclick="switchTab('summary', this)">Summary</button>
@@ -2238,7 +2276,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                         </div>
                     <?php else: ?>
 
-                        <!-- Summary strips (always visible) -->
                         <div class="summary-strips">
                             <div class="summary-strip green">
                                 <div>
@@ -2263,7 +2300,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                             </div>
                         </div>
 
-                        <!-- ── TAB: Member × Session Matrix ── -->
+                        <!-- TAB: Member × Session Matrix -->
                         <div id="tab-matrix">
                             <div class="report-filter-row">
                                 <div class="report-search-wrap">
@@ -2307,14 +2344,15 @@ $active_members_json = js(array_values(array_map(function($m) {
                                             <td class="member-name-col"><?php echo h($m['full_name']); ?></td>
                                             <?php foreach ($period_sessions as $s):
                                                 $status = $att_map[$s['id']][$m['id']] ?? null;
-                                                $pill_class = $status ? $status : 'none';
-                                                $pill_label = $status ? strtoupper(substr($status, 0, 1)) : '—';
-                                                $full_label = $status ?? 'Not recorded';
+                                                // If no record exists (session before auto-absent was implemented), treat as absent in display
+                                                $display_status = $status ?? 'absent';
+                                                $pill_class = $display_status;
+                                                $pill_label = ucfirst($display_status);
                                             ?>
-                                            <td style="text-align:center;" data-status="<?php echo h($status ?? 'none'); ?>">
+                                            <td style="text-align:center;" data-status="<?php echo h($display_status); ?>">
                                                 <div class="matrix-cell">
-                                                    <span class="matrix-pill <?php echo $pill_class; ?>" title="<?php echo h(ucfirst($full_label)); ?>">
-                                                        <?php echo $status ? ucfirst($status) : '—'; ?>
+                                                    <span class="matrix-pill <?php echo $pill_class; ?>" title="<?php echo h(ucfirst($display_status)); ?>">
+                                                        <?php echo $pill_label; ?>
                                                     </span>
                                                 </div>
                                             </td>
@@ -2359,7 +2397,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                             </div>
                         </div>
 
-                        <!-- ── TAB: Summary (per-member breakdown) ── -->
+                        <!-- TAB: Summary -->
                         <div id="tab-summary" style="display:none;">
                             <div class="report-filter-row">
                                 <div class="report-search-wrap">
@@ -2392,7 +2430,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                                     </thead>
                                     <tbody id="summaryBody">
                                         <?php
-                                        // Last 5 sessions (most recent)
                                         $last5 = array_slice(array_reverse($period_sessions), 0, 5);
                                         foreach ($active_members_list as $idx => $m):
                                             $mt   = $member_totals[$m['id']];
@@ -2413,13 +2450,11 @@ $active_members_json = js(array_values(array_map(function($m) {
                                                 </div>
                                             </td>
                                             <td>
-                                                <div style="display:flex;align-items:center;gap:6px;">
-                                                    <?php if ($mt['absent'] > 0): ?>
-                                                        <span style="font-weight:800;font-size:15px;color:var(--red);"><?php echo $mt['absent']; ?></span>
-                                                    <?php else: ?>
-                                                        <span style="color:var(--text-3);">0</span>
-                                                    <?php endif; ?>
-                                                </div>
+                                                <?php if ($mt['absent'] > 0): ?>
+                                                    <span style="font-weight:800;font-size:15px;color:var(--red);"><?php echo $mt['absent']; ?></span>
+                                                <?php else: ?>
+                                                    <span style="color:var(--text-3);">0</span>
+                                                <?php endif; ?>
                                             </td>
                                             <td>
                                                 <?php if ($mt['late'] > 0): ?>
@@ -2440,16 +2475,15 @@ $active_members_json = js(array_values(array_map(function($m) {
                                             <td>
                                                 <div class="att-dot-grid">
                                                     <?php
-                                                    // Show last 5 sessions as coloured dots
                                                     if (count($last5) === 0) {
                                                         echo '<span style="color:var(--text-3);font-size:11px;">No sessions</span>';
                                                     } else {
                                                         foreach ($last5 as $ls):
-                                                            $ds = $att_map[$ls['id']][$m['id']] ?? null;
-                                                            $dc = $ds ?? 'none';
-                                                            $dl = $ds ? strtoupper(substr($ds,0,1)) : '—';
+                                                            $ds = $att_map[$ls['id']][$m['id']] ?? 'absent';
+                                                            $dc = $ds;
+                                                            $dl = strtoupper(substr($ds,0,1));
                                                     ?>
-                                                        <div class="att-dot <?php echo $dc; ?>" title="<?php echo h($ls['name'].' ('.$ls['date'].')').': '.h(ucfirst($ds ?? 'Not recorded')); ?>">
+                                                        <div class="att-dot <?php echo $dc; ?>" title="<?php echo h($ls['name'].' ('.$ls['date'].')').': '.h(ucfirst($ds)); ?>">
                                                             <?php echo $dl; ?>
                                                         </div>
                                                     <?php endforeach; } ?>
@@ -2461,7 +2495,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                                 </table>
                             </div>
 
-                            <!-- Progress bars for Present / Absent / Late -->
                             <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">
                                 <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:13px;color:var(--text-1);margin-bottom:16px;">Period Breakdown</div>
                                 <?php foreach ([
@@ -2494,7 +2527,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-            <!-- Export + Latest Session row (unchanged) -->
+            <!-- Export + Latest Session row -->
             <div class="report-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
 
                 <div class="card">
@@ -2504,7 +2537,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                     <div class="card-body">
                         <?php if (count($period_sessions) > 0): ?>
 
-                        <!-- Step 1: pick sessions -->
                         <div style="margin-bottom:16px;">
                             <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">① Select Sessions</div>
                             <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;">
@@ -2527,12 +2559,10 @@ $active_members_json = js(array_values(array_map(function($m) {
                             </div>
                         </div>
 
-                        <!-- Step 2: pick report type -->
                         <div style="margin-bottom:16px;">
                             <div style="font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3);margin-bottom:8px;">② Choose Report Type</div>
                             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
 
-                                <!-- Full Matrix -->
                                 <form method="POST" class="export-form">
                                     <input type="hidden" name="action" value="export_csv">
                                     <input type="hidden" name="export_type" value="attendance_report">
@@ -2547,7 +2577,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                                     </button>
                                 </form>
 
-                                <!-- Present Only -->
                                 <form method="POST" class="export-form">
                                     <input type="hidden" name="action" value="export_csv">
                                     <input type="hidden" name="export_type" value="attendance_filtered">
@@ -2563,7 +2592,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                                     </button>
                                 </form>
 
-                                <!-- Absent Only -->
                                 <form method="POST" class="export-form">
                                     <input type="hidden" name="action" value="export_csv">
                                     <input type="hidden" name="export_type" value="attendance_filtered">
@@ -2579,7 +2607,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                                     </button>
                                 </form>
 
-                                <!-- Late Only -->
                                 <form method="POST" class="export-form">
                                     <input type="hidden" name="action" value="export_csv">
                                     <input type="hidden" name="export_type" value="attendance_filtered">
@@ -2646,10 +2673,10 @@ $active_members_json = js(array_values(array_map(function($m) {
                                         <td class="name-cell"><?php echo h($row['full_name']); ?></td>
                                         <td>
                                             <?php
-                                                $s  = $row['status'] ?? null;
+                                                $s  = $row['status'] ?? 'absent';
                                                 $bc = $s === 'present' ? 'badge-green' : ($s === 'absent' ? 'badge-red' : ($s === 'late' ? 'badge-amber' : 'badge-gray'));
                                             ?>
-                                            <span class="badge <?php echo $bc; ?>"><?php echo h($s ?? '—'); ?></span>
+                                            <span class="badge <?php echo $bc; ?>"><?php echo h($s); ?></span>
                                         </td>
                                     </tr>
                                     <?php endforeach; ?>
@@ -2662,7 +2689,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-            <!-- Top attenders (unchanged) -->
+            <!-- Top attenders -->
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">🏅 Top Attenders</div>
@@ -2697,10 +2724,9 @@ $active_members_json = js(array_values(array_map(function($m) {
 </div><!-- /main -->
 
 <script>
-    // ── Active members data for the search widget ──
     const ATT_MEMBERS = <?php echo $active_members_json; ?>;
 
-    // ── Auto-dismiss alert ──
+    // Auto-dismiss alert
     (function() {
         const a = document.getElementById('alert-msg');
         if (a) {
@@ -2712,7 +2738,7 @@ $active_members_json = js(array_values(array_map(function($m) {
         }
     })();
 
-    // ── Member search filter (Members table) ──
+    // Member search filter (Members table)
     function filterMembers() {
         const q = document.getElementById('memberSearch').value.toLowerCase().trim();
         const rows = document.querySelectorAll('#membersTable tbody tr');
@@ -2726,7 +2752,7 @@ $active_members_json = js(array_values(array_map(function($m) {
         if (badge) badge.textContent = visible + ' ' + (q ? 'found' : 'total');
     }
 
-    // ── Select-all sessions checkboxes ──
+    // Select-all sessions checkboxes
     function toggleAll(cb) {
         document.querySelectorAll('.session-check').forEach(c => c.checked = cb.checked);
     }
@@ -2740,7 +2766,7 @@ $active_members_json = js(array_values(array_map(function($m) {
         }
     });
 
-    // ── Mobile sidebar ──
+    // Mobile sidebar
     function toggleSidebar() {
         document.getElementById('sidebar').classList.toggle('open');
         document.getElementById('overlay').classList.toggle('active');
@@ -2751,7 +2777,7 @@ $active_members_json = js(array_values(array_map(function($m) {
         document.getElementById('overlay').classList.remove('active');
     }
 
-    // ── Attendance member search widget ──
+    // Attendance member search widget
     (function () {
         const searchEl   = document.getElementById('attMemberSearch');
         const dropEl     = document.getElementById('attMemberDropdown');
@@ -2875,9 +2901,8 @@ $active_members_json = js(array_values(array_map(function($m) {
         }
     })();
 
-    // ── Export: sync session checkboxes into every export form ──
+    // Export: sync session checkboxes into every export form
     (function () {
-        // When any .session-check changes, mirror into all .export-form placeholders
         function syncExportForms() {
             const checked = Array.from(document.querySelectorAll('.session-check:checked'))
                                  .map(cb => cb.value);
@@ -2902,7 +2927,6 @@ $active_members_json = js(array_values(array_map(function($m) {
             }
         });
 
-        // Guard: warn if no session selected on submit
         document.addEventListener('submit', function (e) {
             if (!e.target.classList.contains('export-form')) return;
             const checked = document.querySelectorAll('.session-check:checked');
@@ -2912,8 +2936,8 @@ $active_members_json = js(array_values(array_map(function($m) {
             }
         });
     })();
+
     function switchTab(tab, btn) {
-        // Toggle tab content
         const matrix  = document.getElementById('tab-matrix');
         const summary = document.getElementById('tab-summary');
         if (!matrix || !summary) return;
@@ -2926,12 +2950,11 @@ $active_members_json = js(array_values(array_map(function($m) {
             summary.style.display = '';
         }
 
-        // Toggle button active state
         document.querySelectorAll('.report-tab').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
     }
 
-    // ── REPORTS: Matrix highlight filter ──
+    // Reports: Matrix highlight filter
     let currentHighlight = 'all';
 
     function setHighlight(mode, btn) {
@@ -2953,7 +2976,7 @@ $active_members_json = js(array_values(array_map(function($m) {
         });
     }
 
-    // ── REPORTS: Matrix member search ──
+    // Reports: Matrix member search
     function filterMatrix() {
         const q = document.getElementById('matrixSearch').value.toLowerCase().trim();
         document.querySelectorAll('#matrixBody tr').forEach(row => {
@@ -2962,7 +2985,7 @@ $active_members_json = js(array_values(array_map(function($m) {
         });
     }
 
-    // ── REPORTS: Summary search ──
+    // Reports: Summary search
     function filterSummary() {
         const q = document.getElementById('summarySearch').value.toLowerCase().trim();
         document.querySelectorAll('#summaryBody tr').forEach(row => {
@@ -2971,7 +2994,7 @@ $active_members_json = js(array_values(array_map(function($m) {
         });
     }
 
-    // ── REPORTS: Summary sort ──
+    // Reports: Summary sort
     let currentSort = 'present';
 
     function sortSummary(key, btn) {
@@ -2989,10 +3012,9 @@ $active_members_json = js(array_values(array_map(function($m) {
             }
             const va = parseInt(a.getAttribute('data-' + key) || '0');
             const vb = parseInt(b.getAttribute('data-' + key) || '0');
-            return vb - va; // descending
+            return vb - va;
         });
 
-        // Re-number ranks
         rows.forEach((row, i) => {
             const rc = row.querySelector('.rank-cell');
             if (rc) rc.textContent = i + 1;
