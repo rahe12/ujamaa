@@ -187,7 +187,7 @@ function create_member($pdo, $data) {
     $nextDueDate = date('Y-m-d', strtotime('+1 month', strtotime(date('Y-m-01'))));
     $stmt = $pdo->prepare("
         INSERT INTO members (full_name, phone, monthly_fee, due_day, default_monthly_fee, default_due_day, next_due_date, balance_remaining)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ");
     return $stmt->execute([
         $data['full_name'],
@@ -240,8 +240,8 @@ function delete_session($pdo, $id) {
 
 function log_attendance($pdo, $session_id, $member_id, $status = 'present') {
     $stmt = $pdo->prepare("
-        INSERT INTO attendance (session_id, member_id, status) VALUES ($1, $2, $3)
-        ON CONFLICT (session_id, member_id) DO UPDATE SET status = $3
+        INSERT INTO attendance (session_id, member_id, status) VALUES (?, ?, ?)
+        ON CONFLICT (session_id, member_id) DO UPDATE SET status = EXCLUDED.status
     ");
     return $stmt->execute([$session_id, $member_id, $status]);
 }
@@ -297,8 +297,8 @@ function create_or_update_bill($pdo, $member_id, $period, $expected, $paid = 0, 
     $due_date = $due_date ?: due_date_from_day($period, 5);
     $stmt = $pdo->prepare("
         INSERT INTO monthly_bills (member_id, period, expected_amount, paid_amount, due_date)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (member_id, period) DO UPDATE SET expected_amount = $3, paid_amount = $4, due_date = $5
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (member_id, period) DO UPDATE SET expected_amount = EXCLUDED.expected_amount, paid_amount = EXCLUDED.paid_amount, due_date = EXCLUDED.due_date
     ");
     return $stmt->execute([$member_id, $period, $expected, $paid, $due_date]);
 }
@@ -374,7 +374,7 @@ function get_monthly_summary($pdo, $period) {
             SUM(expected_amount) as total_expected,
             SUM(COALESCE(paid_amount,0)) as total_paid,
             SUM(expected_amount - COALESCE(paid_amount,0)) as total_remaining
-        FROM monthly_bills WHERE period = $1
+        FROM monthly_bills WHERE period = ?
     ");
     $stmt->execute([$period]);
     $pay = $stmt->fetch();
@@ -388,14 +388,14 @@ function get_monthly_summary($pdo, $period) {
             SUM(CASE WHEN att.status = 'late'    THEN 1 ELSE 0 END) as late_count
         FROM attendance att
         WHERE att.session_id IN (
-            SELECT id FROM sessions WHERE TO_CHAR(date, 'YYYY-MM') = $1
+            SELECT id FROM sessions WHERE TO_CHAR(date, 'YYYY-MM') = ?
         )
     ");
     $stmt->execute([$period]);
     $att = $stmt->fetch();
 
     if (!$att || (int)($att['total_records'] ?? 0) === 0) {
-        $s2 = $pdo->prepare("SELECT COUNT(*) as c FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = $1");
+        $s2 = $pdo->prepare("SELECT COUNT(*) as c FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ?");
         $s2->execute([$period]);
         $sc = $s2->fetch();
         $att = [
@@ -422,7 +422,7 @@ function get_monthly_summary($pdo, $period) {
                 SUM(CASE WHEN att.status = 'late'    THEN 1 ELSE 0 END) as late
             FROM attendance att
             WHERE att.session_id IN (
-                SELECT id FROM sessions WHERE TO_CHAR(date, 'YYYY-MM') = $1
+                SELECT id FROM sessions WHERE TO_CHAR(date, 'YYYY-MM') = ?
             )
             GROUP BY att.member_id
         ) agg ON agg.member_id = m.id
