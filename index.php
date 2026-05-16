@@ -502,6 +502,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Content-Disposition: attachment; filename="' . $export_type . '_' . $period . '.csv"');
             $output = fopen('php://output', 'w');
 
+            // ── 1. Attendance Matrix (member × session) ──────────────────────
             if ($export_type === 'attendance_report') {
                 $selected_ids = array_filter(array_map('intval', $_POST['session_ids'] ?? []));
 
@@ -513,10 +514,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt_sessions = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date ASC");
                     $stmt_sessions->execute([$period]);
                 }
-                $export_sessions   = $stmt_sessions->fetchAll();
-                $session_ids_used  = array_column($export_sessions, 'id');
+                $export_sessions  = $stmt_sessions->fetchAll();
+                $session_ids_used = array_column($export_sessions, 'id');
 
-                // Build CSV header
                 $header = ['Member'];
                 foreach ($export_sessions as $es) {
                     $header[] = $es['name'] . ' (' . $es['date'] . ')';
@@ -524,9 +524,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $header[] = 'Total Present';
                 $header[] = 'Total Absent';
                 $header[] = 'Total Late';
+                $header[] = 'Attendance Rate (%)';
                 fputcsv($output, $header);
 
-                // Fetch attendance for selected sessions
                 $att_map = [];
                 if (count($session_ids_used) > 0) {
                     $ph       = implode(',', array_fill(0, count($session_ids_used), '?'));
@@ -541,15 +541,118 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $row    = [$m['full_name']];
                     $totals = ['present' => 0, 'absent' => 0, 'late' => 0];
                     foreach ($export_sessions as $es) {
-                        $status = $att_map[$es['id']][$m['id']] ?? '—';
+                        $status = $att_map[$es['id']][$m['id']] ?? 'not recorded';
                         $row[]  = $status;
-                        if (isset($totals[$status])) $totals[$status]++;
+                        if ($status === 'present') $totals['present']++;
+                        elseif ($status === 'absent') $totals['absent']++;
+                        elseif ($status === 'late') $totals['late']++;
                     }
                     $row[] = $totals['present'];
                     $row[] = $totals['absent'];
                     $row[] = $totals['late'];
+                    $rate  = count($export_sessions) > 0
+                        ? round(($totals['present'] / count($export_sessions)) * 100)
+                        : 0;
+                    $row[] = $rate . '%';
                     fputcsv($output, $row);
                 }
+
+                // Footer: session totals
+                $footer = ['SESSION TOTALS'];
+                $grand = ['present'=>0,'absent'=>0,'late'=>0];
+                foreach ($export_sessions as $es) {
+                    $p = $a = $l = 0;
+                    foreach (get_active_members($pdo) as $m) {
+                        $s = $att_map[$es['id']][$m['id']] ?? null;
+                        if ($s === 'present') { $p++; $grand['present']++; }
+                        elseif ($s === 'absent') { $a++; $grand['absent']++; }
+                        elseif ($s === 'late') { $l++; $grand['late']++; }
+                    }
+                    $footer[] = "P:$p A:$a L:$l";
+                }
+                $footer[] = $grand['present'];
+                $footer[] = $grand['absent'];
+                $footer[] = $grand['late'];
+                $footer[] = '';
+                fputcsv($output, $footer);
+            }
+
+            // ── 2. Member Attendance Summary ─────────────────────────────────
+            elseif ($export_type === 'member_summary') {
+                $stmt_sessions = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date ASC");
+                $stmt_sessions->execute([$period]);
+                $all_sessions    = $stmt_sessions->fetchAll();
+                $session_ids_all = array_column($all_sessions, 'id');
+                $total_sessions  = count($all_sessions);
+
+                $att_map = [];
+                if ($total_sessions > 0) {
+                    $ph       = implode(',', array_fill(0, $total_sessions, '?'));
+                    $stmt_att = $pdo->prepare("SELECT * FROM attendance WHERE session_id IN ($ph)");
+                    $stmt_att->execute($session_ids_all);
+                    foreach ($stmt_att->fetchAll() as $a) {
+                        $att_map[$a['session_id']][$a['member_id']] = $a['status'];
+                    }
+                }
+
+                fputcsv($output, ['Member Attendance Summary — Period: ' . $period]);
+                fputcsv($output, ['Generated: ' . date('Y-m-d H:i:s')]);
+                fputcsv($output, []);
+                fputcsv($output, ['#', 'Member', 'Present', 'Absent', 'Late', 'Not Recorded', 'Total Sessions', 'Attendance Rate (%)']);
+
+                $idx = 1;
+                foreach (get_active_members($pdo) as $m) {
+                    $p = $ab = $l = 0;
+                    foreach ($session_ids_all as $sid) {
+                        $s = $att_map[$sid][$m['id']] ?? null;
+                        if ($s === 'present') $p++;
+                        elseif ($s === 'absent') $ab++;
+                        elseif ($s === 'late') $l++;
+                    }
+                    $not_recorded = $total_sessions - $p - $ab - $l;
+                    $rate = $total_sessions > 0 ? round(($p / $total_sessions) * 100) : 0;
+                    fputcsv($output, [$idx++, $m['full_name'], $p, $ab, $l, $not_recorded, $total_sessions, $rate . '%']);
+                }
+
+                // Grand totals row
+                fputcsv($output, []);
+                $gp = $ga = $gl = 0;
+                foreach (get_active_members($pdo) as $m) {
+                    foreach ($session_ids_all as $sid) {
+                        $s = $att_map[$sid][$m['id']] ?? null;
+                        if ($s === 'present') $gp++;
+                        elseif ($s === 'absent') $ga++;
+                        elseif ($s === 'late') $gl++;
+                    }
+                }
+                fputcsv($output, ['', 'TOTAL', $gp, $ga, $gl, '', '', '']);
+            }
+
+            // ── 3. Payments / Billing Report ─────────────────────────────────
+            elseif ($export_type === 'payments_report') {
+                fputcsv($output, ['Payments Report — Period: ' . $period]);
+                fputcsv($output, ['Generated: ' . date('Y-m-d H:i:s')]);
+                fputcsv($output, []);
+                fputcsv($output, ['Member', 'Expected (USD)', 'Paid (USD)', 'Remaining (USD)', 'Due Date', 'Status', 'Overdue Days']);
+
+                $total_exp = $total_paid = $total_rem = 0;
+                foreach (billing_rows($pdo, $period) as $row) {
+                    fputcsv($output, [
+                        $row['full_name'],
+                        number_format($row['effective_expected'], 2),
+                        number_format($row['effective_paid'],     2),
+                        number_format($row['effective_remaining'],2),
+                        $row['effective_due_date'],
+                        $row['effective_status'],
+                        $row['overdue_days'] > 0 ? $row['overdue_days'] . ' days' : '—',
+                    ]);
+                    $total_exp  += $row['effective_expected'];
+                    $total_paid += $row['effective_paid'];
+                    $total_rem  += $row['effective_remaining'];
+                }
+
+                fputcsv($output, []);
+                fputcsv($output, ['TOTALS', number_format($total_exp,2), number_format($total_paid,2), number_format($total_rem,2), '', '', '']);
             }
 
             fclose($output);
@@ -568,7 +671,6 @@ $period      = valid_period($_GET['period'] ?? current_period());
 $active_view = valid_view($_GET['view'] ?? 'dashboard');
 if (isset($_GET['msg'])) $message = $_GET['msg'];
 
-// Prepare active members as JSON for the member search widget
 $active_members_json = js(array_values(array_map(function($m) {
     return ['id' => $m['id'], 'name' => $m['full_name']];
 }, get_active_members($pdo))));
@@ -1013,26 +1115,10 @@ $active_members_json = js(array_values(array_map(function($m) {
         .session-check-label input[type="checkbox"] { width:15px; height:15px; accent-color:var(--accent); flex-shrink:0; }
 
         /* ── MEMBER SEARCH WIDGET ── */
-        .member-search-wrap {
-            position: relative;
-        }
-
-        .member-search-input-wrap {
-            position: relative;
-        }
-
-        .member-search-input-wrap svg {
-            position: absolute;
-            left: 11px;
-            top: 50%;
-            transform: translateY(-50%);
-            pointer-events: none;
-            color: var(--text-3);
-        }
-
-        .member-search-input-wrap input {
-            padding-left: 34px;
-        }
+        .member-search-wrap { position: relative; }
+        .member-search-input-wrap { position: relative; }
+        .member-search-input-wrap svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); pointer-events: none; color: var(--text-3); }
+        .member-search-input-wrap input { padding-left: 34px; }
 
         .member-selected-chip {
             display: flex;
@@ -1089,22 +1175,268 @@ $active_members_json = js(array_values(array_map(function($m) {
         }
 
         .member-dropdown-item:last-child { border-bottom: none; }
-
         .member-dropdown-item:hover,
-        .member-dropdown-item.highlighted {
-            background: var(--accent-dim);
-            color: var(--accent);
-        }
+        .member-dropdown-item.highlighted { background: var(--accent-dim); color: var(--accent); }
 
-        .member-dropdown-empty {
-            padding: 14px;
-            font-size: 13px;
-            color: var(--text-3);
-            text-align: center;
-        }
+        .member-dropdown-empty { padding: 14px; font-size: 13px; color: var(--text-3); text-align: center; }
 
         /* ── OVERLAY / MOBILE ── */
         .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:150; }
+
+        /* ── ATTENDANCE REPORT ENHANCED STYLES ── */
+
+        /* Tab switcher */
+        .report-tabs {
+            display: flex;
+            gap: 4px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 4px;
+            width: fit-content;
+            margin-bottom: 20px;
+        }
+
+        .report-tab {
+            padding: 7px 18px;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: var(--text-3);
+            transition: var(--transition);
+            font-family: 'DM Sans', sans-serif;
+        }
+
+        .report-tab.active {
+            background: var(--accent);
+            color: #fff;
+            box-shadow: 0 1px 6px var(--accent-glow);
+        }
+
+        .report-tab:not(.active):hover { color: var(--text-1); background: var(--border); }
+
+        /* Mini attendance dot grid */
+        .att-dot-grid {
+            display: flex;
+            gap: 4px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .att-dot {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0;
+            cursor: default;
+            position: relative;
+            flex-shrink: 0;
+        }
+
+        .att-dot.present { background: var(--green-dim); color: var(--green); border: 1px solid rgba(45,212,160,.3); }
+        .att-dot.absent  { background: var(--red-dim);   color: var(--red);   border: 1px solid rgba(248,113,113,.3); }
+        .att-dot.late    { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,.3); }
+        .att-dot.none    { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border); }
+
+        /* Progress bar inside table */
+        .inline-bar-wrap {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 100px;
+        }
+
+        .inline-bar {
+            flex: 1;
+            height: 6px;
+            background: var(--surface-2);
+            border-radius: 100px;
+            overflow: hidden;
+        }
+
+        .inline-bar-fill {
+            height: 100%;
+            border-radius: 100px;
+            transition: width .5s ease;
+        }
+
+        /* Attendance heatmap grid — full member × session matrix */
+        .matrix-wrap {
+            overflow-x: auto;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+        }
+
+        .matrix-table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 12px;
+        }
+
+        .matrix-table th {
+            background: var(--surface-2);
+            padding: 8px 10px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            color: var(--text-3);
+            white-space: nowrap;
+            border-bottom: 1px solid var(--border);
+            border-right: 1px solid var(--border);
+        }
+
+        .matrix-table th:last-child { border-right: none; }
+
+        .matrix-table td {
+            padding: 10px 10px;
+            border-bottom: 1px solid var(--border);
+            border-right: 1px solid var(--border);
+            vertical-align: middle;
+        }
+
+        .matrix-table td:last-child { border-right: none; }
+        .matrix-table tbody tr:last-child td { border-bottom: none; }
+        .matrix-table tbody tr:hover td { background: rgba(79,125,255,.04); }
+
+        .matrix-table td.member-name-col {
+            color: var(--text-1);
+            font-weight: 600;
+            font-size: 13px;
+            white-space: nowrap;
+            position: sticky;
+            left: 0;
+            background: var(--surface);
+            z-index: 2;
+            border-right: 2px solid var(--border-hover);
+        }
+
+        .matrix-table th.session-header {
+            writing-mode: horizontal-tb;
+            min-width: 100px;
+        }
+
+        .matrix-cell {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .matrix-pill {
+            padding: 3px 10px;
+            border-radius: 100px;
+            font-size: 10px;
+            font-weight: 800;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+        }
+
+        .matrix-pill.present { background: var(--green-dim); color: var(--green); border: 1px solid rgba(45,212,160,.25); }
+        .matrix-pill.absent  { background: var(--red-dim);   color: var(--red);   border: 1px solid rgba(248,113,113,.25); }
+        .matrix-pill.late    { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(245,158,11,.25); }
+        .matrix-pill.none    { color: var(--text-3); font-size: 14px; font-weight: 400; }
+
+        /* Summary totals row */
+        .matrix-table tfoot td {
+            background: var(--surface-2);
+            font-weight: 700;
+            color: var(--text-2);
+            border-top: 2px solid var(--border-hover);
+            padding: 10px;
+        }
+
+        .matrix-table tfoot td.member-name-col {
+            background: var(--surface-2);
+        }
+
+        /* Filter row */
+        .report-filter-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        .filter-chip {
+            padding: 5px 14px;
+            border-radius: 100px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            color: var(--text-3);
+            transition: var(--transition);
+            font-family: 'DM Sans', sans-serif;
+        }
+
+        .filter-chip:hover { border-color: var(--border-hover); color: var(--text-2); }
+        .filter-chip.active { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+        .filter-chip.green-chip.active  { border-color: var(--green); background: var(--green-dim); color: var(--green); }
+        .filter-chip.red-chip.active    { border-color: var(--red);   background: var(--red-dim);   color: var(--red); }
+        .filter-chip.amber-chip.active  { border-color: var(--amber); background: var(--amber-dim); color: var(--amber); }
+
+        /* Summary panel above matrix */
+        .summary-strips {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+
+        .summary-strip {
+            border-radius: var(--radius);
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .summary-strip.green { background: var(--green-dim); border: 1px solid rgba(45,212,160,.2); }
+        .summary-strip.red   { background: var(--red-dim);   border: 1px solid rgba(248,113,113,.2); }
+        .summary-strip.amber { background: var(--amber-dim); border: 1px solid rgba(245,158,11,.2); }
+
+        .strip-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+        .strip-label.green { color: var(--green); }
+        .strip-label.red   { color: var(--red); }
+        .strip-label.amber { color: var(--amber); }
+
+        .strip-count { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 26px; }
+        .strip-count.green { color: var(--green); }
+        .strip-count.red   { color: var(--red); }
+        .strip-count.amber { color: var(--amber); }
+
+        /* Search inside report */
+        .report-search-wrap {
+            position: relative;
+            flex: 1;
+            max-width: 260px;
+        }
+
+        .report-search-wrap svg {
+            position: absolute;
+            left: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            pointer-events: none;
+            color: var(--text-3);
+        }
+
+        .report-search-wrap input {
+            padding: 7px 12px 7px 32px;
+            font-size: 13px;
+            margin: 0;
+        }
 
         @media (max-width:1024px) {
             .stats-grid  { grid-template-columns: repeat(2,1fr); }
@@ -1112,6 +1444,7 @@ $active_members_json = js(array_values(array_map(function($m) {
             .form-grid   { grid-template-columns: 1fr; }
             .form-grid.cols-3 { grid-template-columns: 1fr 1fr; }
             .report-row  { grid-template-columns: 1fr !important; }
+            .summary-strips { grid-template-columns: 1fr 1fr 1fr; }
         }
 
         @media (max-width:768px) {
@@ -1124,11 +1457,14 @@ $active_members_json = js(array_values(array_map(function($m) {
             .topbar { padding: 0 16px; }
             .stats-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
             .stat-value { font-size: 22px; }
+            .summary-strips { grid-template-columns: 1fr; }
+            .report-filter-row { gap: 6px; }
         }
 
         @media (max-width:480px) {
             .stats-grid { grid-template-columns: 1fr; }
             .form-grid.cols-3 { grid-template-columns: 1fr; }
+            .summary-strips { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -1447,7 +1783,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                         </div>
                     </div>
 
-                    <!-- LOG ATTENDANCE — member field is now a live search -->
                     <div class="card">
                         <div class="card-header">
                             <div class="card-title">
@@ -1463,7 +1798,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                                 <form method="POST" id="attForm">
                                     <input type="hidden" name="action" value="log_attendance">
 
-                                    <!-- Session dropdown — unchanged -->
                                     <div class="form-group" style="margin-bottom:14px;">
                                         <label>Session *</label>
                                         <select name="session_id" required>
@@ -1476,12 +1810,9 @@ $active_members_json = js(array_values(array_map(function($m) {
                                         </select>
                                     </div>
 
-                                    <!-- Member SEARCH (replaces dropdown) -->
                                     <div class="form-group" style="margin-bottom:14px;">
                                         <label>Member *</label>
-                                        <!-- Hidden field submitted with the form -->
                                         <input type="hidden" name="member_id" id="attMemberId">
-
                                         <div class="member-search-wrap" id="memberSearchWrap">
                                             <div class="member-search-input-wrap">
                                                 <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1498,11 +1829,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                                                     onkeydown="attSearchKeydown(event)"
                                                 >
                                             </div>
-
-                                            <!-- Dropdown list -->
                                             <div class="member-dropdown" id="attMemberDropdown" role="listbox"></div>
-
-                                            <!-- Selected chip (shown after picking) -->
                                             <div class="member-selected-chip" id="attSelectedChip" style="display:none;">
                                                 <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke-width="2" stroke-linecap="round"/>
@@ -1514,7 +1841,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                                         </div>
                                     </div>
 
-                                    <!-- Status — unchanged -->
                                     <div class="form-group">
                                         <label>Status *</label>
                                         <select name="status" required>
@@ -1689,7 +2015,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-        <!-- ═══════════ REPORTS ═══════════ -->
+        <!-- ═══════════ REPORTS ═══════════ (ENHANCED) ═══════════ -->
         <?php elseif ($active_view === 'reports'): ?>
 
             <?php
@@ -1697,30 +2023,72 @@ $active_members_json = js(array_values(array_map(function($m) {
                 $summary = get_monthly_summary($pdo, $period);
                 $att     = $summary['attendance'];
 
-                $total_records = max(1, (int)($att['total_records'] ?? 1));
-                $pct_present   = $total_records > 0 ? round((($att['present_count'] ?? 0) / $total_records) * 100) : 0;
-                $pct_absent    = $total_records > 0 ? round((($att['absent_count']  ?? 0) / $total_records) * 100) : 0;
-                $pct_late      = $total_records > 0 ? round((($att['late_count']    ?? 0) / $total_records) * 100) : 0;
+                $total_records = (int)($att['total_records'] ?? 0);
+                $safe_total    = max(1, $total_records);
+                $pct_present   = $total_records > 0 ? round((($att['present_count'] ?? 0) / $safe_total) * 100) : 0;
+                $pct_absent    = $total_records > 0 ? round((($att['absent_count']  ?? 0) / $safe_total) * 100) : 0;
+                $pct_late      = $total_records > 0 ? round((($att['late_count']    ?? 0) / $safe_total) * 100) : 0;
 
-                // Sessions for this period
-                $stmt = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date DESC");
+                // All sessions for this period
+                $stmt = $pdo->prepare("SELECT * FROM sessions WHERE TO_CHAR(date,'YYYY-MM') = ? ORDER BY date ASC");
                 $stmt->execute([$period]);
                 $period_sessions = $stmt->fetchAll();
+                $session_ids_period = array_column($period_sessions, 'id');
 
-                // Latest session summary
-                $latest_session    = null;
+                // ── Full member × session attendance matrix ──
+                $active_members_list = get_active_members($pdo);
+
+                // Build att_map[session_id][member_id] = status
+                $att_map = [];
+                if (count($session_ids_period) > 0) {
+                    $ph = implode(',', array_fill(0, count($session_ids_period), '?'));
+                    $stmt2 = $pdo->prepare("SELECT session_id, member_id, status FROM attendance WHERE session_id IN ($ph)");
+                    $stmt2->execute($session_ids_period);
+                    foreach ($stmt2->fetchAll() as $a) {
+                        $att_map[$a['session_id']][$a['member_id']] = $a['status'];
+                    }
+                }
+
+                // Per-member totals
+                $member_totals = []; // [member_id] => [present, absent, late, total]
+                foreach ($active_members_list as $m) {
+                    $p = $ab = $l = 0;
+                    foreach ($session_ids_period as $sid) {
+                        $s = $att_map[$sid][$m['id']] ?? null;
+                        if ($s === 'present') $p++;
+                        elseif ($s === 'absent') $ab++;
+                        elseif ($s === 'late') $l++;
+                    }
+                    $member_totals[$m['id']] = ['present'=>$p,'absent'=>$ab,'late'=>$l,'total'=>$p+$ab+$l];
+                }
+
+                // Per-session totals
+                $session_totals = []; // [session_id] => [present, absent, late]
+                foreach ($session_ids_period as $sid) {
+                    $p = $ab = $l = 0;
+                    foreach ($active_members_list as $m) {
+                        $s = $att_map[$sid][$m['id']] ?? null;
+                        if ($s === 'present') $p++;
+                        elseif ($s === 'absent') $ab++;
+                        elseif ($s === 'late') $l++;
+                    }
+                    $session_totals[$sid] = ['present'=>$p,'absent'=>$ab,'late'=>$l];
+                }
+
+                // Latest session for the existing "Latest Session" card
+                $period_sessions_desc = array_reverse($period_sessions);
+                $latest_session = count($period_sessions_desc) > 0 ? $period_sessions_desc[0] : null;
                 $latest_attendance = [];
-                if (count($period_sessions) > 0) {
-                    $latest_session = $period_sessions[0];
-                    $stmt2 = $pdo->prepare("
+                if ($latest_session) {
+                    $stmt3 = $pdo->prepare("
                         SELECT m.full_name, a.status
                         FROM members m
                         LEFT JOIN attendance a ON a.member_id = m.id AND a.session_id = ?
                         WHERE m.is_active = TRUE
                         ORDER BY m.full_name ASC
                     ");
-                    $stmt2->execute([$latest_session['id']]);
-                    $latest_attendance = $stmt2->fetchAll();
+                    $stmt3->execute([$latest_session['id']]);
+                    $latest_attendance = $stmt3->fetchAll();
                 }
             ?>
 
@@ -1731,7 +2099,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-            <!-- KPI row (3 cards, no payment) -->
+            <!-- KPI row -->
             <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px;">
                 <div class="stat-card blue">
                     <div class="stat-icon blue">👥</div>
@@ -1740,7 +2108,7 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
                 <div class="stat-card green">
                     <div class="stat-icon green">📅</div>
-                    <div class="stat-value"><?php echo (int)($att['total_sessions'] ?? 0); ?></div>
+                    <div class="stat-value"><?php echo count($period_sessions); ?></div>
                     <div class="stat-label">Sessions Held</div>
                 </div>
                 <div class="stat-card amber">
@@ -1750,10 +2118,299 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-            <!-- Multi-session export + latest session summary -->
+            <!-- ── MAIN ATTENDANCE REPORT CARD (NEW) ── -->
+            <div class="card" style="margin-bottom:20px;">
+                <div class="card-header">
+                    <div class="card-title">
+                        <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path d="M9 11l3 3L22 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        Attendance Report
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                        <span class="badge badge-blue"><?php echo h($period); ?></span>
+                        <!-- Tab switcher -->
+                        <div class="report-tabs" id="reportTabs">
+                            <button class="report-tab active" onclick="switchTab('matrix', this)">Member × Session</button>
+                            <button class="report-tab" onclick="switchTab('summary', this)">Summary</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-body">
+
+                    <?php if (count($period_sessions) === 0): ?>
+                        <div class="empty-state">
+                            <div class="empty-icon">📅</div>
+                            <p>No sessions recorded for this period. Create sessions in the Attendance tab to see data here.</p>
+                        </div>
+                    <?php elseif (count($active_members_list) === 0): ?>
+                        <div class="empty-state">
+                            <div class="empty-icon">👥</div>
+                            <p>No active members found. Add members first.</p>
+                        </div>
+                    <?php else: ?>
+
+                        <!-- Summary strips (always visible) -->
+                        <div class="summary-strips">
+                            <div class="summary-strip green">
+                                <div>
+                                    <div class="strip-label green">Present</div>
+                                    <div style="font-size:11px;color:var(--text-3);margin-top:2px;"><?php echo $pct_present; ?>% of records</div>
+                                </div>
+                                <div class="strip-count green"><?php echo (int)($att['present_count'] ?? 0); ?></div>
+                            </div>
+                            <div class="summary-strip red">
+                                <div>
+                                    <div class="strip-label red">Absent</div>
+                                    <div style="font-size:11px;color:var(--text-3);margin-top:2px;"><?php echo $pct_absent; ?>% of records</div>
+                                </div>
+                                <div class="strip-count red"><?php echo (int)($att['absent_count'] ?? 0); ?></div>
+                            </div>
+                            <div class="summary-strip amber">
+                                <div>
+                                    <div class="strip-label amber">Late</div>
+                                    <div style="font-size:11px;color:var(--text-3);margin-top:2px;"><?php echo $pct_late; ?>% of records</div>
+                                </div>
+                                <div class="strip-count amber"><?php echo (int)($att['late_count'] ?? 0); ?></div>
+                            </div>
+                        </div>
+
+                        <!-- ── TAB: Member × Session Matrix ── -->
+                        <div id="tab-matrix">
+                            <div class="report-filter-row">
+                                <div class="report-search-wrap">
+                                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <circle cx="11" cy="11" r="8" stroke-width="2"/>
+                                        <path d="M21 21l-4.35-4.35" stroke-width="2" stroke-linecap="round"/>
+                                    </svg>
+                                    <input type="text" id="matrixSearch" placeholder="Filter members…" oninput="filterMatrix()">
+                                </div>
+                                <span style="font-size:12px;color:var(--text-3);">Highlight:</span>
+                                <button class="filter-chip active" id="chip-all"     onclick="setHighlight('all',this)">All</button>
+                                <button class="filter-chip green-chip" id="chip-present" onclick="setHighlight('present',this)">Present only</button>
+                                <button class="filter-chip red-chip"   id="chip-absent"  onclick="setHighlight('absent',this)">Absent only</button>
+                                <button class="filter-chip amber-chip" id="chip-late"    onclick="setHighlight('late',this)">Late only</button>
+                            </div>
+
+                            <div class="matrix-wrap">
+                                <table class="matrix-table" id="matrixTable">
+                                    <thead>
+                                        <tr>
+                                            <th class="session-header" style="min-width:160px;position:sticky;left:0;z-index:3;background:var(--surface-2);">Member</th>
+                                            <?php foreach ($period_sessions as $s): ?>
+                                                <th class="session-header">
+                                                    <div style="font-weight:700;color:var(--text-2);"><?php echo h($s['name']); ?></div>
+                                                    <div style="font-size:10px;color:var(--text-3);font-weight:400;margin-top:2px;"><?php echo h($s['date']); ?></div>
+                                                </th>
+                                            <?php endforeach; ?>
+                                            <th style="text-align:center;background:var(--surface-2);">✅ P</th>
+                                            <th style="text-align:center;background:var(--surface-2);">❌ A</th>
+                                            <th style="text-align:center;background:var(--surface-2);">⏰ L</th>
+                                            <th style="text-align:center;background:var(--surface-2);">Rate</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="matrixBody">
+                                        <?php foreach ($active_members_list as $m):
+                                            $mt = $member_totals[$m['id']];
+                                            $att_total = max(1, count($period_sessions));
+                                            $rate = count($period_sessions) > 0 ? round(($mt['present'] / $att_total) * 100) : 0;
+                                        ?>
+                                        <tr data-name="<?php echo strtolower(h($m['full_name'])); ?>">
+                                            <td class="member-name-col"><?php echo h($m['full_name']); ?></td>
+                                            <?php foreach ($period_sessions as $s):
+                                                $status = $att_map[$s['id']][$m['id']] ?? null;
+                                                $pill_class = $status ? $status : 'none';
+                                                $pill_label = $status ? strtoupper(substr($status, 0, 1)) : '—';
+                                                $full_label = $status ?? 'Not recorded';
+                                            ?>
+                                            <td style="text-align:center;" data-status="<?php echo h($status ?? 'none'); ?>">
+                                                <div class="matrix-cell">
+                                                    <span class="matrix-pill <?php echo $pill_class; ?>" title="<?php echo h(ucfirst($full_label)); ?>">
+                                                        <?php echo $status ? ucfirst($status) : '—'; ?>
+                                                    </span>
+                                                </div>
+                                            </td>
+                                            <?php endforeach; ?>
+                                            <td style="text-align:center;font-weight:700;color:var(--green);"><?php echo $mt['present']; ?></td>
+                                            <td style="text-align:center;font-weight:700;color:var(--red);"><?php echo $mt['absent']; ?></td>
+                                            <td style="text-align:center;font-weight:700;color:var(--amber);"><?php echo $mt['late']; ?></td>
+                                            <td style="min-width:110px;">
+                                                <div class="inline-bar-wrap">
+                                                    <div class="inline-bar">
+                                                        <div class="inline-bar-fill" style="width:<?php echo $rate; ?>%;background:<?php echo $rate>=80?'var(--green)':($rate>=50?'var(--amber)':'var(--red)')?>;"></div>
+                                                    </div>
+                                                    <span style="font-size:11px;font-weight:700;color:var(--text-2);min-width:32px;text-align:right;"><?php echo $rate; ?>%</span>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                    <tfoot>
+                                        <tr>
+                                            <td class="member-name-col" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);">Session Total</td>
+                                            <?php foreach ($period_sessions as $s):
+                                                $st = $session_totals[$s['id']] ?? ['present'=>0,'absent'=>0,'late'=>0];
+                                            ?>
+                                            <td style="text-align:center;">
+                                                <div style="display:flex;flex-direction:column;gap:2px;align-items:center;">
+                                                    <span style="font-size:11px;color:var(--green);font-weight:700;">✅ <?php echo $st['present']; ?></span>
+                                                    <span style="font-size:11px;color:var(--red);font-weight:700;">❌ <?php echo $st['absent']; ?></span>
+                                                    <?php if ($st['late'] > 0): ?>
+                                                    <span style="font-size:11px;color:var(--amber);font-weight:700;">⏰ <?php echo $st['late']; ?></span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
+                                            <?php endforeach; ?>
+                                            <td style="text-align:center;color:var(--green);font-weight:800;"><?php echo (int)($att['present_count']??0); ?></td>
+                                            <td style="text-align:center;color:var(--red);font-weight:800;"><?php echo (int)($att['absent_count']??0); ?></td>
+                                            <td style="text-align:center;color:var(--amber);font-weight:800;"><?php echo (int)($att['late_count']??0); ?></td>
+                                            <td></td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- ── TAB: Summary (per-member breakdown) ── -->
+                        <div id="tab-summary" style="display:none;">
+                            <div class="report-filter-row">
+                                <div class="report-search-wrap">
+                                    <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <circle cx="11" cy="11" r="8" stroke-width="2"/>
+                                        <path d="M21 21l-4.35-4.35" stroke-width="2" stroke-linecap="round"/>
+                                    </svg>
+                                    <input type="text" id="summarySearch" placeholder="Filter members…" oninput="filterSummary()">
+                                </div>
+                                <span style="font-size:12px;color:var(--text-3);">Sort by:</span>
+                                <button class="filter-chip active" id="sort-present" onclick="sortSummary('present',this)">Most Present</button>
+                                <button class="filter-chip red-chip" id="sort-absent" onclick="sortSummary('absent',this)">Most Absent</button>
+                                <button class="filter-chip amber-chip" id="sort-late" onclick="sortSummary('late',this)">Most Late</button>
+                                <button class="filter-chip" id="sort-name" onclick="sortSummary('name',this)">A–Z</button>
+                            </div>
+
+                            <div class="table-wrap">
+                                <table id="summaryTable">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Member</th>
+                                            <th>Present</th>
+                                            <th>Absent</th>
+                                            <th>Late</th>
+                                            <th>Sessions</th>
+                                            <th>Attendance Rate</th>
+                                            <th>Last 5 Sessions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="summaryBody">
+                                        <?php
+                                        // Last 5 sessions (most recent)
+                                        $last5 = array_slice(array_reverse($period_sessions), 0, 5);
+                                        foreach ($active_members_list as $idx => $m):
+                                            $mt   = $member_totals[$m['id']];
+                                            $rate = count($period_sessions) > 0 ? round(($mt['present'] / count($period_sessions)) * 100) : 0;
+                                            $rate_color = $rate >= 80 ? 'var(--green)' : ($rate >= 50 ? 'var(--amber)' : 'var(--red)');
+                                        ?>
+                                        <tr data-present="<?php echo $mt['present']; ?>"
+                                            data-absent="<?php echo $mt['absent']; ?>"
+                                            data-late="<?php echo $mt['late']; ?>"
+                                            data-name="<?php echo strtolower(h($m['full_name'])); ?>"
+                                            data-rate="<?php echo $rate; ?>">
+                                            <td style="color:var(--text-3);font-size:12px;" class="rank-cell"><?php echo $idx+1; ?></td>
+                                            <td class="name-cell"><?php echo h($m['full_name']); ?></td>
+                                            <td>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <span style="font-weight:800;font-size:15px;color:var(--green);"><?php echo $mt['present']; ?></span>
+                                                    <span style="font-size:11px;color:var(--text-3);">/ <?php echo count($period_sessions); ?></span>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <div style="display:flex;align-items:center;gap:6px;">
+                                                    <?php if ($mt['absent'] > 0): ?>
+                                                        <span style="font-weight:800;font-size:15px;color:var(--red);"><?php echo $mt['absent']; ?></span>
+                                                    <?php else: ?>
+                                                        <span style="color:var(--text-3);">0</span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <?php if ($mt['late'] > 0): ?>
+                                                    <span style="font-weight:800;font-size:15px;color:var(--amber);"><?php echo $mt['late']; ?></span>
+                                                <?php else: ?>
+                                                    <span style="color:var(--text-3);">0</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td style="color:var(--text-2);"><?php echo $mt['total']; ?></td>
+                                            <td style="min-width:130px;">
+                                                <div class="inline-bar-wrap">
+                                                    <div class="inline-bar">
+                                                        <div class="inline-bar-fill" style="width:<?php echo $rate; ?>%;background:<?php echo $rate_color; ?>;"></div>
+                                                    </div>
+                                                    <span style="font-size:12px;font-weight:700;color:<?php echo $rate_color; ?>;min-width:36px;text-align:right;"><?php echo $rate; ?>%</span>
+                                                </div>
+                                            </td>
+                                            <td>
+                                                <div class="att-dot-grid">
+                                                    <?php
+                                                    // Show last 5 sessions as coloured dots
+                                                    if (count($last5) === 0) {
+                                                        echo '<span style="color:var(--text-3);font-size:11px;">No sessions</span>';
+                                                    } else {
+                                                        foreach ($last5 as $ls):
+                                                            $ds = $att_map[$ls['id']][$m['id']] ?? null;
+                                                            $dc = $ds ?? 'none';
+                                                            $dl = $ds ? strtoupper(substr($ds,0,1)) : '—';
+                                                    ?>
+                                                        <div class="att-dot <?php echo $dc; ?>" title="<?php echo h($ls['name'].' ('.$ls['date'].')').': '.h(ucfirst($ds ?? 'Not recorded')); ?>">
+                                                            <?php echo $dl; ?>
+                                                        </div>
+                                                    <?php endforeach; } ?>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Progress bars for Present / Absent / Late -->
+                            <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">
+                                <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:13px;color:var(--text-1);margin-bottom:16px;">Period Breakdown</div>
+                                <?php foreach ([
+                                    ['Present', $pct_present, 'var(--green)', (int)($att['present_count']??0)],
+                                    ['Absent',  $pct_absent,  'var(--red)',   (int)($att['absent_count']??0)],
+                                    ['Late',    $pct_late,    'var(--amber)', (int)($att['late_count']??0)],
+                                ] as [$label, $pct, $color, $count]): ?>
+                                <div style="margin-bottom:14px;">
+                                    <div style="display:flex;justify-content:space-between;margin-bottom:6px;align-items:center;">
+                                        <span style="font-size:13px;color:var(--text-2);font-weight:500;"><?php echo $label; ?></span>
+                                        <div style="display:flex;align-items:center;gap:8px;">
+                                            <span style="font-size:13px;font-weight:700;color:<?php echo $color; ?>;"><?php echo $count; ?> records</span>
+                                            <span style="font-size:11px;color:var(--text-3);"><?php echo $pct; ?>%</span>
+                                        </div>
+                                    </div>
+                                    <div style="height:8px;background:var(--surface-2);border-radius:100px;overflow:hidden;">
+                                        <div style="height:100%;width:<?php echo $pct; ?>%;background:<?php echo $color; ?>;border-radius:100px;transition:width .6s ease;"></div>
+                                    </div>
+                                </div>
+                                <?php endforeach; ?>
+
+                                <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-size:12px;">
+                                    <span style="color:var(--text-3);">Total attendance records this period</span>
+                                    <span style="font-weight:700;color:var(--text-1);"><?php echo $total_records; ?></span>
+                                </div>
+                            </div>
+                        </div>
+
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <!-- Export + Latest Session row (unchanged) -->
             <div class="report-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
 
-                <!-- Export card -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">📋 Export Attendance</div>
@@ -1797,7 +2454,6 @@ $active_members_json = js(array_values(array_map(function($m) {
                     </div>
                 </div>
 
-                <!-- Latest session detail -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">
@@ -1856,88 +2512,33 @@ $active_members_json = js(array_values(array_map(function($m) {
                 </div>
             </div>
 
-            <!-- Attendance overview + top attenders -->
-            <div class="report-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
-
-                <!-- Attendance overview -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path d="M9 11l3 3L22 4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke-width="2" stroke-linecap="round"/>
-                            </svg>
-                            Attendance Overview
-                        </div>
-                        <span class="badge badge-blue"><?php echo h($period); ?></span>
-                    </div>
-                    <div class="card-body">
-                        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
-                            <div style="text-align:center;background:var(--green-dim);border:1px solid rgba(45,212,160,.2);border-radius:var(--radius);padding:14px 10px;">
-                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--green);"><?php echo (int)($att['present_count'] ?? 0); ?></div>
-                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Present</div>
-                            </div>
-                            <div style="text-align:center;background:var(--red-dim);border:1px solid rgba(248,113,113,.2);border-radius:var(--radius);padding:14px 10px;">
-                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--red);"><?php echo (int)($att['absent_count'] ?? 0); ?></div>
-                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Absent</div>
-                            </div>
-                            <div style="text-align:center;background:var(--amber-dim);border:1px solid rgba(245,158,11,.2);border-radius:var(--radius);padding:14px 10px;">
-                                <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:var(--amber);"><?php echo (int)($att['late_count'] ?? 0); ?></div>
-                                <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px;">Late</div>
-                            </div>
-                        </div>
-
-                        <?php foreach ([
-                            ['Present', $pct_present, 'var(--green)'],
-                            ['Absent',  $pct_absent,  'var(--red)'],
-                            ['Late',    $pct_late,    'var(--amber)'],
-                        ] as [$label, $pct, $color]): ?>
-                        <div style="margin-bottom:12px;">
-                            <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
-                                <span style="font-size:12px;color:var(--text-3);"><?php echo $label; ?></span>
-                                <span style="font-size:12px;font-weight:700;color:var(--text-2);"><?php echo $pct; ?>%</span>
-                            </div>
-                            <div style="height:6px;background:var(--surface-2);border-radius:100px;overflow:hidden;">
-                                <div style="height:100%;width:<?php echo $pct; ?>%;background:<?php echo $color; ?>;border-radius:100px;transition:width .6s ease;"></div>
-                            </div>
-                        </div>
-                        <?php endforeach; ?>
-
-                        <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:flex;justify-content:space-between;">
-                            <span style="font-size:12px;color:var(--text-3);">Total attendance records</span>
-                            <span style="font-size:13px;font-weight:700;color:var(--text-1);"><?php echo (int)($att['total_records'] ?? 0); ?></span>
-                        </div>
-                    </div>
+            <!-- Top attenders (unchanged) -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">🏅 Top Attenders</div>
+                    <span class="badge badge-green">this period</span>
                 </div>
-
-                <!-- Top attenders -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">🏅 Top Attenders</div>
-                        <span class="badge badge-green">this period</span>
-                    </div>
-                    <div class="table-wrap">
-                        <?php if (count($summary['top_attenders']) > 0): ?>
-                        <table>
-                            <thead>
-                                <tr><th>#</th><th>Member</th><th>Present</th><th>Absent</th><th>Late</th></tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($summary['top_attenders'] as $i => $row): ?>
-                                <tr>
-                                    <td style="color:var(--text-3);font-size:12px;"><?php echo $i+1; ?></td>
-                                    <td class="name-cell"><?php echo h($row['full_name']); ?></td>
-                                    <td><span class="badge badge-green"><?php echo (int)$row['present']; ?></span></td>
-                                    <td><span class="badge badge-red"><?php echo (int)$row['absent']; ?></span></td>
-                                    <td><span class="badge badge-amber"><?php echo (int)$row['late']; ?></span></td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                        <?php else: ?>
-                            <div class="empty-state"><div class="empty-icon">📅</div><p>No attendance data for this period.</p></div>
-                        <?php endif; ?>
-                    </div>
+                <div class="table-wrap">
+                    <?php if (count($summary['top_attenders']) > 0): ?>
+                    <table>
+                        <thead>
+                            <tr><th>#</th><th>Member</th><th>Present</th><th>Absent</th><th>Late</th></tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($summary['top_attenders'] as $i => $row): ?>
+                            <tr>
+                                <td style="color:var(--text-3);font-size:12px;"><?php echo $i+1; ?></td>
+                                <td class="name-cell"><?php echo h($row['full_name']); ?></td>
+                                <td><span class="badge badge-green"><?php echo (int)$row['present']; ?></span></td>
+                                <td><span class="badge badge-red"><?php echo (int)$row['absent']; ?></span></td>
+                                <td><span class="badge badge-amber"><?php echo (int)$row['late']; ?></span></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <?php else: ?>
+                        <div class="empty-state"><div class="empty-icon">📅</div><p>No attendance data for this period.</p></div>
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -2007,9 +2608,8 @@ $active_members_json = js(array_values(array_map(function($m) {
         const hiddenEl   = document.getElementById('attMemberId');
         const chipEl     = document.getElementById('attSelectedChip');
         const chipName   = document.getElementById('attSelectedName');
-        const submitBtn  = document.getElementById('attSubmitBtn');
 
-        if (!searchEl) return; // not on attendance view
+        if (!searchEl) return;
 
         let filtered = [];
         let highlightIdx = -1;
@@ -2023,10 +2623,9 @@ $active_members_json = js(array_values(array_map(function($m) {
                 dropEl.innerHTML = items.map((m, i) =>
                     `<div class="member-dropdown-item" data-id="${m.id}" data-idx="${i}">${escHtml(m.name)}</div>`
                 ).join('');
-                // Attach click handlers
                 dropEl.querySelectorAll('.member-dropdown-item').forEach(el => {
                     el.addEventListener('mousedown', function(e) {
-                        e.preventDefault(); // prevent blur before click
+                        e.preventDefault();
                         selectMember(parseInt(this.dataset.id), this.textContent);
                     });
                 });
@@ -2100,13 +2699,11 @@ $active_members_json = js(array_values(array_map(function($m) {
             if (highlightIdx >= 0) items[highlightIdx].scrollIntoView({ block: 'nearest' });
         }
 
-        // Close dropdown on outside click
         document.addEventListener('click', function(e) {
             const wrap = document.getElementById('memberSearchWrap');
             if (wrap && !wrap.contains(e.target)) closeDropdown();
         });
 
-        // Validate member selected before submit
         const form = document.getElementById('attForm');
         if (form) {
             form.addEventListener('submit', function(e) {
@@ -2127,6 +2724,95 @@ $active_members_json = js(array_values(array_map(function($m) {
             return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
         }
     })();
+
+    // ── REPORTS: Tab switcher ──
+    function switchTab(tab, btn) {
+        // Toggle tab content
+        const matrix  = document.getElementById('tab-matrix');
+        const summary = document.getElementById('tab-summary');
+        if (!matrix || !summary) return;
+
+        if (tab === 'matrix') {
+            matrix.style.display  = '';
+            summary.style.display = 'none';
+        } else {
+            matrix.style.display  = 'none';
+            summary.style.display = '';
+        }
+
+        // Toggle button active state
+        document.querySelectorAll('.report-tab').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }
+
+    // ── REPORTS: Matrix highlight filter ──
+    let currentHighlight = 'all';
+
+    function setHighlight(mode, btn) {
+        currentHighlight = mode;
+        document.querySelectorAll('#chip-all,#chip-present,#chip-absent,#chip-late').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+        applyMatrixHighlight();
+    }
+
+    function applyMatrixHighlight() {
+        const cells = document.querySelectorAll('#matrixBody td[data-status]');
+        cells.forEach(cell => {
+            const status = cell.getAttribute('data-status');
+            if (currentHighlight === 'all') {
+                cell.style.opacity = '1';
+            } else {
+                cell.style.opacity = (status === currentHighlight) ? '1' : '0.15';
+            }
+        });
+    }
+
+    // ── REPORTS: Matrix member search ──
+    function filterMatrix() {
+        const q = document.getElementById('matrixSearch').value.toLowerCase().trim();
+        document.querySelectorAll('#matrixBody tr').forEach(row => {
+            const name = row.getAttribute('data-name') || '';
+            row.style.display = !q || name.includes(q) ? '' : 'none';
+        });
+    }
+
+    // ── REPORTS: Summary search ──
+    function filterSummary() {
+        const q = document.getElementById('summarySearch').value.toLowerCase().trim();
+        document.querySelectorAll('#summaryBody tr').forEach(row => {
+            const name = row.getAttribute('data-name') || '';
+            row.style.display = !q || name.includes(q) ? '' : 'none';
+        });
+    }
+
+    // ── REPORTS: Summary sort ──
+    let currentSort = 'present';
+
+    function sortSummary(key, btn) {
+        currentSort = key;
+        document.querySelectorAll('#sort-present,#sort-absent,#sort-late,#sort-name').forEach(c => c.classList.remove('active'));
+        btn.classList.add('active');
+
+        const tbody = document.getElementById('summaryBody');
+        if (!tbody) return;
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+
+        rows.sort((a, b) => {
+            if (key === 'name') {
+                return (a.getAttribute('data-name') || '').localeCompare(b.getAttribute('data-name') || '');
+            }
+            const va = parseInt(a.getAttribute('data-' + key) || '0');
+            const vb = parseInt(b.getAttribute('data-' + key) || '0');
+            return vb - va; // descending
+        });
+
+        // Re-number ranks
+        rows.forEach((row, i) => {
+            const rc = row.querySelector('.rank-cell');
+            if (rc) rc.textContent = i + 1;
+            tbody.appendChild(row);
+        });
+    }
 </script>
 </body>
 </html>
