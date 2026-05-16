@@ -568,6 +568,11 @@ $period      = valid_period($_GET['period'] ?? current_period());
 $active_view = valid_view($_GET['view'] ?? 'dashboard');
 if (isset($_GET['msg'])) $message = $_GET['msg'];
 
+// Prepare active members as JSON for the member search widget
+$active_members_json = js(array_values(array_map(function($m) {
+    return ['id' => $m['id'], 'name' => $m['full_name']];
+}, get_active_members($pdo))));
+
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1007,6 +1012,97 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         .session-check-label:hover { border-color: var(--accent); background: var(--accent-dim); }
         .session-check-label input[type="checkbox"] { width:15px; height:15px; accent-color:var(--accent); flex-shrink:0; }
 
+        /* ── MEMBER SEARCH WIDGET ── */
+        .member-search-wrap {
+            position: relative;
+        }
+
+        .member-search-input-wrap {
+            position: relative;
+        }
+
+        .member-search-input-wrap svg {
+            position: absolute;
+            left: 11px;
+            top: 50%;
+            transform: translateY(-50%);
+            pointer-events: none;
+            color: var(--text-3);
+        }
+
+        .member-search-input-wrap input {
+            padding-left: 34px;
+        }
+
+        .member-selected-chip {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--accent-dim);
+            border: 1px solid rgba(79,125,255,.35);
+            border-radius: var(--radius-sm);
+            padding: 8px 12px;
+            margin-top: 6px;
+            font-size: 13px;
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        .member-selected-chip button {
+            background: none;
+            border: none;
+            color: var(--accent);
+            cursor: pointer;
+            font-size: 15px;
+            line-height: 1;
+            padding: 0 0 0 4px;
+            margin-left: auto;
+            opacity: .7;
+            transition: opacity .15s;
+        }
+
+        .member-selected-chip button:hover { opacity: 1; }
+
+        .member-dropdown {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0; right: 0;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: 0 8px 32px rgba(0,0,0,.4);
+            z-index: 300;
+            max-height: 220px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .member-dropdown.open { display: block; }
+
+        .member-dropdown-item {
+            padding: 10px 14px;
+            font-size: 13px;
+            color: var(--text-2);
+            cursor: pointer;
+            transition: background .12s;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .member-dropdown-item:last-child { border-bottom: none; }
+
+        .member-dropdown-item:hover,
+        .member-dropdown-item.highlighted {
+            background: var(--accent-dim);
+            color: var(--accent);
+        }
+
+        .member-dropdown-empty {
+            padding: 14px;
+            font-size: 13px;
+            color: var(--text-3);
+            text-align: center;
+        }
+
         /* ── OVERLAY / MOBILE ── */
         .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:150; }
 
@@ -1351,6 +1447,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                         </div>
                     </div>
 
+                    <!-- LOG ATTENDANCE — member field is now a live search -->
                     <div class="card">
                         <div class="card-header">
                             <div class="card-title">
@@ -1363,8 +1460,10 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                         </div>
                         <div class="card-body">
                             <?php if (count($sessions) > 0): ?>
-                                <form method="POST">
+                                <form method="POST" id="attForm">
                                     <input type="hidden" name="action" value="log_attendance">
+
+                                    <!-- Session dropdown — unchanged -->
                                     <div class="form-group" style="margin-bottom:14px;">
                                         <label>Session *</label>
                                         <select name="session_id" required>
@@ -1376,15 +1475,46 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                                             <?php endforeach; ?>
                                         </select>
                                     </div>
+
+                                    <!-- Member SEARCH (replaces dropdown) -->
                                     <div class="form-group" style="margin-bottom:14px;">
                                         <label>Member *</label>
-                                        <select name="member_id" required>
-                                            <option value="">— Choose Member —</option>
-                                            <?php foreach (get_active_members($pdo) as $m): ?>
-                                                <option value="<?php echo $m['id']; ?>"><?php echo h($m['full_name']); ?></option>
-                                            <?php endforeach; ?>
-                                        </select>
+                                        <!-- Hidden field submitted with the form -->
+                                        <input type="hidden" name="member_id" id="attMemberId">
+
+                                        <div class="member-search-wrap" id="memberSearchWrap">
+                                            <div class="member-search-input-wrap">
+                                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <circle cx="11" cy="11" r="8" stroke-width="2"/>
+                                                    <path d="M21 21l-4.35-4.35" stroke-width="2" stroke-linecap="round"/>
+                                                </svg>
+                                                <input
+                                                    type="text"
+                                                    id="attMemberSearch"
+                                                    placeholder="Search by name…"
+                                                    autocomplete="off"
+                                                    oninput="attSearchInput(this)"
+                                                    onfocus="attSearchFocus()"
+                                                    onkeydown="attSearchKeydown(event)"
+                                                >
+                                            </div>
+
+                                            <!-- Dropdown list -->
+                                            <div class="member-dropdown" id="attMemberDropdown" role="listbox"></div>
+
+                                            <!-- Selected chip (shown after picking) -->
+                                            <div class="member-selected-chip" id="attSelectedChip" style="display:none;">
+                                                <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" stroke-width="2" stroke-linecap="round"/>
+                                                    <circle cx="9" cy="7" r="4" stroke-width="2"/>
+                                                </svg>
+                                                <span id="attSelectedName"></span>
+                                                <button type="button" onclick="attClearMember()" title="Clear selection">✕</button>
+                                            </div>
+                                        </div>
                                     </div>
+
+                                    <!-- Status — unchanged -->
                                     <div class="form-group">
                                         <label>Status *</label>
                                         <select name="status" required>
@@ -1393,8 +1523,9 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
                                             <option value="late">Late</option>
                                         </select>
                                     </div>
+
                                     <div class="form-actions">
-                                        <button type="submit" class="btn btn-primary">Record Attendance</button>
+                                        <button type="submit" class="btn btn-primary" id="attSubmitBtn">Record Attendance</button>
                                     </div>
                                 </form>
                             <?php else: ?>
@@ -1815,7 +1946,10 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
 </div><!-- /main -->
 
 <script>
-    // Auto-dismiss alert
+    // ── Active members data for the search widget ──
+    const ATT_MEMBERS = <?php echo $active_members_json; ?>;
+
+    // ── Auto-dismiss alert ──
     (function() {
         const a = document.getElementById('alert-msg');
         if (a) {
@@ -1827,7 +1961,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         }
     })();
 
-    // Member search filter
+    // ── Member search filter (Members table) ──
     function filterMembers() {
         const q = document.getElementById('memberSearch').value.toLowerCase().trim();
         const rows = document.querySelectorAll('#membersTable tbody tr');
@@ -1841,12 +1975,11 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         if (badge) badge.textContent = visible + ' ' + (q ? 'found' : 'total');
     }
 
-    // Select-all sessions checkboxes
+    // ── Select-all sessions checkboxes ──
     function toggleAll(cb) {
         document.querySelectorAll('.session-check').forEach(c => c.checked = cb.checked);
     }
 
-    // Keep select-all in sync if individual boxes change
     document.addEventListener('change', function(e) {
         if (e.target.classList.contains('session-check')) {
             const all  = document.querySelectorAll('.session-check');
@@ -1856,7 +1989,7 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         }
     });
 
-    // Mobile sidebar
+    // ── Mobile sidebar ──
     function toggleSidebar() {
         document.getElementById('sidebar').classList.toggle('open');
         document.getElementById('overlay').classList.toggle('active');
@@ -1866,6 +1999,134 @@ if (isset($_GET['msg'])) $message = $_GET['msg'];
         document.getElementById('sidebar').classList.remove('open');
         document.getElementById('overlay').classList.remove('active');
     }
+
+    // ── Attendance member search widget ──
+    (function () {
+        const searchEl   = document.getElementById('attMemberSearch');
+        const dropEl     = document.getElementById('attMemberDropdown');
+        const hiddenEl   = document.getElementById('attMemberId');
+        const chipEl     = document.getElementById('attSelectedChip');
+        const chipName   = document.getElementById('attSelectedName');
+        const submitBtn  = document.getElementById('attSubmitBtn');
+
+        if (!searchEl) return; // not on attendance view
+
+        let filtered = [];
+        let highlightIdx = -1;
+
+        function renderDropdown(items) {
+            filtered = items;
+            highlightIdx = -1;
+            if (items.length === 0) {
+                dropEl.innerHTML = '<div class="member-dropdown-empty">No members found</div>';
+            } else {
+                dropEl.innerHTML = items.map((m, i) =>
+                    `<div class="member-dropdown-item" data-id="${m.id}" data-idx="${i}">${escHtml(m.name)}</div>`
+                ).join('');
+                // Attach click handlers
+                dropEl.querySelectorAll('.member-dropdown-item').forEach(el => {
+                    el.addEventListener('mousedown', function(e) {
+                        e.preventDefault(); // prevent blur before click
+                        selectMember(parseInt(this.dataset.id), this.textContent);
+                    });
+                });
+            }
+            dropEl.classList.add('open');
+        }
+
+        function closeDropdown() {
+            dropEl.classList.remove('open');
+            highlightIdx = -1;
+        }
+
+        function selectMember(id, name) {
+            hiddenEl.value = id;
+            chipName.textContent = name;
+            chipEl.style.display = 'flex';
+            searchEl.style.display = 'none';
+            closeDropdown();
+        }
+
+        window.attClearMember = function () {
+            hiddenEl.value = '';
+            chipEl.style.display = 'none';
+            searchEl.style.display = '';
+            searchEl.value = '';
+            searchEl.focus();
+        };
+
+        window.attSearchInput = function (el) {
+            const q = el.value.trim().toLowerCase();
+            if (!q) { closeDropdown(); return; }
+            const matches = ATT_MEMBERS.filter(m => m.name.toLowerCase().includes(q));
+            renderDropdown(matches);
+        };
+
+        window.attSearchFocus = function () {
+            const q = searchEl.value.trim().toLowerCase();
+            if (q) {
+                const matches = ATT_MEMBERS.filter(m => m.name.toLowerCase().includes(q));
+                renderDropdown(matches);
+            }
+        };
+
+        window.attSearchKeydown = function (e) {
+            const items = dropEl.querySelectorAll('.member-dropdown-item');
+            if (!dropEl.classList.contains('open') || items.length === 0) return;
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                highlightIdx = Math.min(highlightIdx + 1, items.length - 1);
+                updateHighlight(items);
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                highlightIdx = Math.max(highlightIdx - 1, 0);
+                updateHighlight(items);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (highlightIdx >= 0 && items[highlightIdx]) {
+                    const el = items[highlightIdx];
+                    selectMember(parseInt(el.dataset.id), el.textContent);
+                } else if (filtered.length === 1) {
+                    selectMember(filtered[0].id, filtered[0].name);
+                }
+            } else if (e.key === 'Escape') {
+                closeDropdown();
+            }
+        };
+
+        function updateHighlight(items) {
+            items.forEach((el, i) => el.classList.toggle('highlighted', i === highlightIdx));
+            if (highlightIdx >= 0) items[highlightIdx].scrollIntoView({ block: 'nearest' });
+        }
+
+        // Close dropdown on outside click
+        document.addEventListener('click', function(e) {
+            const wrap = document.getElementById('memberSearchWrap');
+            if (wrap && !wrap.contains(e.target)) closeDropdown();
+        });
+
+        // Validate member selected before submit
+        const form = document.getElementById('attForm');
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                if (!hiddenEl.value) {
+                    e.preventDefault();
+                    searchEl.focus();
+                    searchEl.style.borderColor = 'var(--red)';
+                    searchEl.style.boxShadow = '0 0 0 3px var(--red-dim)';
+                    setTimeout(() => {
+                        searchEl.style.borderColor = '';
+                        searchEl.style.boxShadow = '';
+                    }, 2000);
+                }
+            });
+        }
+
+        function escHtml(str) {
+            return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+    })();
 </script>
 </body>
 </html>
