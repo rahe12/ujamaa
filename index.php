@@ -219,7 +219,7 @@ SELECT
 ")->fetch();
 
 $nav_items = [
-    'dashboard' => ['icon'=>'⬡','label'=>'Dashboard'],
+    'dashboard' => ['icon'=>'▲','label'=>'Dashboard'],
     'members'   => ['icon'=>'◈','label'=>'Athletes'],
     'attendance'=> ['icon'=>'◉','label'=>'Attendance'],
     'payments'  => ['icon'=>'◆','label'=>'Billing'],
@@ -237,32 +237,54 @@ $nav_items = [
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
+/* ─────────────────────────────────────────────────────────
+   DESIGN TOKENS
+───────────────────────────────────────────────────────── */
 :root {
-  --bg:       #05080f;
-  --surface:  #0c1220;
-  --surface2: #111c2e;
-  --border:   #1a2740;
-  --border2:  #243450;
-  --accent:   #00e676;
-  --accent2:  #00bfa5;
-  --accent3:  #64ffda;
-  --text:     #e2eaf8;
-  --muted:    #5c7299;
-  --danger:   #ff4444;
-  --warn:     #ffab40;
-  --info:     #448aff;
-  --paid:     #00e676;
-  --radius:   14px;
-  --radius-sm:8px;
-  --sidebar-w:260px;
-  --font-head: 'Syne', sans-serif;
-  --font-body: 'Instrument Sans', sans-serif;
-  --font-mono: 'DM Mono', monospace;
+  --bg:        #040810;
+  --bg2:       #060c18;
+  --surface:   #0a1628;
+  --surface2:  #0f1e38;
+  --surface3:  #142440;
+  --border:    #1c2e4a;
+  --border2:   #243a5e;
+  --border3:   #2e4870;
+
+  --lime:      #c6f135;
+  --lime-dim:  rgba(198,241,53,0.12);
+  --lime-glow: rgba(198,241,53,0.25);
+  --teal:      #00d9c0;
+  --teal-dim:  rgba(0,217,192,0.1);
+  --blue:      #4d9fff;
+  --blue-dim:  rgba(77,159,255,0.1);
+  --amber:     #ffb740;
+  --amber-dim: rgba(255,183,64,0.1);
+  --red:       #ff4f6b;
+  --red-dim:   rgba(255,79,107,0.1);
+  --purple:    #a78bfa;
+
+  --text:      #e8f0fe;
+  --text2:     #9bb5d8;
+  --muted:     #4d6a8a;
+  --muted2:    #3a5070;
+
+  --radius:    16px;
+  --radius-sm: 10px;
+  --radius-xs: 6px;
+  --sidebar-w: 256px;
+
+  --font-display: 'Clash Display', sans-serif;
+  --font-body:    'Plus Jakarta Sans', sans-serif;
+  --font-mono:    'JetBrains Mono', monospace;
+
+  --transition: 0.2s cubic-bezier(0.4,0,0.2,1);
 }
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+
+html { scroll-behavior: smooth; }
 
 body {
   background: var(--bg);
@@ -271,9 +293,20 @@ body {
   font-size: 14px;
   min-height: 100vh;
   display: flex;
+  overflow-x: hidden;
 }
 
-/* ── SIDEBAR ──────────────────────────────────── */
+/* subtle noise texture */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── SIDEBAR ────────────────────────────────────── */
 .sidebar {
   position: fixed;
   top: 0; left: 0;
@@ -283,164 +316,306 @@ body {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 28px 16px;
+  padding: 0;
   overflow-y: auto;
   z-index: 100;
+  box-shadow: 4px 0 40px rgba(0,0,0,0.4);
+}
+
+.sidebar-top {
+  padding: 28px 20px 24px;
+  border-bottom: 1px solid var(--border);
 }
 
 .logo {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 8px 28px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 20px;
+  gap: 12px;
 }
-.logo-icon {
-  width: 36px; height: 36px;
-  background: var(--accent);
-  border-radius: 10px;
+.logo-mark {
+  width: 42px; height: 42px;
+  background: var(--lime);
+  border-radius: 12px;
   display: flex; align-items: center; justify-content: center;
-  font-size: 18px; color: #000;
-  font-weight: 900;
   flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
 }
-.logo-text { font-family: var(--font-head); font-size: 15px; font-weight: 800; letter-spacing: 0.05em; line-height: 1.2; }
-.logo-sub { font-size: 10px; color: var(--muted); font-family: var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; }
+.logo-mark::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.3), transparent);
+}
+.logo-mark span {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  color: #000;
+  position: relative;
+  z-index: 1;
+}
+.logo-text {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+.logo-sub {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-top: 1px;
+}
 
-.nav-section { font-size: 10px; color: var(--muted); letter-spacing: 0.15em; text-transform: uppercase; font-family: var(--font-mono); padding: 0 8px; margin: 16px 0 6px; }
-
+.nav-body {
+  padding: 16px 12px;
+  flex: 1;
+}
+.nav-label {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+  padding: 0 8px;
+  margin: 8px 0 6px;
+}
 .nav a {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--muted);
+  color: var(--text2);
   text-decoration: none;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
-  margin-bottom: 2px;
+  margin-bottom: 1px;
   font-size: 13.5px;
   font-weight: 500;
-  transition: all 0.18s ease;
+  transition: all var(--transition);
   border: 1px solid transparent;
+  position: relative;
 }
-.nav a:hover { color: var(--text); background: var(--surface2); }
-.nav a.active { color: var(--accent); background: rgba(0,230,118,0.08); border-color: rgba(0,230,118,0.15); }
-.nav-icon { font-size: 14px; width: 18px; text-align: center; }
+.nav a:hover {
+  color: var(--text);
+  background: var(--surface2);
+  border-color: var(--border);
+}
+.nav a.active {
+  color: var(--lime);
+  background: var(--lime-dim);
+  border-color: rgba(198,241,53,0.2);
+  font-weight: 600;
+}
+.nav a.active::before {
+  content: '';
+  position: absolute;
+  left: -1px; top: 20%; bottom: 20%;
+  width: 3px;
+  background: var(--lime);
+  border-radius: 0 2px 2px 0;
+}
+.nav-icon {
+  font-size: 13px;
+  width: 16px;
+  text-align: center;
+  opacity: 0.8;
+}
 
 .sidebar-footer {
-  margin-top: auto;
-  padding-top: 20px;
+  padding: 16px;
   border-top: 1px solid var(--border);
 }
-.period-pill {
+.period-widget {
   background: var(--surface2);
   border: 1px solid var(--border2);
   border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--muted);
+  padding: 12px 14px;
+  position: relative;
+  overflow: hidden;
 }
-.period-pill strong { color: var(--accent); font-size: 13px; display: block; margin-bottom: 3px; }
+.period-widget::before {
+  content: '';
+  position: absolute;
+  top: -20px; right: -20px;
+  width: 80px; height: 80px;
+  background: radial-gradient(circle, var(--lime-glow), transparent 70%);
+}
+.period-widget-label {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.period-widget-val {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--lime);
+  letter-spacing: -0.01em;
+}
 
-/* ── MAIN ─────────────────────────────────────── */
+/* ─── MAIN ────────────────────────────────────────── */
 .main {
   margin-left: var(--sidebar-w);
   flex: 1;
-  padding: 32px 36px;
+  padding: 36px 40px;
   max-width: calc(100vw - var(--sidebar-w));
+  position: relative;
+  z-index: 1;
 }
 
-/* ── PAGE HEADER ──────────────────────────────── */
+/* ─── PAGE HEADER ─────────────────────────────────── */
 .page-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 28px;
+  margin-bottom: 30px;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 14px;
 }
 .page-title {
-  font-family: var(--font-head);
-  font-size: 28px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
   line-height: 1;
+  color: var(--text);
 }
-.page-title span { color: var(--accent); }
-.page-period {
-  font-family: var(--font-mono);
-  font-size: 11px;
+.page-title em {
+  font-style: normal;
+  color: var(--lime);
+}
+.page-sub {
+  font-size: 12px;
   color: var(--muted);
-  margin-top: 5px;
+  font-family: var(--font-mono);
+  margin-top: 6px;
+  letter-spacing: 0.05em;
 }
 
-/* ── PERIOD NAV ───────────────────────────────── */
+/* ─── PERIOD NAV ──────────────────────────────────── */
 .period-nav {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-.period-nav a {
-  color: var(--muted);
-  text-decoration: none;
+  gap: 6px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  padding: 5px;
+}
+.period-nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text2);
+  text-decoration: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
   padding: 6px 12px;
   font-size: 12px;
-  transition: all 0.15s;
+  font-family: var(--font-mono);
+  transition: all var(--transition);
 }
-.period-nav a:hover { border-color: var(--accent); color: var(--accent); }
+.period-nav a:hover {
+  border-color: var(--border2);
+  color: var(--text);
+  background: var(--surface2);
+}
 .period-nav .cur {
   font-family: var(--font-mono);
-  color: var(--text);
+  color: var(--lime);
   font-size: 13px;
+  font-weight: 500;
   padding: 6px 14px;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: var(--radius-sm);
+  background: var(--lime-dim);
+  border: 1px solid rgba(198,241,53,0.2);
+  border-radius: var(--radius-xs);
+  cursor: default;
+  letter-spacing: 0.04em;
 }
 
-/* ── FLASH MSG ────────────────────────────────── */
-.msg {
-  background: rgba(0,230,118,0.08);
-  border: 1px solid rgba(0,230,118,0.25);
-  color: var(--accent3);
-  padding: 12px 18px;
-  border-radius: var(--radius);
-  margin-bottom: 20px;
-  font-size: 13px;
+/* ─── FLASH MESSAGE ───────────────────────────────── */
+.flash {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+  background: linear-gradient(90deg, rgba(198,241,53,0.08), rgba(0,217,192,0.05));
+  border: 1px solid rgba(198,241,53,0.2);
+  border-left: 3px solid var(--lime);
+  color: var(--lime);
+  padding: 13px 18px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 24px;
+  font-size: 13px;
+  font-weight: 500;
+  animation: slideDown 0.3s ease;
 }
-.msg::before { content: '✓'; font-weight: 900; color: var(--accent); }
+.flash-icon {
+  width: 22px; height: 22px;
+  background: var(--lime);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #000;
+  font-size: 12px;
+  font-weight: 900;
+  flex-shrink: 0;
+}
+@keyframes slideDown { from { opacity:0; transform: translateY(-8px); } to { opacity:1; transform: translateY(0); } }
 
-/* ── CARDS ────────────────────────────────────── */
+/* ─── CARDS ───────────────────────────────────────── */
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 24px;
+  padding: 26px;
+  margin-bottom: 20px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color var(--transition);
+}
+.card:hover { border-color: var(--border2); }
+.card-corner {
+  position: absolute;
+  top: 0; right: 0;
+  width: 100px; height: 100px;
+  background: radial-gradient(circle at top right, rgba(198,241,53,0.04), transparent 70%);
+  pointer-events: none;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: 20px;
 }
 .card-title {
-  font-family: var(--font-head);
-  font-size: 16px;
-  font-weight: 700;
-  margin-bottom: 18px;
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  letter-spacing: -0.01em;
 }
-.card-title::before { content: ''; display: block; width: 3px; height: 16px; background: var(--accent); border-radius: 2px; }
+.card-title-bar {
+  width: 4px; height: 18px;
+  background: linear-gradient(180deg, var(--lime), var(--teal));
+  border-radius: 2px;
+  flex-shrink: 0;
+}
 
-/* ── STAT GRID ────────────────────────────────── */
+/* ─── STAT GRID ───────────────────────────────────── */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(3,1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 14px;
   margin-bottom: 20px;
 }
@@ -448,130 +623,145 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 20px 22px;
+  padding: 22px 24px;
   position: relative;
   overflow: hidden;
-  transition: border-color 0.2s;
+  transition: all var(--transition);
+  cursor: default;
 }
-.stat-card:hover { border-color: var(--border2); }
+.stat-card:hover {
+  border-color: var(--border3);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+}
 .stat-card::after {
   content: '';
   position: absolute;
-  top: 0; right: 0;
-  width: 60px; height: 60px;
-  background: radial-gradient(circle at top right, rgba(0,230,118,0.06), transparent 70%);
+  bottom: -20px; right: -20px;
+  width: 90px; height: 90px;
+  border-radius: 50%;
+  background: var(--stat-glow, rgba(198,241,53,0.05));
 }
+.stat-card[data-color="lime"]  { --stat-glow: rgba(198,241,53,0.06); }
+.stat-card[data-color="teal"]  { --stat-glow: rgba(0,217,192,0.06); }
+.stat-card[data-color="amber"] { --stat-glow: rgba(255,183,64,0.06); }
+.stat-card[data-color="red"]   { --stat-glow: rgba(255,79,107,0.06); }
+.stat-card[data-color="blue"]  { --stat-glow: rgba(77,159,255,0.06); }
+.stat-card[data-color="purple"]{ --stat-glow: rgba(167,139,250,0.06); }
+
+.stat-icon {
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px;
+  margin-bottom: 14px;
+  background: var(--stat-icon-bg, var(--lime-dim));
+}
+.stat-card[data-color="lime"]   .stat-icon { background: var(--lime-dim); }
+.stat-card[data-color="teal"]   .stat-icon { background: var(--teal-dim); }
+.stat-card[data-color="amber"]  .stat-icon { background: var(--amber-dim); }
+.stat-card[data-color="red"]    .stat-icon { background: var(--red-dim); }
+.stat-card[data-color="blue"]   .stat-icon { background: var(--blue-dim); }
+.stat-card[data-color="purple"] .stat-icon { background: rgba(167,139,250,0.1); }
+
 .stat-label {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: var(--muted);
   font-family: var(--font-mono);
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 .stat-value {
-  font-family: var(--font-head);
-  font-size: 26px;
-  font-weight: 800;
-  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
   line-height: 1;
+  letter-spacing: -0.03em;
 }
-.stat-value.accent { color: var(--accent); }
-.stat-value.warn { color: var(--warn); }
-.stat-value.danger { color: var(--danger); }
+.stat-card[data-color="lime"]   .stat-value { color: var(--lime); }
+.stat-card[data-color="teal"]   .stat-value { color: var(--teal); }
+.stat-card[data-color="amber"]  .stat-value { color: var(--amber); }
+.stat-card[data-color="red"]    .stat-value { color: var(--red); }
+.stat-card[data-color="blue"]   .stat-value { color: var(--blue); }
+.stat-card[data-color="purple"] .stat-value { color: var(--purple); }
 
-/* ── SEARCH BAR ───────────────────────────────── */
-.search-wrap {
-  position: relative;
-  margin-bottom: 16px;
-}
-.search-wrap input {
-  width: 100%;
-  padding: 11px 16px 11px 42px;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-family: var(--font-body);
-  font-size: 13.5px;
-  outline: none;
-  transition: border-color 0.2s;
-}
-.search-wrap input:focus { border-color: var(--accent); }
-.search-wrap input::placeholder { color: var(--muted); }
-.search-icon {
-  position: absolute;
-  left: 14px; top: 50%;
-  transform: translateY(-50%);
-  color: var(--muted);
-  font-size: 15px;
-  pointer-events: none;
-}
-.search-count {
-  font-size: 11px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  margin-bottom: 10px;
-}
-
-/* ── TABLES ───────────────────────────────────── */
-.table-wrap { overflow-x: auto; }
+/* ─── TABLES ──────────────────────────────────────── */
+.table-wrap { overflow-x: auto; border-radius: var(--radius-sm); }
 table { width: 100%; border-collapse: collapse; }
-th {
+thead th {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10.5px;
   font-family: var(--font-mono);
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  padding: 10px 14px;
+  letter-spacing: 0.12em;
+  padding: 11px 14px;
   border-bottom: 1px solid var(--border);
   text-align: left;
   white-space: nowrap;
+  background: var(--surface2);
 }
-td {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
+thead th:first-child { border-radius: var(--radius-xs) 0 0 0; }
+thead th:last-child  { border-radius: 0 var(--radius-xs) 0 0; }
+tbody td {
+  padding: 13px 14px;
+  border-bottom: 1px solid rgba(28,46,74,0.6);
   font-size: 13.5px;
-  transition: background 0.15s;
+  transition: background var(--transition);
+  vertical-align: middle;
 }
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: rgba(255,255,255,0.02); }
-.no-results { text-align: center; color: var(--muted); padding: 40px 0; font-size: 13px; font-family: var(--font-mono); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: rgba(255,255,255,0.018); }
+.no-data {
+  text-align: center;
+  color: var(--muted);
+  padding: 50px 0;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+}
 
-/* ── BADGES ───────────────────────────────────── */
+/* ─── BADGES ──────────────────────────────────────── */
 .badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 3px 10px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
   font-family: var(--font-mono);
   white-space: nowrap;
+  letter-spacing: 0.04em;
 }
-.badge-zone { background: rgba(68,138,255,0.15); color: #82b1ff; border: 1px solid rgba(68,138,255,0.2); }
-.badge-paid { background: rgba(0,230,118,0.12); color: var(--accent); border: 1px solid rgba(0,230,118,0.2); }
-.badge-partial { background: rgba(255,171,64,0.12); color: var(--warn); border: 1px solid rgba(255,171,64,0.2); }
-.badge-unpaid { background: rgba(255,68,68,0.12); color: var(--danger); border: 1px solid rgba(255,68,68,0.2); }
-.badge-nobill { background: rgba(92,114,153,0.12); color: var(--muted); border: 1px solid rgba(92,114,153,0.2); }
-.badge-active { background: rgba(0,230,118,0.1); color: var(--accent); }
-.badge-inactive { background: rgba(255,68,68,0.1); color: var(--danger); }
-.badge-present { background: rgba(0,230,118,0.1); color: var(--accent); }
-.badge-absent { background: rgba(255,68,68,0.1); color: var(--danger); }
-.badge-late { background: rgba(255,171,64,0.1); color: var(--warn); }
+.b-zone    { background: var(--blue-dim); color: #82b4ff; border: 1px solid rgba(77,159,255,0.2); }
+.b-paid    { background: var(--lime-dim); color: var(--lime); border: 1px solid rgba(198,241,53,0.2); }
+.b-partial { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(255,183,64,0.2); }
+.b-unpaid  { background: var(--red-dim); color: var(--red); border: 1px solid rgba(255,79,107,0.2); }
+.b-nobill  { background: rgba(77,106,138,0.1); color: var(--muted); border: 1px solid rgba(77,106,138,0.2); }
+.b-active  { background: var(--lime-dim); color: var(--lime); }
+.b-inactive{ background: var(--red-dim); color: var(--red); }
+.b-present { background: var(--lime-dim); color: var(--lime); }
+.b-absent  { background: var(--red-dim); color: var(--red); }
+.b-late    { background: var(--amber-dim); color: var(--amber); }
 
-/* ── FORMS ────────────────────────────────────── */
-.form-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+/* ─── FORMS ───────────────────────────────────────── */
+.form-grid   { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
 .form-grid-2 { display: grid; grid-template-columns: repeat(2,1fr); gap: 14px; }
+.form-grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+
 .form-group label {
   display: block;
-  font-size: 11px;
+  font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   color: var(--muted);
   font-family: var(--font-mono);
-  margin-bottom: 6px;
+  margin-bottom: 7px;
 }
-.form-group input, .form-group select, .form-group textarea {
+.form-group input,
+.form-group select,
+.form-group textarea {
   width: 100%;
   padding: 10px 14px;
   background: var(--surface2);
@@ -581,145 +771,319 @@ tr:hover td { background: rgba(255,255,255,0.02); }
   font-family: var(--font-body);
   font-size: 13.5px;
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
   -webkit-appearance: none;
 }
-.form-group input:focus, .form-group select:focus, .form-group textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(0,230,118,0.08);
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  border-color: var(--lime);
+  background: var(--surface3);
+  box-shadow: 0 0 0 3px var(--lime-glow);
 }
+.form-group input::placeholder { color: var(--muted2); }
 .form-group select { cursor: pointer; }
-.form-actions { display: flex; gap: 10px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+.form-group select option { background: var(--surface2); }
 
-/* ── BUTTONS ──────────────────────────────────── */
+.form-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+/* ─── BUTTONS ─────────────────────────────────────── */
 .btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 9px 18px;
+  gap: 7px;
+  padding: 10px 20px;
   border-radius: var(--radius-sm);
-  font-family: var(--font-head);
+  font-family: var(--font-display);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
   border: none;
   text-decoration: none;
-  transition: all 0.18s ease;
+  transition: all var(--transition);
   white-space: nowrap;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
+  position: relative;
+  overflow: hidden;
 }
-.btn-primary { background: var(--accent); color: #000; }
-.btn-primary:hover { background: var(--accent3); box-shadow: 0 0 20px rgba(0,230,118,0.3); }
-.btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border2); }
-.btn-ghost:hover { border-color: var(--border); color: var(--text); }
-.btn-danger { background: rgba(255,68,68,0.12); color: var(--danger); border: 1px solid rgba(255,68,68,0.2); }
-.btn-danger:hover { background: rgba(255,68,68,0.2); }
-.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.08), transparent);
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+.btn:hover::after { opacity: 1; }
 
-.actions-cell { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn-primary {
+  background: var(--lime);
+  color: #050f0a;
+  box-shadow: 0 4px 16px rgba(198,241,53,0.2);
+}
+.btn-primary:hover {
+  background: #d4f540;
+  box-shadow: 0 6px 24px rgba(198,241,53,0.35);
+  transform: translateY(-1px);
+}
+.btn-ghost {
+  background: var(--surface2);
+  color: var(--text2);
+  border: 1px solid var(--border2);
+}
+.btn-ghost:hover {
+  border-color: var(--border3);
+  color: var(--text);
+  background: var(--surface3);
+}
+.btn-danger {
+  background: var(--red-dim);
+  color: var(--red);
+  border: 1px solid rgba(255,79,107,0.2);
+}
+.btn-danger:hover { background: rgba(255,79,107,0.2); }
+.btn-sm { padding: 6px 13px; font-size: 12px; }
+.btn-xs { padding: 4px 10px; font-size: 11px; }
 
-/* ── ZONE SUMMARY TABLE ───────────────────────── */
-.zone-table td:first-child { font-weight: 600; }
+.actions-cell { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 
-/* ── FILTER BAR ───────────────────────────────── */
-.filter-bar {
+/* ─── SEARCH & FILTER BAR ─────────────────────────── */
+.toolbar {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   margin-bottom: 16px;
   flex-wrap: wrap;
   align-items: center;
 }
-.filter-bar select, .filter-bar input {
-  padding: 8px 12px;
+.search-box {
+  position: relative;
+  flex: 1;
+  min-width: 200px;
+}
+.search-box-icon {
+  position: absolute;
+  left: 13px; top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 14px;
+  pointer-events: none;
+}
+.search-box input {
+  width: 100%;
+  padding: 10px 14px 10px 40px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  outline: none;
+  transition: all var(--transition);
+}
+.search-box input:focus {
+  border-color: var(--lime);
+  background: var(--surface3);
+  box-shadow: 0 0 0 3px var(--lime-glow);
+}
+.search-box input::placeholder { color: var(--muted2); }
+.toolbar select {
+  padding: 10px 14px;
   background: var(--surface2);
   border: 1px solid var(--border2);
   border-radius: var(--radius-sm);
   color: var(--text);
   font-size: 13px;
   outline: none;
-  transition: border-color 0.2s;
+  cursor: pointer;
+  transition: all var(--transition);
+  font-family: var(--font-body);
+  -webkit-appearance: none;
 }
-.filter-bar select:focus, .filter-bar input:focus { border-color: var(--accent); }
+.toolbar select:focus {
+  border-color: var(--lime);
+  box-shadow: 0 0 0 3px var(--lime-glow);
+}
+.toolbar select option { background: var(--surface2); }
 
-/* ── OVERDUE CHIP ─────────────────────────────── */
-.overdue-chip {
+.result-count {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin-bottom: 12px;
+  letter-spacing: 0.04em;
+}
+
+/* ─── OVERDUE CHIP ────────────────────────────────── */
+.overdue {
   font-family: var(--font-mono);
   font-size: 11px;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
 }
-.overdue-chip.over { background: rgba(255,68,68,0.12); color: var(--danger); }
-.overdue-chip.ok { color: var(--muted); }
+.overdue.over { background: var(--red-dim); color: var(--red); }
+.overdue.ok   { color: var(--muted); }
 
-/* ── MOBILE ───────────────────────────────────── */
-@media(max-width:900px){
-  .sidebar { position: relative; width: 100%; height: auto; flex-direction: row; flex-wrap: wrap; padding: 12px; }
-  .main { margin-left: 0; padding: 18px; max-width: 100vw; }
-  .stat-grid { grid-template-columns: repeat(2,1fr); }
-  .form-grid { grid-template-columns: repeat(2,1fr); }
+/* ─── ATHLETE SEARCH AUTOCOMPLETE ────────────────── */
+.autocomplete-wrap { position: relative; }
+.autocomplete-dropdown {
+  position: absolute;
+  top: calc(100% + 6px); left: 0; right: 0;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+  z-index: 999;
+  max-height: 320px;
+  overflow-y: auto;
+  display: none;
 }
-@media(max-width:600px){
-  .stat-grid,.form-grid,.form-grid-2 { grid-template-columns: 1fr; }
+.autocomplete-dropdown.open { display: block; }
+.ac-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  cursor: pointer;
+  transition: background var(--transition);
+  border-bottom: 1px solid var(--border);
 }
+.ac-item:last-child { border-bottom: none; }
+.ac-item:hover, .ac-item.focused { background: var(--surface3); }
+.ac-avatar {
+  width: 32px; height: 32px;
+  border-radius: 10px;
+  background: var(--lime-dim);
+  border: 1px solid rgba(198,241,53,0.15);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--lime);
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+.ac-info { flex: 1; min-width: 0; }
+.ac-name { font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ac-meta { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 1px; }
+.ac-badge { font-size: 11px; color: var(--teal); font-family: var(--font-mono); white-space: nowrap; }
+.ac-empty { padding: 20px; text-align: center; color: var(--muted); font-size: 12px; font-family: var(--font-mono); }
+.selected-athlete-info {
+  display: none;
+  align-items: center;
+  gap: 14px;
+  background: var(--surface2);
+  border: 1px solid rgba(198,241,53,0.2);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin-top: 10px;
+}
+.selected-athlete-info.visible { display: flex; }
+.sa-avatar {
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  background: var(--lime-dim);
+  border: 1px solid rgba(198,241,53,0.2);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--lime);
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+.sa-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.sa-detail { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
 
-/* ── SCROLLBAR ────────────────────────────────── */
+/* ─── ZONE TABLE ──────────────────────────────────── */
+.zone-section th { background: var(--bg2); }
+
+/* ─── DIVIDER ─────────────────────────────────────── */
+.divider { height: 1px; background: var(--border); margin: 22px 0; }
+
+/* ─── SCROLLBAR ───────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border3); }
 
-/* ── DIVIDER ──────────────────────────────────── */
-.divider { height: 1px; background: var(--border); margin: 20px 0; }
+/* ─── MOBILE ──────────────────────────────────────── */
+@media(max-width:960px){
+  :root { --sidebar-w: 220px; }
+  .main { padding: 20px; }
+  .stat-grid { grid-template-columns: repeat(2,1fr); }
+  .form-grid { grid-template-columns: repeat(2,1fr); }
+  .form-grid-4 { grid-template-columns: repeat(2,1fr); }
+}
+@media(max-width:680px){
+  :root { --sidebar-w: 0px; }
+  .sidebar { transform: translateX(-100%); }
+  .stat-grid,.form-grid,.form-grid-2,.form-grid-4 { grid-template-columns: 1fr; }
+}
+
+/* ─── REPORT SUMMARY ROW ──────────────────────────── */
+.summary-row td { font-weight: 700; background: var(--surface2) !important; color: var(--lime); font-family: var(--font-mono); border-top: 2px solid var(--border2); }
 </style>
 </head>
 <body>
 
-<!-- ── SIDEBAR ── -->
-<div class="sidebar">
-  <div class="logo">
-    <div class="logo-icon">A</div>
-    <div>
-      <div class="logo-text">Academy AMS</div>
-      <div class="logo-sub">Management System</div>
+<!-- ── SIDEBAR ───────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-top">
+    <div class="logo">
+      <div class="logo-mark"><span>A</span></div>
+      <div>
+        <div class="logo-text">Academy AMS</div>
+        <div class="logo-sub">Management</div>
+      </div>
     </div>
   </div>
-  <div class="nav-section">Navigation</div>
-  <div class="nav">
-    <?php foreach($nav_items as $key=>$item): ?>
-    <a class="<?= $v===$key?'active':'' ?>" href="?view=<?= $key ?>&period=<?= h($p) ?>">
-      <span class="nav-icon"><?= $item['icon'] ?></span>
-      <?= $item['label'] ?>
-    </a>
-    <?php endforeach; ?>
+  <div class="nav-body">
+    <div class="nav-label">Navigation</div>
+    <nav class="nav">
+      <?php foreach($nav_items as $key=>$item): ?>
+      <a class="<?= $v===$key?'active':'' ?>" href="?view=<?= $key ?>&period=<?= h($p) ?>">
+        <span class="nav-icon"><?= $item['icon'] ?></span>
+        <?= $item['label'] ?>
+      </a>
+      <?php endforeach; ?>
+    </nav>
   </div>
   <div class="sidebar-footer">
-    <div class="period-pill">
-      <strong><?= h($p) ?></strong>
-      Current Period
+    <div class="period-widget">
+      <div class="period-widget-label">Active Period</div>
+      <div class="period-widget-val"><?= h($p) ?></div>
     </div>
   </div>
-</div>
+</aside>
 
-<!-- ── MAIN ── -->
-<div class="main">
+<!-- ── MAIN ──────────────────────────────────────────── -->
+<main class="main">
 
 <?php if($msg): ?>
-<div class="msg"><?= h($msg) ?></div>
+<div class="flash"><div class="flash-icon">✓</div><?= h($msg) ?></div>
 <?php endif; ?>
 
-<!-- ── PERIOD NAV (shared) ── -->
 <?php
 $prev = date('Y-m', strtotime($p.'-01 -1 month'));
 $next = date('Y-m', strtotime($p.'-01 +1 month'));
-?>
 
-<!-- ════════════════════════════════════════════════════
-     DASHBOARD
-════════════════════════════════════════════════════ -->
-<?php if($v==='dashboard'): ?>
+/* ════════════════════════════════════════════════════
+   DASHBOARD
+════════════════════════════════════════════════════ */
+if($v==='dashboard'):
+?>
 <div class="page-header">
   <div>
-    <div class="page-title">Dashboard <span>Overview</span></div>
-    <div class="page-period">Period: <?= h($p) ?></div>
+    <div class="page-title">Good day, <em>Coach</em></div>
+    <div class="page-sub">Period: <?= h($p) ?> · Academy Management System</div>
   </div>
   <div class="period-nav">
     <a href="?view=dashboard&period=<?= $prev ?>">← Prev</a>
@@ -729,37 +1093,47 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
 </div>
 
 <div class="stat-grid">
-  <div class="stat-card">
+  <div class="stat-card" data-color="lime">
+    <div class="stat-icon">⚽</div>
     <div class="stat-label">Active Athletes</div>
-    <div class="stat-value accent"><?= $stats['athletes'] ?></div>
+    <div class="stat-value"><?= $stats['athletes'] ?></div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card" data-color="blue">
+    <div class="stat-icon">👤</div>
     <div class="stat-label">Active Staff</div>
     <div class="stat-value"><?= $stats['staff'] ?></div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card" data-color="teal">
+    <div class="stat-icon">💰</div>
     <div class="stat-label">Revenue <?= h($p) ?></div>
-    <div class="stat-value accent"><?= money($stats['revenue']) ?></div>
+    <div class="stat-value" style="font-size:18px"><?= money($stats['revenue']) ?></div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card" data-color="amber">
+    <div class="stat-icon">⏳</div>
     <div class="stat-label">Outstanding</div>
-    <div class="stat-value warn"><?= money($stats['outstanding']) ?></div>
+    <div class="stat-value" style="font-size:18px"><?= money($stats['outstanding']) ?></div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card" data-color="red">
+    <div class="stat-icon">📤</div>
     <div class="stat-label">Expenses</div>
-    <div class="stat-value danger"><?= money($stats['expenses']) ?></div>
+    <div class="stat-value" style="font-size:18px"><?= money($stats['expenses']) ?></div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card" data-color="purple">
+    <div class="stat-icon">💳</div>
     <div class="stat-label">Payroll Paid</div>
-    <div class="stat-value"><?= money($stats['payroll']) ?></div>
+    <div class="stat-value" style="font-size:18px"><?= money($stats['payroll']) ?></div>
   </div>
 </div>
 
 <div class="card">
-  <div class="card-title">Zone Summary</div>
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Zone Summary — <?= h($p) ?></div>
+  </div>
   <div class="table-wrap">
-  <table class="zone-table">
-    <tr><th>Zone</th><th>Athletes</th><th>Staff</th><th>Revenue</th><th>Expenses</th></tr>
+  <table>
+    <thead><tr><th>Zone</th><th>Athletes</th><th>Staff</th><th>Revenue</th><th>Expenses</th></tr></thead>
+    <tbody>
     <?php
     $rows=$pdo->query("
     SELECT z.name,COUNT(DISTINCT m.id) athletes,COUNT(DISTINCT st.id) staff,
@@ -772,85 +1146,124 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
     GROUP BY z.id,z.name ORDER BY z.id")->fetchAll();
     foreach($rows as $r): ?>
     <tr>
-      <td><strong><?= h($r['name']) ?></strong></td>
-      <td><?= $r['athletes'] ?></td>
-      <td><?= $r['staff'] ?></td>
-      <td><span style="color:var(--accent);font-family:var(--font-mono)"><?= money($r['revenue']) ?></span></td>
-      <td><span style="color:var(--danger);font-family:var(--font-mono)"><?= money($r['expenses']) ?></span></td>
+      <td><strong style="font-family:var(--font-display)"><?= h($r['name']) ?></strong></td>
+      <td><span style="font-family:var(--font-mono);color:var(--blue)"><?= $r['athletes'] ?></span></td>
+      <td><span style="font-family:var(--font-mono);color:var(--text2)"><?= $r['staff'] ?></span></td>
+      <td><span style="font-family:var(--font-mono);color:var(--lime)"><?= money($r['revenue']) ?></span></td>
+      <td><span style="font-family:var(--font-mono);color:var(--red)"><?= money($r['expenses']) ?></span></td>
     </tr>
     <?php endforeach; ?>
+    </tbody>
   </table>
   </div>
 </div>
+
+<?php /* Quick unpaid summary */
+$unpaid=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period='$p' AND paid_amount=0 AND expected_amount>0")->fetchColumn();
+$partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period='$p' AND paid_amount>0 AND paid_amount<expected_amount")->fetchColumn();
+?>
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Billing Snapshot — <?= h($p) ?></div>
+    <a href="?view=payments&period=<?= h($p) ?>" class="btn btn-ghost btn-sm">View Billing →</a>
+  </div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap">
+    <div style="background:var(--red-dim);border:1px solid rgba(255,79,107,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px">
+      <div class="stat-label">Unpaid</div>
+      <div style="font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--red)"><?= $unpaid ?></div>
+    </div>
+    <div style="background:var(--amber-dim);border:1px solid rgba(255,183,64,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px">
+      <div class="stat-label">Partial</div>
+      <div style="font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--amber)"><?= $partial ?></div>
+    </div>
+    <div style="background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px">
+      <div class="stat-label">Net Income</div>
+      <div style="font-family:var(--font-display);font-size:20px;font-weight:700;color:var(--lime)"><?= money((float)$stats['revenue']-(float)$stats['expenses']-(float)$stats['payroll']) ?></div>
+    </div>
+  </div>
+</div>
+
 <?php endif; ?>
 
-
-<!-- ════════════════════════════════════════════════════
-     MEMBERS / ATHLETES
-════════════════════════════════════════════════════ -->
-<?php if($v==='members'): ?>
+<?php /* ════════════════════════════════════════════════════
+   MEMBERS / ATHLETES
+════════════════════════════════════════════════════ */
+if($v==='members'): ?>
 <div class="page-header">
   <div>
-    <div class="page-title"><?= $edit_member ? 'Edit' : 'Athletes' ?> <span><?= $edit_member ? h($edit_member['full_name']) : 'Registry' ?></span></div>
-    <div class="page-period"><?= count($m) ?> total members</div>
+    <div class="page-title"><?= $edit_member ? 'Edit <em>Athlete</em>' : 'Athletes <em>Registry</em>' ?></div>
+    <div class="page-sub"><?= count($m) ?> total registered · <?= count($am) ?> active</div>
   </div>
 </div>
 
 <div class="card">
-  <div class="card-title"><?= $edit_member ? 'Edit Athlete' : 'Add New Athlete' ?></div>
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span><?= $edit_member ? 'Edit Athlete' : 'Register New Athlete' ?></div>
+  </div>
   <form method="POST">
     <input type="hidden" name="action" value="save_member">
     <input type="hidden" name="id" value="<?= h($edit_member['id']??'') ?>">
     <div class="form-grid">
-      <div class="form-group"><label>Full Name *</label><input name="full_name" required value="<?= h($edit_member['full_name']??'') ?>" placeholder="Enter full name"></div>
-      <div class="form-group"><label>Phone</label><input name="phone" value="<?= h($edit_member['phone']??'') ?>" placeholder="+250..."></div>
+      <div class="form-group"><label>Full Name *</label><input name="full_name" required value="<?= h($edit_member['full_name']??'') ?>" placeholder="e.g. Jean Paul Mugisha"></div>
+      <div class="form-group"><label>Phone</label><input name="phone" value="<?= h($edit_member['phone']??'') ?>" placeholder="+250 7xx xxx xxx"></div>
       <div class="form-group"><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>" <?= (($edit_member['zone_id']??'')==$zone['id'])?'selected':'' ?>><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
       <div class="form-group"><label>Gender</label><select name="gender"><option value="">— Select —</option><option <?= (($edit_member['gender']??'')==='Male')?'selected':'' ?>>Male</option><option <?= (($edit_member['gender']??'')==='Female')?'selected':'' ?>>Female</option></select></div>
       <div class="form-group"><label>Date of Birth</label><input type="date" name="date_of_birth" value="<?= h($edit_member['date_of_birth']??'') ?>"></div>
-      <div class="form-group"><label>Position</label><input name="position" value="<?= h($edit_member['position']??'') ?>" placeholder="e.g. Forward, GK"></div>
-      <div class="form-group"><label>Guardian Name</label><input name="guardian_name" value="<?= h($edit_member['guardian_name']??'') ?>"></div>
+      <div class="form-group"><label>Position</label><input name="position" value="<?= h($edit_member['position']??'') ?>" placeholder="e.g. Forward, Goalkeeper"></div>
+      <div class="form-group"><label>Guardian Name</label><input name="guardian_name" value="<?= h($edit_member['guardian_name']??'') ?>" placeholder="Parent / Guardian"></div>
       <div class="form-group"><label>Guardian Phone</label><input name="guardian_phone" value="<?= h($edit_member['guardian_phone']??'') ?>"></div>
-      <div class="form-group"><label>School</label><input name="school_name" value="<?= h($edit_member['school_name']??'') ?>"></div>
-      <div class="form-group"><label>Monthly Fee (RWF)</label><input type="number" name="monthly_fee" value="<?= h($edit_member['monthly_fee']??0) ?>"></div>
+      <div class="form-group"><label>School</label><input name="school_name" value="<?= h($edit_member['school_name']??'') ?>" placeholder="School name"></div>
+      <div class="form-group"><label>Monthly Fee (RWF)</label><input type="number" name="monthly_fee" value="<?= h($edit_member['monthly_fee']??0) ?>" placeholder="0"></div>
       <div class="form-group"><label>Due Day</label><input type="number" name="due_day" min="1" max="31" value="<?= h($edit_member['due_day']??5) ?>"></div>
       <div class="form-group"><label>Notes</label><input name="notes" value="<?= h($edit_member['notes']??'') ?>" placeholder="Optional notes"></div>
     </div>
     <div class="form-actions">
       <button class="btn btn-primary" type="submit">💾 <?= $edit_member ? 'Update Athlete' : 'Save Athlete' ?></button>
-      <?php if($edit_member): ?><a class="btn btn-ghost" href="?view=members&period=<?= h($p) ?>">Cancel</a><?php endif; ?>
+      <?php if($edit_member): ?><a class="btn btn-ghost" href="?view=members&period=<?= h($p) ?>">✕ Cancel</a><?php endif; ?>
     </div>
   </form>
 </div>
 
 <div class="card">
-  <div class="card-title">Athletes List</div>
-  <div class="filter-bar">
-    <div class="search-wrap" style="flex:1;margin-bottom:0">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="memberSearch" placeholder="Search by name, phone, zone, position, school…" oninput="filterTable('memberSearch','memberTable','memberCount')">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>All Athletes</div>
+  </div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="memberSearch" placeholder="Search name, phone, zone, position, school…" oninput="filterTable('memberSearch','memberTbl','memberCnt')">
     </div>
-    <select id="memberZoneFilter" onchange="filterTable('memberSearch','memberTable','memberCount')">
+    <select id="mZoneF" onchange="filterTable('memberSearch','memberTbl','memberCnt')">
       <option value="">All Zones</option>
       <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
     </select>
-    <select id="memberStatusFilter" onchange="filterTable('memberSearch','memberTable','memberCount')">
+    <select id="mStatF" onchange="filterTable('memberSearch','memberTbl','memberCnt')">
       <option value="">All Status</option>
       <option value="Active">Active</option>
       <option value="Inactive">Inactive</option>
     </select>
   </div>
-  <div class="search-count" id="memberCount"></div>
+  <div class="result-count" id="memberCnt"></div>
   <div class="table-wrap">
-  <table id="memberTable">
-    <tr><th>Name</th><th>Zone</th><th>Phone</th><th>Position</th><th>Fee / Month</th><th>Status</th><th>Actions</th></tr>
+  <table id="memberTbl">
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Position</th><th>Monthly Fee</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
     <?php foreach($m as $x): ?>
     <tr>
-      <td><strong><?= h($x['full_name']) ?></strong></td>
-      <td><span class="badge badge-zone"><?= h($x['zone_name']) ?></span></td>
-      <td style="font-family:var(--font-mono);font-size:12px"><?= h($x['phone']) ?></td>
-      <td><?= h($x['position']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--accent)"><?= money($x['monthly_fee']) ?></td>
-      <td><span class="badge <?= $x['is_active']?'badge-active':'badge-inactive' ?>"><?= $x['is_active']?'Active':'Inactive' ?></span></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:32px;height:32px;border-radius:10px;background:var(--lime-dim);border:1px solid rgba(198,241,53,0.15);display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-size:12px;font-weight:700;color:var(--lime);flex-shrink:0;text-transform:uppercase"><?= mb_substr($x['full_name'],0,1) ?></div>
+          <strong><?= h($x['full_name']) ?></strong>
+        </div>
+      </td>
+      <td><span class="badge b-zone"><?= h($x['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h($x['phone']) ?></td>
+      <td style="color:var(--text2)"><?= h($x['position']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($x['monthly_fee']) ?></td>
+      <td><span class="badge <?= $x['is_active']?'b-active':'b-inactive' ?>"><?= $x['is_active']?'Active':'Inactive' ?></span></td>
       <td>
         <div class="actions-cell">
           <a class="btn btn-ghost btn-sm" href="?view=members&period=<?= h($p) ?>&edit_member=<?= $x['id'] ?>">Edit</a>
@@ -863,22 +1276,32 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
       </td>
     </tr>
     <?php endforeach; ?>
+    </tbody>
   </table>
   </div>
 </div>
+
 <?php endif; ?>
 
-
-<!-- ════════════════════════════════════════════════════
-     ATTENDANCE
-════════════════════════════════════════════════════ -->
-<?php if($v==='attendance'): ?>
+<?php /* ════════════════════════════════════════════════════
+   ATTENDANCE
+════════════════════════════════════════════════════ */
+if($v==='attendance'):
+// Build members JSON for autocomplete
+$membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name'],'zone'=>$x['zone_name'],'phone'=>$x['phone'],'position'=>$x['position']],$am));
+?>
 <div class="page-header">
-  <div><div class="page-title">Attendance <span>Tracker</span></div></div>
+  <div>
+    <div class="page-title">Attendance <em>Tracker</em></div>
+    <div class="page-sub"><?= count($s) ?> sessions recorded</div>
+  </div>
 </div>
 
 <div class="card">
-  <div class="card-title"><?= $edit_session ? 'Edit Session' : 'Create Session' ?></div>
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span><?= $edit_session ? 'Edit Session' : 'Create Session' ?></div>
+  </div>
   <form method="POST">
     <input type="hidden" name="action" value="save_session">
     <input type="hidden" name="id" value="<?= h($edit_session['id']??'') ?>">
@@ -889,39 +1312,79 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
     </div>
     <div class="form-actions">
       <button class="btn btn-primary" type="submit">💾 <?= $edit_session ? 'Update Session' : 'Create Session' ?></button>
-      <?php if($edit_session): ?><a class="btn btn-ghost" href="?view=attendance&period=<?= h($p) ?>">Cancel</a><?php endif; ?>
+      <?php if($edit_session): ?><a class="btn btn-ghost" href="?view=attendance&period=<?= h($p) ?>">✕ Cancel</a><?php endif; ?>
     </div>
   </form>
 </div>
 
 <div class="card">
-  <div class="card-title">Record Attendance</div>
-  <form method="POST">
-    <input type="hidden" name="action" value="attendance">
-    <div class="form-grid">
-      <div class="form-group"><label>Session</label><select name="session_id"><?php foreach($s as $ss): ?><option value="<?= $ss['id'] ?>"><?= h($ss['session_date'].' — '.$ss['name'].' ['.$ss['zone_name'].']') ?></option><?php endforeach; ?></select></div>
-      <div class="form-group"><label>Athlete</label><select name="member_id"><?php foreach($am as $x): ?><option value="<?= $x['id'] ?>"><?= h($x['full_name'].' ['.$x['zone_name'].']') ?></option><?php endforeach; ?></select></div>
-      <div class="form-group"><label>Status</label><select name="status"><option value="present">Present</option><option value="absent">Absent</option><option value="late">Late</option></select></div>
-    </div>
-    <div class="form-actions"><button class="btn btn-primary" type="submit">✓ Save Attendance</button></div>
-  </form>
-</div>
-
-<div class="card">
-  <div class="card-title">Sessions</div>
-  <div class="search-wrap">
-    <span class="search-icon">🔍</span>
-    <input type="text" id="sessionSearch" placeholder="Search sessions by name, date, zone…" oninput="filterTable('sessionSearch','sessionTable','sessionCount')">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Record Attendance</div>
   </div>
-  <div class="search-count" id="sessionCount"></div>
+  <form method="POST" id="attendanceForm">
+    <input type="hidden" name="action" value="attendance">
+    <input type="hidden" name="member_id" id="att_member_id" value="">
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Session</label>
+        <select name="session_id">
+          <?php foreach($s as $ss): ?>
+          <option value="<?= $ss['id'] ?>"><?= h($ss['session_date'].' — '.$ss['name'].' ['.$ss['zone_name'].']') ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Search Athlete</label>
+        <div class="autocomplete-wrap" id="attAcWrap">
+          <input type="text" id="attAthleteSearch" placeholder="Type athlete name to search…" autocomplete="off">
+          <div class="autocomplete-dropdown" id="attDropdown"></div>
+        </div>
+        <div class="selected-athlete-info" id="attSelectedInfo">
+          <div class="sa-avatar" id="attSelAvatar"></div>
+          <div>
+            <div class="sa-name" id="attSelName"></div>
+            <div class="sa-detail" id="attSelDetail"></div>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Status</label>
+        <select name="status">
+          <option value="present">✓ Present</option>
+          <option value="absent">✗ Absent</option>
+          <option value="late">◷ Late</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit" id="attSubmitBtn" disabled>✓ Save Attendance</button>
+      <span style="font-size:12px;color:var(--muted);font-family:var(--font-mono)" id="attHint">Search and select an athlete above</span>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Sessions</div>
+  </div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="sessionSearch" placeholder="Search sessions by name, date, zone…" oninput="filterTable('sessionSearch','sessionTbl','sessionCnt')">
+    </div>
+  </div>
+  <div class="result-count" id="sessionCnt"></div>
   <div class="table-wrap">
-  <table id="sessionTable">
-    <tr><th>Date</th><th>Session Name</th><th>Zone</th><th>Actions</th></tr>
+  <table id="sessionTbl">
+    <thead><tr><th>Date</th><th>Session Name</th><th>Zone</th><th>Actions</th></tr></thead>
+    <tbody>
     <?php foreach($s as $ss): ?>
     <tr>
-      <td style="font-family:var(--font-mono);color:var(--muted)"><?= h($ss['session_date']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= h($ss['session_date']) ?></td>
       <td><strong><?= h($ss['name']) ?></strong></td>
-      <td><span class="badge badge-zone"><?= h($ss['zone_name']) ?></span></td>
+      <td><span class="badge b-zone"><?= h($ss['zone_name']) ?></span></td>
       <td>
         <div class="actions-cell">
           <a class="btn btn-ghost btn-sm" href="?view=attendance&period=<?= h($p) ?>&edit_session=<?= $ss['id'] ?>">Edit</a>
@@ -934,20 +1397,120 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
       </td>
     </tr>
     <?php endforeach; ?>
+    </tbody>
   </table>
   </div>
 </div>
+
+<script>
+(function(){
+  const members = <?= $membersJson ?>;
+  const searchInput = document.getElementById('attAthleteSearch');
+  const dropdown = document.getElementById('attDropdown');
+  const memberIdInput = document.getElementById('att_member_id');
+  const selectedInfo = document.getElementById('attSelectedInfo');
+  const selAvatar = document.getElementById('attSelAvatar');
+  const selName = document.getElementById('attSelName');
+  const selDetail = document.getElementById('attSelDetail');
+  const submitBtn = document.getElementById('attSubmitBtn');
+  const hint = document.getElementById('attHint');
+  let focusedIndex = -1;
+
+  function renderDropdown(items){
+    dropdown.innerHTML = '';
+    if(items.length === 0){
+      dropdown.innerHTML = '<div class="ac-empty">No athletes found</div>';
+    } else {
+      items.slice(0,10).forEach((m,i)=>{
+        const div = document.createElement('div');
+        div.className = 'ac-item';
+        div.dataset.id = m.id;
+        const initials = m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+        div.innerHTML = `
+          <div class="ac-avatar">${initials}</div>
+          <div class="ac-info">
+            <div class="ac-name">${escHtml(m.name)}</div>
+            <div class="ac-meta">${escHtml(m.zone||'')}${m.position?' · '+escHtml(m.position):''}</div>
+          </div>
+          <div class="ac-badge">${escHtml(m.phone||'')}</div>`;
+        div.addEventListener('mousedown',()=>selectAthlete(m));
+        dropdown.appendChild(div);
+      });
+    }
+    dropdown.classList.add('open');
+    focusedIndex = -1;
+  }
+
+  function selectAthlete(m){
+    searchInput.value = m.name;
+    memberIdInput.value = m.id;
+    dropdown.classList.remove('open');
+    selectedInfo.classList.add('visible');
+    const initials = m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+    selAvatar.textContent = initials;
+    selName.textContent = m.name;
+    selDetail.textContent = (m.zone||'') + (m.position?' · '+m.position:'') + (m.phone?' · '+m.phone:'');
+    submitBtn.disabled = false;
+    hint.textContent = 'Athlete selected — choose status and save';
+  }
+
+  function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  searchInput.addEventListener('input',function(){
+    const q = this.value.toLowerCase().trim();
+    memberIdInput.value = '';
+    selectedInfo.classList.remove('visible');
+    submitBtn.disabled = true;
+    hint.textContent = 'Search and select an athlete above';
+    if(q.length < 1){ dropdown.classList.remove('open'); return; }
+    const filtered = members.filter(m=>m.name.toLowerCase().includes(q) || (m.phone||'').includes(q) || (m.zone||'').toLowerCase().includes(q));
+    renderDropdown(filtered);
+  });
+
+  searchInput.addEventListener('keydown',function(e){
+    const items = dropdown.querySelectorAll('.ac-item');
+    if(e.key==='ArrowDown'){
+      e.preventDefault();
+      focusedIndex = Math.min(focusedIndex+1, items.length-1);
+      items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex));
+    } else if(e.key==='ArrowUp'){
+      e.preventDefault();
+      focusedIndex = Math.max(focusedIndex-1, 0);
+      items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex));
+    } else if(e.key==='Enter' && focusedIndex>=0){
+      e.preventDefault();
+      const id = parseInt(items[focusedIndex].dataset.id);
+      const m = members.find(x=>x.id===id);
+      if(m) selectAthlete(m);
+    } else if(e.key==='Escape'){
+      dropdown.classList.remove('open');
+    }
+  });
+
+  document.addEventListener('click',function(e){
+    if(!document.getElementById('attAcWrap').contains(e.target)){
+      dropdown.classList.remove('open');
+    }
+  });
+
+  document.getElementById('attendanceForm').addEventListener('submit',function(e){
+    if(!memberIdInput.value){ e.preventDefault(); alert('Please select an athlete first.'); }
+  });
+})();
+</script>
+
 <?php endif; ?>
 
-
-<!-- ════════════════════════════════════════════════════
-     PAYMENTS / BILLING
-════════════════════════════════════════════════════ -->
-<?php if($v==='payments'): ?>
+<?php /* ════════════════════════════════════════════════════
+   PAYMENTS / BILLING
+════════════════════════════════════════════════════ */
+if($v==='payments'):
+$membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name'],'zone'=>$x['zone_name'],'phone'=>$x['phone'],'fee'=>$x['monthly_fee']],$am));
+?>
 <div class="page-header">
   <div>
-    <div class="page-title">Billing <span>&amp; Payments</span></div>
-    <div class="page-period">Period: <?= h($p) ?></div>
+    <div class="page-title">Billing <em>&amp; Payments</em></div>
+    <div class="page-sub">Period: <?= h($p) ?></div>
   </div>
   <div class="period-nav">
     <a href="?view=payments&period=<?= $prev ?>">← Prev</a>
@@ -957,117 +1520,249 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
 </div>
 
 <div class="card">
-  <div class="card-title">Record Payment</div>
-  <form method="POST">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Record Payment</div>
+  </div>
+  <form method="POST" id="paymentForm">
     <input type="hidden" name="action" value="payment">
+    <input type="hidden" name="member_id" id="pay_member_id" value="">
     <div class="form-grid">
-      <div class="form-group"><label>Athlete</label><select name="member_id"><?php foreach($am as $x): ?><option value="<?= $x['id'] ?>"><?= h($x['full_name'].' ['.$x['zone_name'].']') ?></option><?php endforeach; ?></select></div>
-      <div class="form-group"><label>Amount (RWF) *</label><input type="number" name="amount" required placeholder="0"></div>
+      <div class="form-group">
+        <label>Search Athlete *</label>
+        <div class="autocomplete-wrap" id="payAcWrap">
+          <input type="text" id="payAthleteSearch" placeholder="Type athlete name to search…" autocomplete="off" required>
+          <div class="autocomplete-dropdown" id="payDropdown"></div>
+        </div>
+        <div class="selected-athlete-info" id="paySelectedInfo">
+          <div class="sa-avatar" id="paySelAvatar"></div>
+          <div>
+            <div class="sa-name" id="paySelName"></div>
+            <div class="sa-detail" id="paySelDetail"></div>
+          </div>
+        </div>
+      </div>
+      <div class="form-group"><label>Amount (RWF) *</label><input type="number" name="amount" id="payAmount" required placeholder="0"></div>
       <div class="form-group"><label>Period</label><input name="period" value="<?= h($p) ?>"></div>
-      <div class="form-group"><label>Note</label><input name="note" placeholder="Optional reference"></div>
+      <div class="form-group"><label>Note</label><input name="note" placeholder="Optional reference / receipt no."></div>
     </div>
-    <div class="form-actions"><button class="btn btn-primary" type="submit">💳 Record Payment</button></div>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit" id="paySubmitBtn" disabled>💳 Record Payment</button>
+      <span style="font-size:12px;color:var(--muted);font-family:var(--font-mono)" id="payHint">Search and select an athlete above</span>
+    </div>
   </form>
 </div>
 
+<script>
+(function(){
+  const members = <?= $membersJson ?>;
+  const searchInput = document.getElementById('payAthleteSearch');
+  const dropdown = document.getElementById('payDropdown');
+  const memberIdInput = document.getElementById('pay_member_id');
+  const selectedInfo = document.getElementById('paySelectedInfo');
+  const selAvatar = document.getElementById('paySelAvatar');
+  const selName = document.getElementById('paySelName');
+  const selDetail = document.getElementById('paySelDetail');
+  const submitBtn = document.getElementById('paySubmitBtn');
+  const hint = document.getElementById('payHint');
+  const amountInput = document.getElementById('payAmount');
+  let focusedIndex = -1;
+
+  function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function fmtMoney(v){ return Number(v).toLocaleString()+' RWF'; }
+
+  function renderDropdown(items){
+    dropdown.innerHTML = '';
+    if(items.length === 0){
+      dropdown.innerHTML = '<div class="ac-empty">No athletes found</div>';
+    } else {
+      items.slice(0,10).forEach((m,i)=>{
+        const div = document.createElement('div');
+        div.className = 'ac-item';
+        div.dataset.id = m.id;
+        div.dataset.fee = m.fee;
+        const initials = m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+        div.innerHTML = `
+          <div class="ac-avatar">${initials}</div>
+          <div class="ac-info">
+            <div class="ac-name">${escHtml(m.name)}</div>
+            <div class="ac-meta">${escHtml(m.zone||'')}${m.phone?' · '+escHtml(m.phone):''}</div>
+          </div>
+          <div class="ac-badge">${fmtMoney(m.fee)}/mo</div>`;
+        div.addEventListener('mousedown',()=>selectAthlete(m));
+        dropdown.appendChild(div);
+      });
+    }
+    dropdown.classList.add('open');
+    focusedIndex = -1;
+  }
+
+  function selectAthlete(m){
+    searchInput.value = m.name;
+    memberIdInput.value = m.id;
+    dropdown.classList.remove('open');
+    selectedInfo.classList.add('visible');
+    const initials = m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+    selAvatar.textContent = initials;
+    selName.textContent = m.name;
+    selDetail.textContent = (m.zone||'') + (m.phone?' · '+m.phone:'') + ' · Fee: '+fmtMoney(m.fee)+'/month';
+    if(m.fee > 0) amountInput.value = m.fee;
+    submitBtn.disabled = false;
+    hint.textContent = 'Athlete selected — enter amount and save';
+  }
+
+  searchInput.addEventListener('input',function(){
+    const q = this.value.toLowerCase().trim();
+    memberIdInput.value = '';
+    selectedInfo.classList.remove('visible');
+    submitBtn.disabled = true;
+    hint.textContent = 'Search and select an athlete above';
+    if(q.length < 1){ dropdown.classList.remove('open'); return; }
+    const filtered = members.filter(m=>m.name.toLowerCase().includes(q)||(m.phone||'').includes(q)||(m.zone||'').toLowerCase().includes(q));
+    renderDropdown(filtered);
+  });
+
+  searchInput.addEventListener('keydown',function(e){
+    const items = dropdown.querySelectorAll('.ac-item');
+    if(e.key==='ArrowDown'){ e.preventDefault(); focusedIndex=Math.min(focusedIndex+1,items.length-1); items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex)); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); focusedIndex=Math.max(focusedIndex-1,0); items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex)); }
+    else if(e.key==='Enter'&&focusedIndex>=0){ e.preventDefault(); const id=parseInt(items[focusedIndex].dataset.id); const m=members.find(x=>x.id===id); if(m)selectAthlete(m); }
+    else if(e.key==='Escape'){ dropdown.classList.remove('open'); }
+  });
+
+  document.addEventListener('click',function(e){
+    if(!document.getElementById('payAcWrap').contains(e.target)) dropdown.classList.remove('open');
+  });
+
+  document.getElementById('paymentForm').addEventListener('submit',function(e){
+    if(!memberIdInput.value){ e.preventDefault(); alert('Please select an athlete first.'); }
+  });
+})();
+</script>
+
 <div class="card">
-  <div class="card-title">Billing Status — <?= h($p) ?></div>
-  <div class="filter-bar">
-    <div class="search-wrap" style="flex:1;margin-bottom:0">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="billSearch" placeholder="Search by athlete name, zone, status…" oninput="filterTable('billSearch','billTable','billCount')">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Billing Status — <?= h($p) ?></div>
+  </div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="billSearch" placeholder="Search by athlete, zone, status…" oninput="filterTable('billSearch','billTbl','billCnt')">
     </div>
-    <select id="billStatusFilter" onchange="filterTable('billSearch','billTable','billCount')">
+    <select id="bStatF" onchange="filterTable('billSearch','billTbl','billCnt')">
       <option value="">All Status</option>
       <option value="PAID">Paid</option>
       <option value="PARTIAL">Partial</option>
       <option value="UNPAID">Unpaid</option>
       <option value="NO BILL">No Bill</option>
     </select>
-    <select id="billZoneFilter" onchange="filterTable('billSearch','billTable','billCount')">
+    <select id="bZoneF" onchange="filterTable('billSearch','billTbl','billCnt')">
       <option value="">All Zones</option>
       <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
     </select>
   </div>
-  <div class="search-count" id="billCount"></div>
+  <div class="result-count" id="billCnt"></div>
   <div class="table-wrap">
-  <table id="billTable">
-    <tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Due Date</th><th>Status</th><th>Overdue</th></tr>
+  <table id="billTbl">
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Due Date</th><th>Status</th><th>Overdue</th></tr></thead>
+    <tbody>
     <?php foreach(billing_rows($pdo,$p) as $b): $stt=bill_status($b['expected_amount'],$b['paid_amount']); $od=overdue($b['due_date'],$stt); ?>
     <tr>
       <td><strong><?= h($b['full_name']) ?></strong></td>
-      <td><span class="badge badge-zone"><?= h($b['zone_name']) ?></span></td>
-      <td style="font-family:var(--font-mono)"><?= money($b['expected_amount']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--accent)"><?= money($b['paid_amount']) ?></td>
-      <td style="font-family:var(--font-mono);color:<?= $b['remaining']>0?'var(--warn)':'var(--muted)' ?>"><?= money($b['remaining']) ?></td>
+      <td><span class="badge b-zone"><?= h($b['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= money($b['expected_amount']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($b['paid_amount']) ?></td>
+      <td style="font-family:var(--font-mono);color:<?= $b['remaining']>0?'var(--amber)':'var(--muted)' ?>"><?= money($b['remaining']) ?></td>
       <td style="font-family:var(--font-mono);font-size:12px;color:var(--muted)"><?= h($b['due_date']) ?></td>
-      <td><span class="badge <?= $stt==='PAID'?'badge-paid':($stt==='PARTIAL'?'badge-partial':($stt==='UNPAID'?'badge-unpaid':'badge-nobill')) ?>"><?= $stt ?></span></td>
-      <td><span class="overdue-chip <?= $od>0?'over':'ok' ?>"><?= $od>0?$od.'d':'-' ?></span></td>
+      <td><span class="badge <?= $stt==='PAID'?'b-paid':($stt==='PARTIAL'?'b-partial':($stt==='UNPAID'?'b-unpaid':'b-nobill')) ?>"><?= $stt ?></span></td>
+      <td><span class="overdue <?= $od>0?'over':'ok' ?>"><?= $od>0?$od.'d':'-' ?></span></td>
     </tr>
     <?php endforeach; ?>
+    </tbody>
   </table>
   </div>
 </div>
+
 <?php endif; ?>
 
-
-<!-- ════════════════════════════════════════════════════
-     STAFF
-════════════════════════════════════════════════════ -->
-<?php if($v==='staff'): ?>
+<?php /* ════════════════════════════════════════════════════
+   STAFF
+════════════════════════════════════════════════════ */
+if($v==='staff'): ?>
 <div class="page-header">
-  <div><div class="page-title">Staff <span>Management</span></div></div>
+  <div>
+    <div class="page-title">Staff <em>Management</em></div>
+    <div class="page-sub"><?= count($st) ?> total staff</div>
+  </div>
 </div>
 
 <div class="card">
-  <div class="card-title"><?= $edit_staff ? 'Edit Staff Member' : 'Add Staff Member' ?></div>
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span><?= $edit_staff ? 'Edit Staff Member' : 'Add Staff Member' ?></div>
+  </div>
   <form method="POST">
     <input type="hidden" name="action" value="save_staff">
     <input type="hidden" name="id" value="<?= h($edit_staff['id']??'') ?>">
     <div class="form-grid">
       <div class="form-group"><label>Full Name *</label><input name="full_name" required value="<?= h($edit_staff['full_name']??'') ?>"></div>
       <div class="form-group"><label>Phone</label><input name="phone" value="<?= h($edit_staff['phone']??'') ?>"></div>
-      <div class="form-group"><label>Role</label><select name="role"><?php foreach(['coach','assistant_coach','manager','accountant'] as $role): ?><option <?= (($edit_staff['role']??'')===$role)?'selected':'' ?>><?= $role ?></option><?php endforeach; ?></select></div>
-      <div class="form-group"><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>" <?= (($edit_staff['zone_id']??'')==$zone['id'])?'selected':'' ?>><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
+      <div class="form-group"><label>Role</label>
+        <select name="role">
+          <?php foreach(['coach','assistant_coach','manager','accountant'] as $role): ?>
+          <option <?= (($edit_staff['role']??'')===$role)?'selected':'' ?>><?= $role ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="form-group"><label>Zone</label>
+        <select name="zone_id">
+          <?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>" <?= (($edit_staff['zone_id']??'')==$zone['id'])?'selected':'' ?>><?= h($zone['name']) ?></option><?php endforeach; ?>
+        </select>
+      </div>
       <div class="form-group"><label>Monthly Salary (RWF)</label><input type="number" name="monthly_salary" value="<?= h($edit_staff['monthly_salary']??0) ?>"></div>
     </div>
     <div class="form-actions">
       <button class="btn btn-primary" type="submit">💾 <?= $edit_staff ? 'Update Staff' : 'Save Staff' ?></button>
-      <?php if($edit_staff): ?><a class="btn btn-ghost" href="?view=staff&period=<?= h($p) ?>">Cancel</a><?php endif; ?>
+      <?php if($edit_staff): ?><a class="btn btn-ghost" href="?view=staff&period=<?= h($p) ?>">✕ Cancel</a><?php endif; ?>
     </div>
   </form>
 </div>
 
 <div class="card">
-  <div class="card-title">Staff List</div>
-  <div class="filter-bar">
-    <div class="search-wrap" style="flex:1;margin-bottom:0">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="staffSearch" placeholder="Search by name, role, zone, phone…" oninput="filterTable('staffSearch','staffTable','staffCount')">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Staff Directory</div>
+  </div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="staffSearch" placeholder="Search name, role, zone, phone…" oninput="filterTable('staffSearch','staffTbl','staffCnt')">
     </div>
-    <select id="staffRoleFilter" onchange="filterTable('staffSearch','staffTable','staffCount')">
+    <select id="stRoleF" onchange="filterTable('staffSearch','staffTbl','staffCnt')">
       <option value="">All Roles</option>
       <?php foreach(['coach','assistant_coach','manager','accountant'] as $role): ?>
       <option value="<?= $role ?>"><?= $role ?></option>
       <?php endforeach; ?>
     </select>
-    <select id="staffZoneFilter" onchange="filterTable('staffSearch','staffTable','staffCount')">
+    <select id="stZoneF" onchange="filterTable('staffSearch','staffTbl','staffCnt')">
       <option value="">All Zones</option>
       <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
     </select>
   </div>
-  <div class="search-count" id="staffCount"></div>
+  <div class="result-count" id="staffCnt"></div>
   <div class="table-wrap">
-  <table id="staffTable">
-    <tr><th>Name</th><th>Role</th><th>Zone</th><th>Phone</th><th>Salary</th><th>Status</th><th>Actions</th></tr>
+  <table id="staffTbl">
+    <thead><tr><th>Name</th><th>Role</th><th>Zone</th><th>Phone</th><th>Salary</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
     <?php foreach($st as $x): ?>
     <tr>
       <td><strong><?= h($x['full_name']) ?></strong></td>
-      <td style="text-transform:capitalize"><?= h($x['role']) ?></td>
-      <td><span class="badge badge-zone"><?= h($x['zone_name']) ?></span></td>
-      <td style="font-family:var(--font-mono);font-size:12px"><?= h($x['phone']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--accent)"><?= money($x['monthly_salary']) ?></td>
-      <td><span class="badge <?= $x['is_active']?'badge-active':'badge-inactive' ?>"><?= $x['is_active']?'Active':'Inactive' ?></span></td>
+      <td style="text-transform:capitalize;color:var(--text2)"><?= h($x['role']) ?></td>
+      <td><span class="badge b-zone"><?= h($x['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h($x['phone']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($x['monthly_salary']) ?></td>
+      <td><span class="badge <?= $x['is_active']?'b-active':'b-inactive' ?>"><?= $x['is_active']?'Active':'Inactive' ?></span></td>
       <td>
         <div class="actions-cell">
           <a class="btn btn-ghost btn-sm" href="?view=staff&period=<?= h($p) ?>&edit_staff=<?= $x['id'] ?>">Edit</a>
@@ -1080,20 +1775,21 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
       </td>
     </tr>
     <?php endforeach; ?>
+    </tbody>
   </table>
   </div>
 </div>
+
 <?php endif; ?>
 
-
-<!-- ════════════════════════════════════════════════════
-     PAYROLL
-════════════════════════════════════════════════════ -->
-<?php if($v==='payroll'): ?>
+<?php /* ════════════════════════════════════════════════════
+   PAYROLL
+════════════════════════════════════════════════════ */
+if($v==='payroll'): ?>
 <div class="page-header">
   <div>
-    <div class="page-title">Coach <span>Payroll</span></div>
-    <div class="page-period">Period: <?= h($p) ?></div>
+    <div class="page-title">Coach <em>Payroll</em></div>
+    <div class="page-sub">Period: <?= h($p) ?></div>
   </div>
   <div class="period-nav">
     <a href="?view=payroll&period=<?= $prev ?>">← Prev</a>
@@ -1103,11 +1799,18 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
 </div>
 
 <div class="card">
-  <div class="card-title">Add / Update Payroll Entry</div>
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Add / Update Payroll Entry</div>
+  </div>
   <form method="POST">
     <input type="hidden" name="action" value="payroll">
     <div class="form-grid">
-      <div class="form-group"><label>Staff Member</label><select name="staff_id"><?php foreach($st as $x): ?><option value="<?= $x['id'] ?>"><?= h($x['full_name'].' ['.$x['zone_name'].']') ?></option><?php endforeach; ?></select></div>
+      <div class="form-group"><label>Staff Member</label>
+        <select name="staff_id">
+          <?php foreach($st as $x): ?><option value="<?= $x['id'] ?>"><?= h($x['full_name'].' ['.$x['zone_name'].']') ?></option><?php endforeach; ?>
+        </select>
+      </div>
       <div class="form-group"><label>Period</label><input name="period" value="<?= h($p) ?>"></div>
       <div class="form-group"><label>Base Salary (RWF)</label><input type="number" name="base_salary" value="0"></div>
       <div class="form-group"><label>Bonus (RWF)</label><input type="number" name="bonus" value="0"></div>
@@ -1120,44 +1823,65 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
 </div>
 
 <div class="card">
-  <div class="card-title">Payroll — <?= h($p) ?></div>
-  <div class="search-wrap">
-    <span class="search-icon">🔍</span>
-    <input type="text" id="payrollSearch" placeholder="Search by staff name, zone, status…" oninput="filterTable('payrollSearch','payrollTable','payrollCount')">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Payroll — <?= h($p) ?></div>
   </div>
-  <div class="search-count" id="payrollCount"></div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="payrollSearch" placeholder="Search staff name, zone, status…" oninput="filterTable('payrollSearch','payrollTbl','payrollCnt')">
+    </div>
+  </div>
+  <div class="result-count" id="payrollCnt"></div>
   <div class="table-wrap">
-  <table id="payrollTable">
-    <tr><th>Staff</th><th>Zone</th><th>Base</th><th>Bonus</th><th>Deductions</th><th>Net Salary</th><th>Paid</th><th>Status</th></tr>
+  <table id="payrollTbl">
+    <thead><tr><th>Staff</th><th>Zone</th><th>Base</th><th>Bonus</th><th>Deductions</th><th>Net Salary</th><th>Paid</th><th>Status</th></tr></thead>
+    <tbody>
     <?php
     $pay=$pdo->query("SELECT c.*,s.full_name,z.name zone_name FROM coach_payroll c JOIN staff s ON s.id=c.staff_id LEFT JOIN academy_zones z ON z.id=s.zone_id WHERE c.period='$p' ORDER BY z.id,s.full_name")->fetchAll();
-    foreach($pay as $x): ?>
+    $totBase=$totBonus=$totDed=$totNet=$totPaid=0;
+    foreach($pay as $x):
+      $totBase+=$x['base_salary'];$totBonus+=$x['bonus'];$totDed+=$x['deductions'];$totNet+=$x['net_salary'];$totPaid+=$x['amount_paid'];
+    ?>
     <tr>
       <td><strong><?= h($x['full_name']) ?></strong></td>
-      <td><span class="badge badge-zone"><?= h($x['zone_name']) ?></span></td>
-      <td style="font-family:var(--font-mono)"><?= money($x['base_salary']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--accent)"><?= money($x['bonus']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--danger)"><?= money($x['deductions']) ?></td>
-      <td style="font-family:var(--font-mono);font-weight:700"><?= money($x['net_salary']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--accent)"><?= money($x['amount_paid']) ?></td>
-      <td><span class="badge <?= $x['status']==='PAID'?'badge-paid':($x['status']==='PARTIAL'?'badge-partial':'badge-unpaid') ?>"><?= h($x['status']) ?></span></td>
+      <td><span class="badge b-zone"><?= h($x['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= money($x['base_salary']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($x['bonus']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--red)"><?= money($x['deductions']) ?></td>
+      <td style="font-family:var(--font-mono);font-weight:700;color:var(--text)"><?= money($x['net_salary']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($x['amount_paid']) ?></td>
+      <td><span class="badge <?= $x['status']==='PAID'?'b-paid':($x['status']==='PARTIAL'?'b-partial':'b-unpaid') ?>"><?= h($x['status']) ?></span></td>
     </tr>
     <?php endforeach; ?>
-    <?php if(empty($pay)): ?><tr><td colspan="8" class="no-results">No payroll records for <?= h($p) ?></td></tr><?php endif; ?>
+    <?php if(!empty($pay)): ?>
+    <tr class="summary-row">
+      <td colspan="2">TOTALS</td>
+      <td><?= money($totBase) ?></td>
+      <td><?= money($totBonus) ?></td>
+      <td><?= money($totDed) ?></td>
+      <td><?= money($totNet) ?></td>
+      <td><?= money($totPaid) ?></td>
+      <td>—</td>
+    </tr>
+    <?php endif; ?>
+    <?php if(empty($pay)): ?><tr><td colspan="8" class="no-data">No payroll records for <?= h($p) ?></td></tr><?php endif; ?>
+    </tbody>
   </table>
   </div>
 </div>
+
 <?php endif; ?>
 
-
-<!-- ════════════════════════════════════════════════════
-     EXPENSES
-════════════════════════════════════════════════════ -->
-<?php if($v==='expenses'): ?>
+<?php /* ════════════════════════════════════════════════════
+   EXPENSES
+════════════════════════════════════════════════════ */
+if($v==='expenses'): ?>
 <div class="page-header">
   <div>
-    <div class="page-title">Expenses <span>Ledger</span></div>
-    <div class="page-period">Period: <?= h($p) ?></div>
+    <div class="page-title">Expenses <em>Ledger</em></div>
+    <div class="page-sub">Period: <?= h($p) ?></div>
   </div>
   <div class="period-nav">
     <a href="?view=expenses&period=<?= $prev ?>">← Prev</a>
@@ -1167,67 +1891,82 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
 </div>
 
 <div class="card">
-  <div class="card-title">Log New Expense</div>
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Log New Expense</div>
+  </div>
   <form method="POST">
     <input type="hidden" name="action" value="expense">
     <div class="form-grid">
       <div class="form-group"><label>Date</label><input type="date" name="expense_date" value="<?= date('Y-m-d') ?>"></div>
       <div class="form-group"><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>"><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
-      <div class="form-group"><label>Category</label><input name="category" placeholder="e.g. Equipment, Utility"></div>
+      <div class="form-group"><label>Category</label><input name="category" placeholder="e.g. Equipment, Utility, Travel"></div>
       <div class="form-group"><label>Description *</label><input name="description" required placeholder="What was this expense for?"></div>
-      <div class="form-group"><label>Amount (RWF) *</label><input type="number" name="amount" required></div>
+      <div class="form-group"><label>Amount (RWF) *</label><input type="number" name="amount" required placeholder="0"></div>
       <div class="form-group"><label>Paid To</label><input name="paid_to" placeholder="Vendor / person name"></div>
-      <div class="form-group"><label>Approved By</label><input name="approved_by"></div>
+      <div class="form-group"><label>Approved By</label><input name="approved_by" placeholder="Manager / supervisor"></div>
     </div>
     <div class="form-actions"><button class="btn btn-primary" type="submit">💾 Save Expense</button></div>
   </form>
 </div>
 
 <div class="card">
-  <div class="card-title">Expense Records</div>
-  <?php
-  $expenses = $pdo->query("SELECT e.*,z.name zone_name FROM expenses e LEFT JOIN academy_zones z ON z.id=e.zone_id ORDER BY e.expense_date DESC,e.id DESC")->fetchAll();
-  ?>
-  <div class="filter-bar">
-    <div class="search-wrap" style="flex:1;margin-bottom:0">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="expenseSearch" placeholder="Search by description, category, zone, paid to…" oninput="filterTable('expenseSearch','expenseTable','expenseCount')">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Expense Records</div>
+  </div>
+  <?php $expenses = $pdo->query("SELECT e.*,z.name zone_name FROM expenses e LEFT JOIN academy_zones z ON z.id=e.zone_id ORDER BY e.expense_date DESC,e.id DESC")->fetchAll(); ?>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="expenseSearch" placeholder="Search description, category, zone, paid to…" oninput="filterTable('expenseSearch','expenseTbl','expenseCnt')">
     </div>
-    <select id="expenseZoneFilter" onchange="filterTable('expenseSearch','expenseTable','expenseCount')">
+    <select id="eZoneF" onchange="filterTable('expenseSearch','expenseTbl','expenseCnt')">
       <option value="">All Zones</option>
       <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
     </select>
   </div>
-  <div class="search-count" id="expenseCount"></div>
+  <div class="result-count" id="expenseCnt"></div>
   <div class="table-wrap">
-  <table id="expenseTable">
-    <tr><th>Date</th><th>Zone</th><th>Category</th><th>Description</th><th>Amount</th><th>Paid To</th><th>Approved By</th></tr>
-    <?php foreach($expenses as $e): ?>
+  <table id="expenseTbl">
+    <thead><tr><th>Date</th><th>Zone</th><th>Category</th><th>Description</th><th>Amount</th><th>Paid To</th><th>Approved</th></tr></thead>
+    <tbody>
+    <?php
+    $totExp=0;
+    foreach($expenses as $e): $totExp+=$e['amount']; ?>
     <tr>
-      <td style="font-family:var(--font-mono);font-size:12px;color:var(--muted)"><?= h($e['expense_date']) ?></td>
-      <td><span class="badge badge-zone"><?= h($e['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h($e['expense_date']) ?></td>
+      <td><span class="badge b-zone"><?= h($e['zone_name']) ?></span></td>
       <td style="color:var(--muted)"><?= h($e['category']) ?></td>
       <td><?= h($e['description']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--danger)"><?= money($e['amount']) ?></td>
-      <td><?= h($e['paid_to']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--red)"><?= money($e['amount']) ?></td>
+      <td style="color:var(--text2)"><?= h($e['paid_to']) ?></td>
       <td style="color:var(--muted)"><?= h($e['approved_by']) ?></td>
     </tr>
     <?php endforeach; ?>
-    <?php if(empty($expenses)): ?><tr><td colspan="7" class="no-results">No expenses recorded yet</td></tr><?php endif; ?>
+    <?php if(!empty($expenses)): ?>
+    <tr class="summary-row">
+      <td colspan="4">TOTAL EXPENSES</td>
+      <td><?= money($totExp) ?></td>
+      <td colspan="2">—</td>
+    </tr>
+    <?php endif; ?>
+    <?php if(empty($expenses)): ?><tr><td colspan="7" class="no-data">No expenses recorded yet</td></tr><?php endif; ?>
+    </tbody>
   </table>
   </div>
 </div>
+
 <?php endif; ?>
 
-
-<!-- ════════════════════════════════════════════════════
-     REPORTS
-════════════════════════════════════════════════════ -->
-<?php if($v==='reports'): ?>
+<?php /* ════════════════════════════════════════════════════
+   REPORTS
+════════════════════════════════════════════════════ */
+if($v==='reports'): ?>
 <div class="page-header">
   <div>
-    <div class="page-title">Reports <span>&amp; Analytics</span></div>
-    <div class="page-period">Period: <?= h($p) ?></div>
+    <div class="page-title">Reports <em>&amp; Analytics</em></div>
+    <div class="page-sub">Period: <?= h($p) ?></div>
   </div>
   <div class="period-nav">
     <a href="?view=reports&period=<?= $prev ?>">← Prev</a>
@@ -1236,22 +1975,56 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
   </div>
 </div>
 
-<div class="card">
-  <div class="card-title">Zone Financial Report — <?= h($p) ?></div>
-  <div class="search-wrap">
-    <span class="search-icon">🔍</span>
-    <input type="text" id="zoneRepSearch" placeholder="Search zones…" oninput="filterTable('zoneRepSearch','zoneRepTable','zoneRepCount')">
+<!-- Financial Summary KPIs -->
+<?php
+$totalRev  = (float)$stats['revenue'];
+$totalExp  = (float)$stats['expenses'];
+$totalPay  = (float)$stats['payroll'];
+$totalOut  = (float)$stats['outstanding'];
+$netIncome = $totalRev - $totalExp - $totalPay;
+$totalExp2 = $totalExp + $totalPay;
+?>
+<div class="stat-grid" style="margin-bottom:20px">
+  <div class="stat-card" data-color="teal">
+    <div class="stat-icon">📥</div>
+    <div class="stat-label">Total Revenue</div>
+    <div class="stat-value" style="font-size:20px"><?= money($totalRev) ?></div>
   </div>
-  <div class="search-count" id="zoneRepCount"></div>
+  <div class="stat-card" data-color="red">
+    <div class="stat-icon">📤</div>
+    <div class="stat-label">Total Outgoings</div>
+    <div class="stat-value" style="font-size:20px"><?= money($totalExp2) ?></div>
+  </div>
+  <div class="stat-card" data-color="<?= $netIncome>=0?'lime':'red' ?>">
+    <div class="stat-icon"><?= $netIncome>=0?'📈':'📉' ?></div>
+    <div class="stat-label">Net Income</div>
+    <div class="stat-value" style="font-size:20px"><?= money($netIncome) ?></div>
+  </div>
+</div>
+
+<!-- Zone Financial Report -->
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Zone Financial Report — <?= h($p) ?></div>
+  </div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="zoneRepSearch" placeholder="Search zones…" oninput="filterTable('zoneRepSearch','zoneRepTbl','zoneRepCnt')">
+    </div>
+  </div>
+  <div class="result-count" id="zoneRepCnt"></div>
   <div class="table-wrap">
-  <table id="zoneRepTable">
-    <tr><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Expenses</th><th>Payroll</th></tr>
+  <table id="zoneRepTbl">
+    <thead><tr><th>Zone</th><th>Expected</th><th>Collected</th><th>Remaining</th><th>Expenses</th><th>Payroll</th><th>Net</th></tr></thead>
+    <tbody>
     <?php
     $r=$pdo->query("
     SELECT z.name,
     COALESCE(SUM(DISTINCT b.expected_amount),0) expected,
     COALESCE(SUM(DISTINCT b.paid_amount),0) paid,
-    COALESCE(SUM(DISTINCT b.expected_amount-b.paid_amount),0) remaining,
+    COALESCE(SUM(DISTINCT GREATEST(b.expected_amount-b.paid_amount,0)),0) remaining,
     COALESCE(SUM(DISTINCT e.amount),0) expenses,
     COALESCE(SUM(DISTINCT c.amount_paid),0) payroll
     FROM academy_zones z
@@ -1261,56 +2034,88 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
     LEFT JOIN staff st ON st.zone_id=z.id
     LEFT JOIN coach_payroll c ON c.staff_id=st.id AND c.period='$p'
     GROUP BY z.id,z.name ORDER BY z.id")->fetchAll();
-    foreach($r as $x): ?>
+    $gExp=$gPaid=$gRem=$gExpenses=$gPayroll=0;
+    foreach($r as $x):
+      $net=(float)$x['paid']-(float)$x['expenses']-(float)$x['payroll'];
+      $gPaid+=$x['paid']; $gRem+=$x['remaining']; $gExpenses+=$x['expenses']; $gPayroll+=$x['payroll'];
+    ?>
     <tr>
-      <td><strong><?= h($x['name']) ?></strong></td>
-      <td style="font-family:var(--font-mono)"><?= money($x['expected']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--accent)"><?= money($x['paid']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--warn)"><?= money($x['remaining']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--danger)"><?= money($x['expenses']) ?></td>
-      <td style="font-family:var(--font-mono)"><?= money($x['payroll']) ?></td>
+      <td><strong style="font-family:var(--font-display)"><?= h($x['name']) ?></strong></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= money($x['expected']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($x['paid']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--amber)"><?= money($x['remaining']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--red)"><?= money($x['expenses']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--purple)"><?= money($x['payroll']) ?></td>
+      <td style="font-family:var(--font-mono);font-weight:700;color:<?= $net>=0?'var(--lime)':'var(--red)' ?>"><?= money($net) ?></td>
     </tr>
     <?php endforeach; ?>
+    <tr class="summary-row">
+      <td>TOTAL</td>
+      <td>—</td>
+      <td><?= money($gPaid) ?></td>
+      <td><?= money($gRem) ?></td>
+      <td><?= money($gExpenses) ?></td>
+      <td><?= money($gPayroll) ?></td>
+      <td><?= money($gPaid-$gExpenses-$gPayroll) ?></td>
+    </tr>
+    </tbody>
   </table>
   </div>
 </div>
 
+<!-- Billing Status Summary -->
+<?php
+$bSummary=$pdo->query("
+SELECT
+  COUNT(*) FILTER (WHERE expected_amount>0 AND paid_amount>=expected_amount) AS paid_ct,
+  COUNT(*) FILTER (WHERE paid_amount>0 AND paid_amount<expected_amount) AS partial_ct,
+  COUNT(*) FILTER (WHERE expected_amount>0 AND paid_amount=0) AS unpaid_ct,
+  COUNT(*) FILTER (WHERE expected_amount=0) AS nobill_ct
+FROM monthly_bills WHERE period='$p'")->fetch();
+$total_athletes=(int)$stats['athletes'];
+?>
 <div class="card">
-  <div class="card-title">Payment Logs</div>
-  <div class="search-wrap">
-    <span class="search-icon">🔍</span>
-    <input type="text" id="paylogSearch" placeholder="Search payment logs by athlete, period, note…" oninput="filterTable('paylogSearch','paylogTable','paylogCount')">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Payment Status Summary — <?= h($p) ?></div>
   </div>
-  <div class="search-count" id="paylogCount"></div>
-  <div class="table-wrap">
-  <table id="paylogTable">
-    <tr><th>Date</th><th>Athlete</th><th>Period</th><th>Amount</th><th>Note</th></tr>
-    <?php
-    $logs = $pdo->query("SELECT pl.*,m.full_name FROM payment_logs pl JOIN members m ON m.id=pl.member_id ORDER BY pl.created_at DESC LIMIT 200")->fetchAll();
-    foreach($logs as $l): ?>
-    <tr>
-      <td style="font-family:var(--font-mono);font-size:12px;color:var(--muted)"><?= h(substr($l['created_at'],0,10)) ?></td>
-      <td><?= h($l['full_name']) ?></td>
-      <td style="font-family:var(--font-mono)"><?= h($l['period']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--accent)"><?= money($l['amount_paid']) ?></td>
-      <td style="color:var(--muted)"><?= h($l['note']) ?></td>
-    </tr>
-    <?php endforeach; ?>
-    <?php if(empty($logs)): ?><tr><td colspan="5" class="no-results">No payment logs yet</td></tr><?php endif; ?>
-  </table>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+    <div style="background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-sm);padding:16px;text-align:center">
+      <div class="stat-label" style="text-align:center">Paid</div>
+      <div style="font-family:var(--font-display);font-size:30px;font-weight:700;color:var(--lime)"><?= $bSummary['paid_ct']??0 ?></div>
+    </div>
+    <div style="background:var(--amber-dim);border:1px solid rgba(255,183,64,0.2);border-radius:var(--radius-sm);padding:16px;text-align:center">
+      <div class="stat-label" style="text-align:center">Partial</div>
+      <div style="font-family:var(--font-display);font-size:30px;font-weight:700;color:var(--amber)"><?= $bSummary['partial_ct']??0 ?></div>
+    </div>
+    <div style="background:var(--red-dim);border:1px solid rgba(255,79,107,0.2);border-radius:var(--radius-sm);padding:16px;text-align:center">
+      <div class="stat-label" style="text-align:center">Unpaid</div>
+      <div style="font-family:var(--font-display);font-size:30px;font-weight:700;color:var(--red)"><?= $bSummary['unpaid_ct']??0 ?></div>
+    </div>
+    <div style="background:var(--blue-dim);border:1px solid rgba(77,159,255,0.2);border-radius:var(--radius-sm);padding:16px;text-align:center">
+      <div class="stat-label" style="text-align:center">No Bill</div>
+      <div style="font-family:var(--font-display);font-size:30px;font-weight:700;color:var(--blue)"><?= $bSummary['nobill_ct']??0 ?></div>
+    </div>
   </div>
 </div>
 
+<!-- Attendance Summary -->
 <div class="card">
-  <div class="card-title">Attendance Report</div>
-  <div class="search-wrap">
-    <span class="search-icon">🔍</span>
-    <input type="text" id="attRepSearch" placeholder="Search sessions, zones…" oninput="filterTable('attRepSearch','attRepTable','attRepCount')">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Attendance Report</div>
   </div>
-  <div class="search-count" id="attRepCount"></div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="attRepSearch" placeholder="Search sessions, zones…" oninput="filterTable('attRepSearch','attRepTbl','attRepCnt')">
+    </div>
+  </div>
+  <div class="result-count" id="attRepCnt"></div>
   <div class="table-wrap">
-  <table id="attRepTable">
-    <tr><th>Session</th><th>Date</th><th>Zone</th><th>Present</th><th>Absent</th><th>Late</th><th>Total</th></tr>
+  <table id="attRepTbl">
+    <thead><tr><th>Session</th><th>Date</th><th>Zone</th><th>Present</th><th>Absent</th><th>Late</th><th>Total</th><th>Rate</th></tr></thead>
+    <tbody>
     <?php
     $a=$pdo->query("
     SELECT s.name,s.session_date,z.name zone,
@@ -1321,29 +2126,82 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
     FROM sessions s LEFT JOIN academy_zones z ON z.id=s.zone_id
     LEFT JOIN attendance a ON a.session_id=s.id
     GROUP BY s.id,s.name,s.session_date,z.name ORDER BY s.session_date DESC")->fetchAll();
-    foreach($a as $x): ?>
+    foreach($a as $x):
+      $rate = ($x['total']>0)?round(((int)$x['present']+(int)$x['late'])/$x['total']*100):0;
+    ?>
     <tr>
-      <td><?= h($x['name']) ?></td>
-      <td style="font-family:var(--font-mono);font-size:12px;color:var(--muted)"><?= h($x['session_date']) ?></td>
-      <td><span class="badge badge-zone"><?= h($x['zone']) ?></span></td>
-      <td><span class="badge badge-present"><?= $x['present']??0 ?></span></td>
-      <td><span class="badge badge-absent"><?= $x['absent']??0 ?></span></td>
-      <td><span class="badge badge-late"><?= $x['late']??0 ?></span></td>
+      <td><strong><?= h($x['name']) ?></strong></td>
+      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h($x['session_date']) ?></td>
+      <td><span class="badge b-zone"><?= h($x['zone']) ?></span></td>
+      <td><span class="badge b-present"><?= $x['present']??0 ?></span></td>
+      <td><span class="badge b-absent"><?= $x['absent']??0 ?></span></td>
+      <td><span class="badge b-late"><?= $x['late']??0 ?></span></td>
       <td style="color:var(--muted);font-family:var(--font-mono)"><?= $x['total']??0 ?></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;min-width:60px">
+            <div style="width:<?= $rate ?>%;height:100%;background:<?= $rate>=80?'var(--lime)':($rate>=50?'var(--amber)':'var(--red)') ?>;border-radius:3px;transition:width 0.6s ease"></div>
+          </div>
+          <span style="font-family:var(--font-mono);font-size:11px;color:<?= $rate>=80?'var(--lime)':($rate>=50?'var(--amber)':'var(--red)') ?>;white-space:nowrap"><?= $rate ?>%</span>
+        </div>
+      </td>
     </tr>
     <?php endforeach; ?>
-    <?php if(empty($a)): ?><tr><td colspan="7" class="no-results">No attendance records yet</td></tr><?php endif; ?>
+    <?php if(empty($a)): ?><tr><td colspan="8" class="no-data">No attendance records yet</td></tr><?php endif; ?>
+    </tbody>
   </table>
   </div>
 </div>
+
+<!-- Payment Logs -->
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Payment Logs (Latest 200)</div>
+  </div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="paylogSearch" placeholder="Search by athlete, period, note…" oninput="filterTable('paylogSearch','paylogTbl','paylogCnt')">
+    </div>
+  </div>
+  <div class="result-count" id="paylogCnt"></div>
+  <div class="table-wrap">
+  <table id="paylogTbl">
+    <thead><tr><th>Date</th><th>Athlete</th><th>Period</th><th>Amount</th><th>Note</th></tr></thead>
+    <tbody>
+    <?php
+    $logs=$pdo->query("SELECT pl.*,m.full_name FROM payment_logs pl JOIN members m ON m.id=pl.member_id ORDER BY pl.created_at DESC LIMIT 200")->fetchAll();
+    $totLogs=0;
+    foreach($logs as $l): $totLogs+=$l['amount_paid']; ?>
+    <tr>
+      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h(substr($l['created_at'],0,10)) ?></td>
+      <td><strong><?= h($l['full_name']) ?></strong></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= h($l['period']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($l['amount_paid']) ?></td>
+      <td style="color:var(--muted)"><?= h($l['note']) ?></td>
+    </tr>
+    <?php endforeach; ?>
+    <?php if(!empty($logs)): ?>
+    <tr class="summary-row">
+      <td colspan="3">TOTAL COLLECTED (logs shown)</td>
+      <td><?= money($totLogs) ?></td>
+      <td>—</td>
+    </tr>
+    <?php endif; ?>
+    <?php if(empty($logs)): ?><tr><td colspan="5" class="no-data">No payment logs yet</td></tr><?php endif; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+
 <?php endif; ?>
 
-</div><!-- /main -->
+</main>
 
 <script>
 /**
- * Universal table search + dropdown filter function.
- * Reads the search input + any select[id$="Filter"] siblings in the same .filter-bar.
+ * Universal table search + dropdown filter
  */
 function filterTable(searchId, tableId, countId) {
   const searchInput = document.getElementById(searchId);
@@ -1352,69 +2210,60 @@ function filterTable(searchId, tableId, countId) {
   if(!table) return;
 
   const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
-
-  // Collect all filter selects in the same filter-bar as search input
-  const bar = searchInput ? searchInput.closest('.filter-bar, .search-wrap') : null;
   const card = table.closest('.card');
-  const filterSelects = card ? card.querySelectorAll('select[id$="Filter"]') : [];
+  const filterSelects = card ? card.querySelectorAll('select[id$="F"]') : [];
 
-  const rows = table.querySelectorAll('tbody tr, tr:not(:first-child)');
+  const rows = table.querySelectorAll('tbody tr:not(.summary-row):not(.no-results-dyn)');
   let visible = 0;
 
   rows.forEach(row => {
     const text = row.textContent.toLowerCase();
     let show = true;
-
-    // Text search
     if(query && !text.includes(query)) show = false;
-
-    // Dropdown filters
     filterSelects.forEach(sel => {
       const val = sel.value.toLowerCase();
       if(val && !text.includes(val)) show = false;
     });
-
     row.style.display = show ? '' : 'none';
     if(show) visible++;
   });
 
-  // Show count
   if(countEl) {
     const total = rows.length;
-    countEl.textContent = query || [...filterSelects].some(s=>s.value)
+    countEl.textContent = (query || [...filterSelects].some(s=>s.value))
       ? `Showing ${visible} of ${total} records`
       : `${total} record${total!==1?'s':''}`;
   }
 
-  // Show/hide no-results row
-  let noRes = table.querySelector('.no-results-dynamic');
+  // Dynamic no-results row
+  let noRes = table.querySelector('.no-results-dyn');
   if(visible === 0 && rows.length > 0) {
     if(!noRes) {
-      const colspan = table.querySelector('tr').children.length;
+      const colspan = table.querySelector('thead tr')?.children.length || 6;
       const tr = document.createElement('tr');
-      tr.className = 'no-results-dynamic';
-      tr.innerHTML = `<td colspan="${colspan}" class="no-results">No results match your search</td>`;
-      table.appendChild(tr);
+      tr.className = 'no-results-dyn';
+      tr.innerHTML = `<td colspan="${colspan}" class="no-data">No results match your search</td>`;
+      table.querySelector('tbody').appendChild(tr);
     }
   } else {
-    if(noRes) noRes.remove();
+    noRes?.remove();
   }
 }
 
-// Init counts on page load for all tables with search
+// Initialize all table counts on load
 document.addEventListener('DOMContentLoaded', () => {
-  const pairs = [
-    ['memberSearch','memberTable','memberCount'],
-    ['sessionSearch','sessionTable','sessionCount'],
-    ['billSearch','billTable','billCount'],
-    ['staffSearch','staffTable','staffCount'],
-    ['payrollSearch','payrollTable','payrollCount'],
-    ['expenseSearch','expenseTable','expenseCount'],
-    ['zoneRepSearch','zoneRepTable','zoneRepCount'],
-    ['paylogSearch','paylogTable','paylogCount'],
-    ['attRepSearch','attRepTable','attRepCount'],
+  const maps = [
+    ['memberSearch','memberTbl','memberCnt'],
+    ['sessionSearch','sessionTbl','sessionCnt'],
+    ['billSearch','billTbl','billCnt'],
+    ['staffSearch','staffTbl','staffCnt'],
+    ['payrollSearch','payrollTbl','payrollCnt'],
+    ['expenseSearch','expenseTbl','expenseCnt'],
+    ['zoneRepSearch','zoneRepTbl','zoneRepCnt'],
+    ['paylogSearch','paylogTbl','paylogCnt'],
+    ['attRepSearch','attRepTbl','attRepCnt'],
   ];
-  pairs.forEach(([s,t,c]) => {
+  maps.forEach(([s,t,c]) => {
     if(document.getElementById(t)) filterTable(s,t,c);
   });
 });
