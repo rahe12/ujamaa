@@ -337,6 +337,7 @@ $nav_items = [
     'staff'     => ['icon'=>'◍','label'=>'Staff'],
     'payroll'   => ['icon'=>'▣','label'=>'Payroll'],
     'expenses'  => ['icon'=>'◐','label'=>'Expenses'],
+    'uniforms'  => ['icon'=>'▤','label'=>'Uniforms'],
     'reports'   => ['icon'=>'◧','label'=>'Reports'],
 ];
 ?>
