@@ -109,6 +109,37 @@ CREATE TABLE IF NOT EXISTS expenses(
 ALTER TABLE expenses ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id);
 ALTER TABLE expenses DROP COLUMN IF EXISTS branch;
 UPDATE expenses SET zone_id=(SELECT id FROM academy_zones WHERE name='Gisenyi' LIMIT 1) WHERE zone_id IS NULL;
+
+CREATE TABLE IF NOT EXISTS athlete_uniforms(
+ id SERIAL PRIMARY KEY,
+ member_id INT REFERENCES members(id) ON DELETE CASCADE,
+ jersey_number INT NOT NULL,
+ jersey_category VARCHAR(60) NOT NULL,
+ jersey_size VARCHAR(20) NOT NULL,
+ jersey_chest NUMERIC(6,2),
+ jersey_length NUMERIC(6,2),
+ shorts_category VARCHAR(60) NOT NULL,
+ shorts_size VARCHAR(20) NOT NULL,
+ shorts_waist NUMERIC(6,2),
+ shorts_inseam NUMERIC(6,2),
+ quantity INT DEFAULT 1,
+ issued_date DATE DEFAULT CURRENT_DATE,
+ note TEXT,
+ created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(jersey_number)
+);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_number INT;
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_category VARCHAR(60);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_size VARCHAR(20);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_chest NUMERIC(6,2);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_length NUMERIC(6,2);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS shorts_category VARCHAR(60);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS shorts_size VARCHAR(20);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS shorts_waist NUMERIC(6,2);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS shorts_inseam NUMERIC(6,2);
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS quantity INT DEFAULT 1;
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS issued_date DATE DEFAULT CURRENT_DATE;
+ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS note TEXT;
 ");
 }
 schema($pdo);
@@ -195,6 +226,37 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         ->execute([$_POST['staff_id'],$_POST['period'],$_POST['base_salary'],$_POST['bonus'],$_POST['deductions'],$net,$_POST['amount_paid'],$status,$_POST['note']?:null]);
         go('payroll','Payroll saved');
     }
+
+    if($a==='save_uniform'){
+        $id=$_POST['id']??'';
+        $member_id=(int)($_POST['member_id']??0);
+        $jersey_number=(int)($_POST['jersey_number']??0);
+        if($member_id<=0 || $jersey_number<=0) go('uniforms','Please select athlete and jersey number');
+        $data=[
+            $member_id,$jersey_number,
+            $_POST['jersey_category']??'Adult Unisex V-Neck',$_POST['jersey_size']??'',$_POST['jersey_chest']?:null,$_POST['jersey_length']?:null,
+            $_POST['shorts_category']??'Adult Unisex Shorts',$_POST['shorts_size']??'',$_POST['shorts_waist']?:null,$_POST['shorts_inseam']?:null,
+            $_POST['quantity']?:1,$_POST['issued_date']?:date('Y-m-d'),$_POST['note']?:null
+        ];
+        try{
+            if($id){
+                $stmt=$pdo->prepare("UPDATE athlete_uniforms SET member_id=?,jersey_number=?,jersey_category=?,jersey_size=?,jersey_chest=?,jersey_length=?,shorts_category=?,shorts_size=?,shorts_waist=?,shorts_inseam=?,quantity=?,issued_date=?,note=? WHERE id=?");
+                $stmt->execute([...$data,$id]);
+                go('uniforms','Uniform updated');
+            }else{
+                $stmt=$pdo->prepare("INSERT INTO athlete_uniforms(member_id,jersey_number,jersey_category,jersey_size,jersey_chest,jersey_length,shorts_category,shorts_size,shorts_waist,shorts_inseam,quantity,issued_date,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+                $stmt->execute($data);
+                go('uniforms','Uniform saved');
+            }
+        }catch(PDOException $e){
+            if(strpos($e->getMessage(),'unique')!==false) go('uniforms','This jersey number is already assigned. Use another number.');
+            throw $e;
+        }
+    }
+    if($a==='delete_uniform'){
+        $pdo->prepare("DELETE FROM athlete_uniforms WHERE id=?")->execute([$_POST['id']]);
+        go('uniforms','Uniform record deleted');
+    }
     if($a==='expense'){
         $pdo->prepare("INSERT INTO expenses(expense_date,category,description,amount,paid_to,approved_by,zone_id) VALUES(?,?,?,?,?,?,?)")
             ->execute([$_POST['expense_date'],$_POST['category'],$_POST['description'],$_POST['amount'],$_POST['paid_to'],$_POST['approved_by'],$_POST['zone_id']?:default_zone($pdo)]);
@@ -203,10 +265,23 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
 }
 
 $z=zones($pdo);$m=members($pdo);$am=active_members($pdo);$s=sessions($pdo);$st=staff($pdo);$p=period();$v=view();$msg=$_GET['msg']??'';
-$edit_member=null;$edit_staff=null;$edit_session=null;
+$edit_member=null;$edit_staff=null;$edit_session=null;$edit_uniform=null;
 if(isset($_GET['edit_member'])){$q=$pdo->prepare("SELECT * FROM members WHERE id=?");$q->execute([$_GET['edit_member']]);$edit_member=$q->fetch();}
 if(isset($_GET['edit_staff'])){$q=$pdo->prepare("SELECT * FROM staff WHERE id=?");$q->execute([$_GET['edit_staff']]);$edit_staff=$q->fetch();}
 if(isset($_GET['edit_session'])){$q=$pdo->prepare("SELECT * FROM sessions WHERE id=?");$q->execute([$_GET['edit_session']]);$edit_session=$q->fetch();}
+
+
+if(($_GET['export']??'')==='uniforms'){
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="uniform_report_'.date('Ymd_His').'.csv"');
+    $out=fopen('php://output','w');
+    fputcsv($out,['Jersey Number','Athlete','Zone','Jersey Category','Jersey Size','Chest','Length','Shorts Category','Shorts Size','Waist','Inseam','Quantity','Issued Date','Note']);
+    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC,m.full_name ASC")->fetchAll();
+    foreach($rows as $r){
+        fputcsv($out,[$r['jersey_number'],$r['full_name'],$r['zone_name'],$r['jersey_category'],$r['jersey_size'],$r['jersey_chest'],$r['jersey_length'],$r['shorts_category'],$r['shorts_size'],$r['shorts_waist'],$r['shorts_inseam'],$r['quantity'],$r['issued_date'],$r['note']]);
+    }
+    fclose($out);exit;
+}
 
 $stats=$pdo->query("
 SELECT
@@ -1957,6 +2032,83 @@ if($v==='expenses'): ?>
   </div>
 </div>
 
+<?php endif; ?>
+
+
+<?php /* ════════════════════════════════════════════════════
+   UNIFORMS
+════════════════════════════════════════════════════ */
+if($v==='uniforms'):
+$uniforms=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC,m.full_name ASC")->fetchAll();
+$totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
+?>
+<div class="page-header">
+  <div>
+    <div class="page-title"><?= $edit_uniform ? 'Edit <em>Uniform</em>' : 'Athlete <em>Uniforms</em>' ?></div>
+    <div class="page-sub">Jersey numbers · Jersey sizes · Shorts sizes · Uniform report</div>
+  </div>
+  <a class="btn btn-ghost" href="?view=uniforms&period=<?= h($p) ?>&export=uniforms">Export CSV</a>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card" data-color="lime"><div class="stat-icon">▤</div><div class="stat-label">Uniform Records</div><div class="stat-value"><?= count($uniforms) ?></div></div>
+  <div class="stat-card" data-color="blue"><div class="stat-icon">#</div><div class="stat-label">Total Kits Qty</div><div class="stat-value"><?= $totalQty ?></div></div>
+  <div class="stat-card" data-color="amber"><div class="stat-icon">👕</div><div class="stat-label">Active Athletes</div><div class="stat-value"><?= count($am) ?></div></div>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_uniform ? 'Edit Uniform Data' : 'Insert Uniform Data' ?></div></div>
+  <form method="POST">
+    <input type="hidden" name="action" value="save_uniform">
+    <input type="hidden" name="id" value="<?= h($edit_uniform['id']??'') ?>">
+    <div class="form-grid">
+      <div class="form-group"><label>Athlete *</label><select name="member_id" required><option value="">Select athlete</option><?php foreach($am as $x): ?><option value="<?= $x['id'] ?>" <?= (($edit_uniform['member_id']??'')==$x['id'])?'selected':'' ?>><?= h($x['full_name']) ?> — <?= h($x['zone_name']) ?></option><?php endforeach; ?></select></div>
+      <div class="form-group"><label>Jersey Number *</label><input type="number" min="0" name="jersey_number" required value="<?= h($edit_uniform['jersey_number']??'') ?>" placeholder="e.g. 23"></div>
+      <div class="form-group"><label>Quantity</label><input type="number" min="1" name="quantity" value="<?= h($edit_uniform['quantity']??1) ?>"></div>
+      <div class="form-group"><label>Jersey Category *</label><select name="jersey_category" required><?php $jc=$edit_uniform['jersey_category']??''; foreach(['Adult Unisex V-Neck','Youth V-Neck','Women\'s Racerback','Girls Jersey','Reversible Adult','Reversible Women\'s','Reversible Youth'] as $opt): ?><option <?= $jc===$opt?'selected':'' ?>><?= h($opt) ?></option><?php endforeach; ?></select></div>
+      <div class="form-group"><label>Jersey Size *</label><input name="jersey_size" required value="<?= h($edit_uniform['jersey_size']??'') ?>" placeholder="ML / YM / WXL"></div>
+      <div class="form-group"><label>Jersey Chest</label><input type="number" step="0.01" name="jersey_chest" value="<?= h($edit_uniform['jersey_chest']??'') ?>" placeholder="23"></div>
+      <div class="form-group"><label>Jersey Length</label><input type="number" step="0.01" name="jersey_length" value="<?= h($edit_uniform['jersey_length']??'') ?>" placeholder="29"></div>
+      <div class="form-group"><label>Shorts Category *</label><select name="shorts_category" required><?php $sc=$edit_uniform['shorts_category']??''; foreach(['Adult Unisex Shorts','Women\'s Shorts','Youth Shorts'] as $opt): ?><option <?= $sc===$opt?'selected':'' ?>><?= h($opt) ?></option><?php endforeach; ?></select></div>
+      <div class="form-group"><label>Shorts Size *</label><input name="shorts_size" required value="<?= h($edit_uniform['shorts_size']??'') ?>" placeholder="ML / YM / WXL"></div>
+      <div class="form-group"><label>Shorts Waist</label><input type="number" step="0.01" name="shorts_waist" value="<?= h($edit_uniform['shorts_waist']??'') ?>" placeholder="15.5"></div>
+      <div class="form-group"><label>Shorts Inseam</label><input type="number" step="0.01" name="shorts_inseam" value="<?= h($edit_uniform['shorts_inseam']??'') ?>" placeholder="10.75"></div>
+      <div class="form-group"><label>Issued Date</label><input type="date" name="issued_date" value="<?= h($edit_uniform['issued_date']??date('Y-m-d')) ?>"></div>
+      <div class="form-group"><label>Note</label><input name="note" value="<?= h($edit_uniform['note']??'') ?>" placeholder="Optional"></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-primary" type="submit">💾 <?= $edit_uniform ? 'Update Uniform' : 'Save Uniform' ?></button>
+      <?php if($edit_uniform): ?><a class="btn btn-ghost" href="?view=uniforms&period=<?= h($p) ?>">Cancel</a><?php endif; ?>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Uniform Report</div></div>
+  <div class="toolbar"><div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="uniformSearch" placeholder="Search athlete, zone, jersey number, size…" oninput="filterTable('uniformSearch','uniformTbl','uniformCnt')"></div></div>
+  <div class="result-count" id="uniformCnt"></div>
+  <div class="table-wrap">
+  <table id="uniformTbl">
+    <thead><tr><th>No.</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Category</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Actions</th></tr></thead>
+    <tbody>
+    <?php if(!$uniforms): ?><tr><td colspan="14" class="no-data">No uniform data inserted yet.</td></tr><?php endif; ?>
+    <?php foreach($uniforms as $u): ?>
+      <tr>
+        <td><strong style="font-family:var(--font-display);color:var(--lime)"><?= h($u['jersey_number']) ?></strong></td>
+        <td><strong><?= h($u['full_name']) ?></strong></td>
+        <td><span class="badge b-zone"><?= h($u['zone_name']) ?></span></td>
+        <td><?= h($u['jersey_category']) ?></td><td><?= h($u['jersey_size']) ?></td><td><?= h($u['jersey_chest']) ?></td><td><?= h($u['jersey_length']) ?></td>
+        <td><?= h($u['shorts_category']) ?></td><td><?= h($u['shorts_size']) ?></td><td><?= h($u['shorts_waist']) ?></td><td><?= h($u['shorts_inseam']) ?></td>
+        <td><?= h($u['quantity']) ?></td><td style="font-family:var(--font-mono);color:var(--text2)"><?= h($u['issued_date']) ?></td>
+        <td><div class="actions-cell"><a class="btn btn-ghost btn-sm" href="?view=uniforms&period=<?= h($p) ?>&edit_uniform=<?= $u['id'] ?>">Edit</a><form method="POST" style="display:inline" onsubmit="return confirm('Delete this uniform record?')"><input type="hidden" name="action" value="delete_uniform"><input type="hidden" name="id" value="<?= $u['id'] ?>"><button class="btn btn-danger btn-sm" type="submit">Delete</button></form></div></td>
+      </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
 <?php endif; ?>
 
 <?php /* ════════════════════════════════════════════════════
