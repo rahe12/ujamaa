@@ -269,9 +269,10 @@ $edit_member=null;$edit_staff=null;$edit_session=null;$edit_uniform=null;
 if(isset($_GET['edit_member'])){$q=$pdo->prepare("SELECT * FROM members WHERE id=?");$q->execute([$_GET['edit_member']]);$edit_member=$q->fetch();}
 if(isset($_GET['edit_staff'])){$q=$pdo->prepare("SELECT * FROM staff WHERE id=?");$q->execute([$_GET['edit_staff']]);$edit_staff=$q->fetch();}
 if(isset($_GET['edit_session'])){$q=$pdo->prepare("SELECT * FROM sessions WHERE id=?");$q->execute([$_GET['edit_session']]);$edit_session=$q->fetch();}
+if(isset($_GET['edit_uniform'])){$q=$pdo->prepare("SELECT * FROM athlete_uniforms WHERE id=?");$q->execute([$_GET['edit_uniform']]);$edit_uniform=$q->fetch();}
 
 
-if(($_GET['export']??'')==='uniforms'){
+if(($_GET['export']??'')==='uniform_excel' || ($_GET['export']??'')==='uniforms'){
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="uniform_report_'.date('Ymd_His').'.csv"');
     $out=fopen('php://output','w');
@@ -282,6 +283,41 @@ if(($_GET['export']??'')==='uniforms'){
     }
     fclose($out);exit;
 }
+
+if(($_GET['export']??'')==='uniform_pdf'){
+    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC,m.full_name ASC")->fetchAll();
+    $totalQty=0; foreach($rows as $r){ $totalQty += (int)$r['quantity']; }
+    ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Uniform Report</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font-family:Arial,sans-serif;color:#111;margin:0;padding:28px;background:#fff}.top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #111;padding-bottom:14px;margin-bottom:18px}.brand h1{margin:0;font-size:26px}.brand p{margin:5px 0 0;color:#555;font-size:12px}.meta{text-align:right;font-size:12px;color:#555}.stats{display:flex;gap:10px;margin:16px 0 20px}.stat{border:1px solid #ddd;border-radius:10px;padding:10px 14px;min-width:130px}.stat b{font-size:20px;display:block}.stat span{font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.08em}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ccc;padding:7px;text-align:left;vertical-align:top}th{background:#111;color:#fff}.actions{margin-bottom:18px}.btn{background:#111;color:#fff;border:0;border-radius:8px;padding:10px 14px;cursor:pointer}.footer{margin-top:22px;font-size:11px;color:#777}@media print{.actions{display:none}body{padding:0}.top{margin-top:0}th{background:#111!important;color:#fff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+<div class="actions"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
+<div class="top">
+  <div class="brand"><h1>Uniform Report</h1><p>Academy AMS · Athlete jersey and kit assignment</p></div>
+  <div class="meta">Generated: <?= date('Y-m-d H:i') ?><br>Total Records: <?= count($rows) ?><br>Total Quantity: <?= $totalQty ?></div>
+</div>
+<div class="stats"><div class="stat"><b><?= count($rows) ?></b><span>Uniform Records</span></div><div class="stat"><b><?= $totalQty ?></b><span>Total Kit Quantity</span></div></div>
+<table>
+<thead><tr><th>#</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Note</th></tr></thead>
+<tbody>
+<?php if(empty($rows)): ?><tr><td colspan="13">No uniform records found.</td></tr><?php endif; ?>
+<?php foreach($rows as $r): ?>
+<tr><td><?= h($r['jersey_number']) ?></td><td><?= h($r['full_name']) ?></td><td><?= h($r['zone_name']) ?></td><td><?= h($r['jersey_category']) ?></td><td><?= h($r['jersey_size']) ?></td><td><?= h($r['jersey_chest']) ?></td><td><?= h($r['jersey_length']) ?></td><td><?= h($r['shorts_size']) ?></td><td><?= h($r['shorts_waist']) ?></td><td><?= h($r['shorts_inseam']) ?></td><td><?= h($r['quantity']) ?></td><td><?= h($r['issued_date']) ?></td><td><?= h($r['note']) ?></td></tr>
+<?php endforeach; ?>
+</tbody>
+</table>
+<div class="footer">Prepared by Academy AMS.</div>
+</body>
+</html>
+<?php exit; }
 
 $stats=$pdo->query("
 SELECT
@@ -2047,7 +2083,7 @@ $totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
     <div class="page-title"><?= $edit_uniform ? 'Edit <em>Uniform</em>' : 'Athlete <em>Uniforms</em>' ?></div>
     <div class="page-sub">Jersey numbers · Jersey sizes · Shorts sizes · Uniform report</div>
   </div>
-  <a class="btn btn-ghost" href="?view=uniforms&period=<?= h($p) ?>&export=uniforms">Export CSV</a>
+  <div style="display:flex;gap:10px;flex-wrap:wrap"><a class="btn btn-ghost" href="?view=uniforms&period=<?= h($p) ?>&export=uniform_excel">Excel Export</a><a class="btn btn-primary" href="?view=uniforms&period=<?= h($p) ?>&export=uniform_pdf" target="_blank">PDF Export</a></div>
 </div>
 
 <div class="stat-grid">
