@@ -3,6 +3,9 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
+/* ════════════════════════════════════════════════════
+   DATABASE CONNECTION
+════════════════════════════════════════════════════ */
 function db(){
     $url = getenv("DATABASE_URL");
     if(!$url) die("DATABASE_URL is missing.");
@@ -15,6 +18,9 @@ function db(){
 }
 $pdo=db();
 
+/* ════════════════════════════════════════════════════
+   HELPERS
+════════════════════════════════════════════════════ */
 function h($v){return htmlspecialchars((string)$v,ENT_QUOTES,'UTF-8');}
 function money($v){return number_format((float)$v,0)." RWF";}
 function period(){return preg_match('/^\d{4}-\d{2}$/',$_GET['period']??'')?$_GET['period']:date('Y-m');}
@@ -28,12 +34,15 @@ function bill_status($expected,$paid){
     if($paid<$expected)return "PARTIAL";
     return "PAID";
 }
-function overdue($due,$status){
+function overdue_days($due,$status){
     if(in_array($status,['PAID','NO BILL']))return 0;
     $today=new DateTime(date('Y-m-d'));$d=new DateTime($due);
     return $today>$d?$d->diff($today)->days:0;
 }
 
+/* ════════════════════════════════════════════════════
+   SCHEMA (idempotent)
+════════════════════════════════════════════════════ */
 function schema($pdo){
 $pdo->exec("
 CREATE TABLE IF NOT EXISTS academy_zones(
@@ -55,12 +64,6 @@ ALTER TABLE members ADD COLUMN IF NOT EXISTS guardian_phone VARCHAR(50);
 ALTER TABLE members ADD COLUMN IF NOT EXISTS position VARCHAR(50);
 ALTER TABLE members ADD COLUMN IF NOT EXISTS school_name VARCHAR(255);
 ALTER TABLE members ADD COLUMN IF NOT EXISTS notes TEXT;
-ALTER TABLE members DROP COLUMN IF EXISTS province;
-ALTER TABLE members DROP COLUMN IF EXISTS district;
-ALTER TABLE members DROP COLUMN IF EXISTS sector;
-ALTER TABLE members DROP COLUMN IF EXISTS cell;
-ALTER TABLE members DROP COLUMN IF EXISTS village;
-ALTER TABLE members DROP COLUMN IF EXISTS branch;
 UPDATE members SET zone_id=(SELECT id FROM academy_zones WHERE name='Gisenyi' LIMIT 1) WHERE zone_id IS NULL;
 CREATE TABLE IF NOT EXISTS sessions(
  id SERIAL PRIMARY KEY,name VARCHAR(255) NOT NULL,session_date DATE NOT NULL DEFAULT CURRENT_DATE,
@@ -68,7 +71,6 @@ CREATE TABLE IF NOT EXISTS sessions(
 );
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_date DATE;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id);
-UPDATE sessions SET session_date = date WHERE session_date IS NULL AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='sessions' AND column_name='date');
 UPDATE sessions SET zone_id=(SELECT id FROM academy_zones WHERE name='Gisenyi' LIMIT 1) WHERE zone_id IS NULL;
 CREATE TABLE IF NOT EXISTS attendance(
  id SERIAL PRIMARY KEY,session_id INT REFERENCES sessions(id) ON DELETE CASCADE,
@@ -84,33 +86,35 @@ CREATE TABLE IF NOT EXISTS monthly_bills(
 );
 CREATE TABLE IF NOT EXISTS payment_logs(
  id SERIAL PRIMARY KEY,member_id INT REFERENCES members(id) ON DELETE CASCADE,
- amount_paid NUMERIC(12,2) NOT NULL,period CHAR(7) NOT NULL,note TEXT,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+ amount_paid NUMERIC(12,2) NOT NULL,period CHAR(7),note TEXT,
+ payment_date DATE DEFAULT CURRENT_DATE,
+ created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS period CHAR(7);
+ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS payment_date DATE DEFAULT CURRENT_DATE;
 CREATE TABLE IF NOT EXISTS staff(
  id SERIAL PRIMARY KEY,full_name VARCHAR(255) NOT NULL,phone VARCHAR(50),role VARCHAR(50) NOT NULL,
  zone_id INT REFERENCES academy_zones(id),monthly_salary NUMERIC(12,2) DEFAULT 0,
  is_active BOOLEAN DEFAULT TRUE,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE staff ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id);
-ALTER TABLE staff DROP COLUMN IF EXISTS branch;
 UPDATE staff SET zone_id=(SELECT id FROM academy_zones WHERE name='Gisenyi' LIMIT 1) WHERE zone_id IS NULL;
 CREATE TABLE IF NOT EXISTS coach_payroll(
  id SERIAL PRIMARY KEY,staff_id INT REFERENCES staff(id) ON DELETE CASCADE,period CHAR(7) NOT NULL,
  base_salary NUMERIC(12,2) DEFAULT 0,bonus NUMERIC(12,2) DEFAULT 0,deductions NUMERIC(12,2) DEFAULT 0,
- net_salary NUMERIC(12,2) DEFAULT 0,amount_paid NUMERIC(12,2) DEFAULT 0,status VARCHAR(30) DEFAULT 'UNPAID',
+ net_salary NUMERIC(12,2) DEFAULT 0,amount_paid NUMERIC(12,2) DEFAULT 0,
+ payment_status VARCHAR(30) DEFAULT 'UNPAID',
  paid_at TIMESTAMP,note TEXT,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,UNIQUE(staff_id,period)
 );
 ALTER TABLE coach_payroll ADD COLUMN IF NOT EXISTS net_salary NUMERIC(12,2) DEFAULT 0;
+ALTER TABLE coach_payroll ADD COLUMN IF NOT EXISTS payment_status VARCHAR(30) DEFAULT 'UNPAID';
 CREATE TABLE IF NOT EXISTS expenses(
  id SERIAL PRIMARY KEY,expense_date DATE DEFAULT CURRENT_DATE,category VARCHAR(100),description TEXT NOT NULL,
  amount NUMERIC(12,2) NOT NULL,paid_to VARCHAR(255),approved_by VARCHAR(255),
  zone_id INT REFERENCES academy_zones(id),created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE expenses ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id);
-ALTER TABLE expenses DROP COLUMN IF EXISTS branch;
 UPDATE expenses SET zone_id=(SELECT id FROM academy_zones WHERE name='Gisenyi' LIMIT 1) WHERE zone_id IS NULL;
-
 CREATE TABLE IF NOT EXISTS athlete_uniforms(
  id SERIAL PRIMARY KEY,
  member_id INT REFERENCES members(id) ON DELETE CASCADE,
@@ -129,24 +133,15 @@ CREATE TABLE IF NOT EXISTS athlete_uniforms(
  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
  UNIQUE(jersey_number)
 );
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_number INT;
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_category VARCHAR(60);
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_size VARCHAR(20);
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_chest NUMERIC(6,2);
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS jersey_length NUMERIC(6,2);
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS shorts_category VARCHAR(60);
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS shorts_size VARCHAR(20);
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS shorts_waist NUMERIC(6,2);
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS shorts_inseam NUMERIC(6,2);
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS quantity INT DEFAULT 1;
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS issued_date DATE DEFAULT CURRENT_DATE;
-ALTER TABLE athlete_uniforms ADD COLUMN IF NOT EXISTS note TEXT;
 ");
 }
 schema($pdo);
 
+/* ════════════════════════════════════════════════════
+   DATA HELPERS
+════════════════════════════════════════════════════ */
 function zones($pdo){return $pdo->query("SELECT * FROM academy_zones ORDER BY id")->fetchAll();}
-function default_zone($pdo){return $pdo->query("SELECT id FROM academy_zones WHERE is_default=TRUE LIMIT 1")->fetchColumn();}
+function default_zone($pdo){$r=$pdo->query("SELECT id FROM academy_zones WHERE is_default=TRUE LIMIT 1")->fetchColumn();return $r?$r:1;}
 function members($pdo){
     return $pdo->query("SELECT m.*,z.name zone_name FROM members m LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY z.id,m.full_name")->fetchAll();
 }
@@ -157,7 +152,8 @@ function staff($pdo){
     return $pdo->query("SELECT s.*,z.name zone_name FROM staff s LEFT JOIN academy_zones z ON z.id=s.zone_id ORDER BY z.id,s.full_name")->fetchAll();
 }
 function sessions($pdo){
-    return $pdo->query("SELECT s.*,z.name zone_name FROM sessions s LEFT JOIN academy_zones z ON z.id=s.zone_id ORDER BY s.session_date DESC,s.id DESC")->fetchAll();
+    /* handle both 'session_date' and legacy 'date' columns */
+    return $pdo->query("SELECT s.*,COALESCE(s.session_date,s.date) AS session_date,z.name zone_name FROM sessions s LEFT JOIN academy_zones z ON z.id=s.zone_id ORDER BY COALESCE(s.session_date,s.date) DESC,s.id DESC")->fetchAll();
 }
 function ensure_bill($pdo,$member_id,$period){
     $m=$pdo->prepare("SELECT * FROM members WHERE id=?");$m->execute([$member_id]);$m=$m->fetch();
@@ -166,157 +162,160 @@ function ensure_bill($pdo,$member_id,$period){
     $stmt=$pdo->prepare("INSERT INTO monthly_bills(member_id,period,expected_amount,paid_amount,due_date) VALUES(?,?,?,?,?) ON CONFLICT(member_id,period) DO NOTHING");
     $stmt->execute([$member_id,$period,$m['monthly_fee']??0,0,$due]);
 }
-function billing_rows($pdo,$period){
-    foreach(active_members($pdo) as $m) ensure_bill($pdo,$m['id'],$period);
+
+/* Athletes who attended sessions in a given period */
+function athletes_with_attendance($pdo, $period){
     $stmt=$pdo->prepare("
-    SELECT m.full_name,m.phone,z.name zone_name,b.*,GREATEST(b.expected_amount-b.paid_amount,0) remaining
-    FROM monthly_bills b JOIN members m ON m.id=b.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id
-    WHERE b.period=? ORDER BY z.id,m.full_name");
-    $stmt->execute([$period]);
-    return $stmt->fetchAll();
-}
-
-// NEW: Get athletes who attended sessions for payment list
-function athletes_with_attendance($pdo, $period) {
-    $stmt = $pdo->prepare("
-        SELECT DISTINCT 
+        SELECT DISTINCT
             m.id, m.full_name, m.phone, m.guardian_name,
-            z.name as zone_name,
-            COALESCE(b.expected_amount, 0) as expected_amount, 
-            COALESCE(b.paid_amount, 0) as paid_amount,
-            GREATEST(COALESCE(b.expected_amount, 0) - COALESCE(b.paid_amount, 0), 0) as remaining,
-            COUNT(DISTINCT s.id) as sessions_attended
+            z.name AS zone_name,
+            COALESCE(b.expected_amount,0) AS expected_amount,
+            COALESCE(b.paid_amount,0) AS paid_amount,
+            GREATEST(COALESCE(b.expected_amount,0)-COALESCE(b.paid_amount,0),0) AS remaining,
+            COUNT(DISTINCT s.id) AS sessions_attended
         FROM members m
-        LEFT JOIN academy_zones z ON z.id = m.zone_id
-        LEFT JOIN monthly_bills b ON b.member_id = m.id AND b.period = ?
-        LEFT JOIN attendance a ON a.member_id = m.id
-        LEFT JOIN sessions s ON s.id = a.session_id 
-            AND TO_CHAR(s.session_date, 'YYYY-MM') = ?
-        WHERE m.is_active = TRUE
-            AND a.id IS NOT NULL
-        GROUP BY m.id, m.full_name, m.phone, m.guardian_name, z.name, b.expected_amount, b.paid_amount
-        HAVING COUNT(DISTINCT s.id) > 0
-        ORDER BY z.name, m.full_name
+        LEFT JOIN academy_zones z ON z.id=m.zone_id
+        LEFT JOIN monthly_bills b ON b.member_id=m.id AND b.period=?
+        LEFT JOIN attendance a ON a.member_id=m.id
+        LEFT JOIN sessions s ON s.id=a.session_id
+            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?
+        WHERE m.is_active=TRUE AND a.id IS NOT NULL
+        GROUP BY m.id,m.full_name,m.phone,m.guardian_name,z.name,b.expected_amount,b.paid_amount
+        HAVING COUNT(DISTINCT s.id)>0
+        ORDER BY z.name,m.full_name
     ");
-    $stmt->execute([$period, $period]);
+    $stmt->execute([$period,$period]);
     return $stmt->fetchAll();
 }
 
-// FIXED: Non-payers with attendance - removed ORDER BY inside STRING_AGG
-function non_payers_with_attendance($pdo, $period, $attendance_month = null) {
-    $att_month = $attendance_month ?: $period;
-    
-    $stmt = $pdo->prepare("
-        SELECT DISTINCT 
-            m.id, m.full_name, m.phone, m.guardian_name, m.guardian_phone,
-            z.name as zone_name,
-            COALESCE(b.expected_amount, 0) as expected_amount, 
-            COALESCE(b.paid_amount, 0) as paid_amount, 
-            GREATEST(COALESCE(b.expected_amount, 0) - COALESCE(b.paid_amount, 0), 0) as remaining,
-            COUNT(DISTINCT s.id) as sessions_attended,
-            STRING_AGG(DISTINCT s.name || ' (' || s.session_date || ')', ', ') as sessions_list
+/* Non-payers who still attend */
+function non_payers_with_attendance($pdo,$period,$attendance_month=null){
+    $att_month=$attendance_month?:$period;
+    $stmt=$pdo->prepare("
+        SELECT DISTINCT
+            m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,
+            z.name AS zone_name,
+            COALESCE(b.expected_amount,0) AS expected_amount,
+            COALESCE(b.paid_amount,0) AS paid_amount,
+            GREATEST(COALESCE(b.expected_amount,0)-COALESCE(b.paid_amount,0),0) AS remaining,
+            COUNT(DISTINCT s.id) AS sessions_attended,
+            STRING_AGG(DISTINCT s.name||' ('||COALESCE(s.session_date,s.date)||')',', ') AS sessions_list
         FROM members m
-        LEFT JOIN academy_zones z ON z.id = m.zone_id
-        LEFT JOIN monthly_bills b ON b.member_id = m.id AND b.period = ?
-        LEFT JOIN attendance a ON a.member_id = m.id
-        LEFT JOIN sessions s ON s.id = a.session_id 
-            AND TO_CHAR(s.session_date, 'YYYY-MM') = ?
-        WHERE m.is_active = TRUE
-            AND (b.paid_amount IS NULL OR b.paid_amount < COALESCE(b.expected_amount, 0))
+        LEFT JOIN academy_zones z ON z.id=m.zone_id
+        LEFT JOIN monthly_bills b ON b.member_id=m.id AND b.period=?
+        LEFT JOIN attendance a ON a.member_id=m.id
+        LEFT JOIN sessions s ON s.id=a.session_id
+            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?
+        WHERE m.is_active=TRUE
+            AND (b.paid_amount IS NULL OR b.paid_amount<COALESCE(b.expected_amount,0))
             AND a.id IS NOT NULL
-        GROUP BY m.id, m.full_name, m.phone, m.guardian_name, m.guardian_phone, z.name, b.expected_amount, b.paid_amount
-        HAVING COUNT(DISTINCT s.id) > 0
-        ORDER BY z.name, m.full_name
+        GROUP BY m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,z.name,b.expected_amount,b.paid_amount
+        HAVING COUNT(DISTINCT s.id)>0
+        ORDER BY z.name,m.full_name
     ");
-    $stmt->execute([$period, $att_month]);
+    $stmt->execute([$period,$att_month]);
     return $stmt->fetchAll();
 }
 
-function overdue_payments_report($pdo, $period) {
-    $stmt = $pdo->prepare("
-        SELECT m.*, z.name as zone_name, b.*,
-            GREATEST(b.expected_amount - b.paid_amount, 0) as remaining,
-            EXTRACT(DAY FROM (CURRENT_DATE - b.due_date)) as days_overdue
+/* FIX: EXTRACT(DAY FROM interval) — cast subtraction to integer via DATE_PART */
+function overdue_payments_report($pdo,$period){
+    $stmt=$pdo->prepare("
+        SELECT m.id AS member_id, m.full_name, m.phone, m.guardian_name,
+               z.name AS zone_name, b.*,
+               GREATEST(b.expected_amount-b.paid_amount,0) AS remaining,
+               GREATEST(DATE_PART('day',(CURRENT_DATE::timestamp - b.due_date::timestamp))::int, 0) AS days_overdue
         FROM monthly_bills b
-        JOIN members m ON m.id = b.member_id
-        LEFT JOIN academy_zones z ON z.id = m.zone_id
-        WHERE b.period = ?
-            AND b.paid_amount < b.expected_amount
-            AND b.due_date < CURRENT_DATE
-            AND m.is_active = TRUE
+        JOIN members m ON m.id=b.member_id
+        LEFT JOIN academy_zones z ON z.id=m.zone_id
+        WHERE b.period=?
+          AND b.paid_amount < b.expected_amount
+          AND b.due_date < CURRENT_DATE
+          AND m.is_active=TRUE
         ORDER BY b.due_date ASC
     ");
     $stmt->execute([$period]);
     return $stmt->fetchAll();
 }
 
-function attendance_summary($pdo, $member_id = null, $year_month = null) {
-    $sql = "
-        SELECT 
-            m.id, m.full_name, z.name as zone_name,
-            COUNT(DISTINCT s.id) as total_sessions,
-            SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) as present_count,
-            SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) as absent_count,
-            SUM(CASE WHEN a.status = 'late' THEN 1 ELSE 0 END) as late_count,
-            ROUND((SUM(CASE WHEN a.status IN ('present', 'late') THEN 1 ELSE 0 END)::decimal / NULLIF(COUNT(DISTINCT s.id), 0) * 100), 1) as attendance_rate
+function attendance_summary($pdo,$member_id=null,$year_month=null){
+    $sql="
+        SELECT m.id,m.full_name,z.name AS zone_name,
+            COUNT(DISTINCT s.id) AS total_sessions,
+            SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END) AS present_count,
+            SUM(CASE WHEN a.status='absent'  THEN 1 ELSE 0 END) AS absent_count,
+            SUM(CASE WHEN a.status='late'    THEN 1 ELSE 0 END) AS late_count,
+            ROUND(
+              (SUM(CASE WHEN a.status IN ('present','late') THEN 1 ELSE 0 END)::decimal
+               / NULLIF(COUNT(DISTINCT s.id),0)*100),1
+            ) AS attendance_rate
         FROM members m
-        LEFT JOIN academy_zones z ON z.id = m.zone_id
-        LEFT JOIN attendance a ON a.member_id = m.id
-        LEFT JOIN sessions s ON s.id = a.session_id
-        WHERE m.is_active = TRUE
+        LEFT JOIN academy_zones z ON z.id=m.zone_id
+        LEFT JOIN attendance a ON a.member_id=m.id
+        LEFT JOIN sessions s ON s.id=a.session_id
+        WHERE m.is_active=TRUE
     ";
-    
-    $params = [];
-    if ($member_id) {
-        $sql .= " AND m.id = ?";
-        $params[] = $member_id;
-    }
-    if ($year_month) {
-        $sql .= " AND TO_CHAR(s.session_date, 'YYYY-MM') = ?";
-        $params[] = $year_month;
-    }
-    
-    $sql .= " GROUP BY m.id, m.full_name, z.name ORDER BY m.full_name";
-    
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
+    $params=[];
+    if($member_id){$sql.=" AND m.id=?";$params[]=$member_id;}
+    if($year_month){$sql.=" AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?";$params[]=$year_month;}
+    $sql.=" GROUP BY m.id,m.full_name,z.name ORDER BY m.full_name";
+    $stmt=$pdo->prepare($sql);$stmt->execute($params);
     return $stmt->fetchAll();
 }
 
-function export_csv($data, $filename, $headers) {
+function export_csv($data,$filename,$headers){
     header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename="' . $filename . '_' . date('Ymd_His') . '.csv"');
-    $out = fopen('php://output', 'w');
-    fputcsv($out, $headers);
-    foreach ($data as $row) {
-        fputcsv($out, (array)$row);
-    }
+    header('Content-Disposition: attachment; filename="'.$filename.'_'.date('Ymd_His').'.csv"');
+    $out=fopen('php://output','w');
+    fputcsv($out,$headers);
+    foreach($data as $row){fputcsv($out,(array)$row);}
     fclose($out);
     exit;
 }
 
+/* ════════════════════════════════════════════════════
+   JERSEY CHECK AJAX
+════════════════════════════════════════════════════ */
+if(isset($_GET['check_jersey'])){
+    $jnum=(int)$_GET['check_jersey'];
+    $cid=(int)($_GET['current_id']??0);
+    $q=$pdo->prepare("SELECT id FROM athlete_uniforms WHERE jersey_number=?".($cid?" AND id!=?":''));
+    $cid?$q->execute([$jnum,$cid]):$q->execute([$jnum]);
+    header('Content-Type: application/json');
+    echo json_encode(['exists'=>(bool)$q->fetch()]);
+    exit;
+}
+
+/* ════════════════════════════════════════════════════
+   POST HANDLERS
+════════════════════════════════════════════════════ */
 if($_SERVER['REQUEST_METHOD']==='POST'){
     $a=$_POST['action']??'';
+
+    /* ── MEMBERS ── */
     if($a==='save_member'){
         $id=$_POST['id']??'';
         $data=[$_POST['full_name'],$_POST['phone']?:null,$_POST['gender']?:null,$_POST['date_of_birth']?:null,
             $_POST['zone_id']?:default_zone($pdo),$_POST['guardian_name']?:null,$_POST['guardian_phone']?:null,
-            $_POST['position']?:null,$_POST['school_name']?:null,$_POST['monthly_fee']?:0,$_POST['due_day']?:5,$_POST['notes']?:null];
+            $_POST['position']?:null,$_POST['school_name']?:null,(float)($_POST['monthly_fee']??0),(int)($_POST['due_day']??5),$_POST['notes']?:null];
         if($id){
-            $stmt=$pdo->prepare("UPDATE members SET full_name=?,phone=?,gender=?,date_of_birth=?,zone_id=?,guardian_name=?,guardian_phone=?,position=?,school_name=?,monthly_fee=?,due_day=?,notes=? WHERE id=?");
-            $stmt->execute([...$data,$id]);go('members','Athlete updated');
+            $pdo->prepare("UPDATE members SET full_name=?,phone=?,gender=?,date_of_birth=?,zone_id=?,guardian_name=?,guardian_phone=?,position=?,school_name=?,monthly_fee=?,due_day=?,notes=? WHERE id=?")->execute([...$data,$id]);
+            go('members','Athlete updated');
         }else{
-            $stmt=$pdo->prepare("INSERT INTO members(full_name,phone,gender,date_of_birth,zone_id,guardian_name,guardian_phone,position,school_name,monthly_fee,due_day,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(full_name) DO NOTHING");
-            $stmt->execute($data);go('members','Athlete added');
+            $pdo->prepare("INSERT INTO members(full_name,phone,gender,date_of_birth,zone_id,guardian_name,guardian_phone,position,school_name,monthly_fee,due_day,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(full_name) DO NOTHING")->execute($data);
+            go('members','Athlete added');
         }
     }
     if($a==='delete_member'){$pdo->prepare("UPDATE members SET is_active=FALSE WHERE id=?")->execute([$_POST['id']]);go('members','Athlete deactivated');}
+
+    /* ── SESSIONS ── */
     if($a==='save_session'){
         $id=$_POST['id']??'';
         if($id){$pdo->prepare("UPDATE sessions SET name=?,session_date=?,zone_id=? WHERE id=?")->execute([$_POST['name'],$_POST['session_date'],$_POST['zone_id'],$id]);go('attendance','Session updated');}
         else{$pdo->prepare("INSERT INTO sessions(name,session_date,zone_id) VALUES(?,?,?)")->execute([$_POST['name'],$_POST['session_date'],$_POST['zone_id']?:default_zone($pdo)]);go('attendance','Session created');}
     }
     if($a==='delete_session'){$pdo->prepare("DELETE FROM sessions WHERE id=?")->execute([$_POST['id']]);go('attendance','Session deleted');}
+
+    /* ── ATTENDANCE ── */
     if($a==='attendance'){
         $sid=$_POST['session_id'];$mid=$_POST['member_id'];$status=$_POST['status'];
         $check=$pdo->prepare("SELECT COUNT(*) FROM sessions s JOIN members m ON m.zone_id=s.zone_id WHERE s.id=? AND m.id=?");
@@ -326,206 +325,158 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $pdo->prepare("INSERT INTO attendance(session_id,member_id,status) SELECT s.id,m.id,'absent' FROM sessions s JOIN members m ON m.zone_id=s.zone_id WHERE s.id=? AND m.is_active=TRUE AND NOT EXISTS(SELECT 1 FROM attendance a WHERE a.session_id=s.id AND a.member_id=m.id)")->execute([$sid]);
         go('attendance','Attendance saved. Unmarked same-zone athletes became absent.');
     }
+
+    /* ── PAYMENT (new) ── */
     if($a==='payment'){
-        $mid=$_POST['member_id'];$amount=(float)$_POST['amount'];$per=$_POST['period'];
+        $mid=(int)$_POST['member_id'];$amount=(float)$_POST['amount'];$per=trim($_POST['period']);
+        if($mid<=0||$amount<=0) go('payments','Invalid payment data');
         ensure_bill($pdo,$mid,$per);
         $pdo->prepare("UPDATE monthly_bills SET paid_amount=paid_amount+?,paid_at=NOW(),updated_at=NOW(),note=? WHERE member_id=? AND period=?")->execute([$amount,$_POST['note']?:null,$mid,$per]);
-        $pdo->prepare("INSERT INTO payment_logs(member_id,amount_paid,period,note) VALUES(?,?,?,?)")->execute([$mid,$amount,$per,$_POST['note']?:null]);
+        $pdo->prepare("INSERT INTO payment_logs(member_id,amount_paid,period,note,payment_date) VALUES(?,?,?,?,CURRENT_DATE)")->execute([$mid,$amount,$per,$_POST['note']?:null]);
         go('payments','Payment recorded');
     }
+
+    /* ── PAYMENT EDIT ── */
+    if($a==='edit_payment'){
+        $bill_id=(int)$_POST['bill_id'];
+        $new_paid=(float)$_POST['paid_amount'];
+        $note=trim($_POST['note']??'');
+        if($bill_id<=0) go('payments','Invalid bill');
+        $pdo->prepare("UPDATE monthly_bills SET paid_amount=?,note=?,updated_at=NOW(),paid_at=CASE WHEN ?::numeric>0 THEN NOW() ELSE paid_at END WHERE id=?")->execute([$new_paid,$note,$new_paid,$bill_id]);
+        go('payments','Payment record updated');
+    }
+
+    /* ── PAYMENT DELETE ── */
+    if($a==='delete_payment'){
+        $bill_id=(int)$_POST['bill_id'];
+        if($bill_id<=0) go('payments','Invalid bill');
+        $pdo->prepare("UPDATE monthly_bills SET paid_amount=0,paid_at=NULL,note=NULL,updated_at=NOW() WHERE id=?")->execute([$bill_id]);
+        go('payments','Payment cleared');
+    }
+
+    /* ── STAFF ── */
     if($a==='save_staff'){
         $id=$_POST['id']??'';
-        if($id){$pdo->prepare("UPDATE staff SET full_name=?,phone=?,role=?,zone_id=?,monthly_salary=? WHERE id=?")->execute([$_POST['full_name'],$_POST['phone']?:null,$_POST['role'],$_POST['zone_id'],$_POST['monthly_salary']?:0,$id]);go('staff','Staff updated');}
-        else{$pdo->prepare("INSERT INTO staff(full_name,phone,role,zone_id,monthly_salary) VALUES(?,?,?,?,?)")->execute([$_POST['full_name'],$_POST['phone']?:null,$_POST['role'],$_POST['zone_id']?:default_zone($pdo),$_POST['monthly_salary']?:0]);go('staff','Staff added');}
+        if($id){$pdo->prepare("UPDATE staff SET full_name=?,phone=?,role=?,zone_id=?,monthly_salary=? WHERE id=?")->execute([$_POST['full_name'],$_POST['phone']?:null,$_POST['role'],$_POST['zone_id'],(float)($_POST['monthly_salary']??0),$id]);go('staff','Staff updated');}
+        else{$pdo->prepare("INSERT INTO staff(full_name,phone,role,zone_id,monthly_salary) VALUES(?,?,?,?,?)")->execute([$_POST['full_name'],$_POST['phone']?:null,$_POST['role'],$_POST['zone_id']?:default_zone($pdo),(float)($_POST['monthly_salary']??0)]);go('staff','Staff added');}
     }
     if($a==='delete_staff'){$pdo->prepare("UPDATE staff SET is_active=FALSE WHERE id=?")->execute([$_POST['id']]);go('staff','Staff deactivated');}
+
+    /* ── PAYROLL — FIX: use payment_status column ── */
     if($a==='payroll'){
-        $net=(float)$_POST['base_salary']+(float)$_POST['bonus']-(float)$_POST['deductions'];
-        $status=((float)$_POST['amount_paid']<=0)?'UNPAID':(((float)$_POST['amount_paid']<$net)?'PARTIAL':'PAID');
-        $pdo->prepare("INSERT INTO coach_payroll(staff_id,period,base_salary,bonus,deductions,net_salary,amount_paid,status,paid_at,note) VALUES(?,?,?,?,?,?,?,?,NOW(),?) ON CONFLICT(staff_id,period) DO UPDATE SET base_salary=EXCLUDED.base_salary,bonus=EXCLUDED.bonus,deductions=EXCLUDED.deductions,net_salary=EXCLUDED.net_salary,amount_paid=EXCLUDED.amount_paid,status=EXCLUDED.status,paid_at=NOW(),note=EXCLUDED.note")
-        ->execute([$_POST['staff_id'],$_POST['period'],$_POST['base_salary'],$_POST['bonus'],$_POST['deductions'],$net,$_POST['amount_paid'],$status,$_POST['note']?:null]);
+        $base=(float)$_POST['base_salary'];$bonus=(float)$_POST['bonus'];$ded=(float)$_POST['deductions'];
+        $net=$base+$bonus-$ded;
+        $paid=(float)$_POST['amount_paid'];
+        $status=($paid<=0)?'UNPAID':(($paid<$net)?'PARTIAL':'PAID');
+        $pdo->prepare("
+            INSERT INTO coach_payroll(staff_id,period,base_salary,bonus,deductions,net_salary,amount_paid,payment_status,paid_at,note)
+            VALUES(?,?,?,?,?,?,?,?,NOW(),?)
+            ON CONFLICT(staff_id,period) DO UPDATE SET
+              base_salary=EXCLUDED.base_salary,bonus=EXCLUDED.bonus,deductions=EXCLUDED.deductions,
+              net_salary=EXCLUDED.net_salary,amount_paid=EXCLUDED.amount_paid,
+              payment_status=EXCLUDED.payment_status,paid_at=NOW(),note=EXCLUDED.note
+        ")->execute([$_POST['staff_id'],$_POST['period'],$base,$bonus,$ded,$net,$paid,$status,$_POST['note']?:null]);
         go('payroll','Payroll saved');
     }
 
+    /* ── EXPENSE ── */
+    if($a==='expense'){
+        $pdo->prepare("INSERT INTO expenses(expense_date,category,description,amount,paid_to,approved_by,zone_id) VALUES(?,?,?,?,?,?,?)")
+            ->execute([$_POST['expense_date'],$_POST['category'],$_POST['description'],(float)$_POST['amount'],$_POST['paid_to'],$_POST['approved_by'],$_POST['zone_id']?:default_zone($pdo)]);
+        go('expenses','Expense saved');
+    }
+
+    /* ── UNIFORMS ── */
     if($a==='save_uniform'){
         $id=$_POST['id']??'';
         $member_id=(int)($_POST['member_id']??0);
         $jersey_number=(int)($_POST['jersey_number']??0);
-        if($member_id<=0 || $jersey_number<=0) go('uniforms','Please select athlete and jersey number');
-        
-        $check = $pdo->prepare("SELECT id FROM athlete_uniforms WHERE jersey_number = ? " . ($id ? "AND id != ?" : ""));
-        if($id) {
-            $check->execute([$jersey_number, $id]);
-        } else {
-            $check->execute([$jersey_number]);
-        }
-        if($check->fetch()) {
-            go('uniforms','Jersey number ' . $jersey_number . ' is already assigned to another athlete.');
-        }
-        
-        $data=[
-            $member_id,$jersey_number,
-            $_POST['jersey_category']??'Adult Unisex V-Neck',$_POST['jersey_size']??'',$_POST['jersey_chest']?:null,$_POST['jersey_length']?:null,
-            $_POST['shorts_category']??'Adult Unisex Shorts',$_POST['shorts_size']??'',$_POST['shorts_waist']?:null,$_POST['shorts_inseam']?:null,
-            $_POST['quantity']?:1,$_POST['issued_date']?:date('Y-m-d'),$_POST['note']?:null
-        ];
+        if($member_id<=0||$jersey_number<=0) go('uniforms','Please select athlete and provide jersey number');
+        $check=$pdo->prepare("SELECT id FROM athlete_uniforms WHERE jersey_number=?".($id?" AND id!=?":''));
+        $id?$check->execute([$jersey_number,$id]):$check->execute([$jersey_number]);
+        if($check->fetch()) go('uniforms','Jersey number '.$jersey_number.' is already assigned to another athlete.');
+        $data=[$member_id,$jersey_number,$_POST['jersey_category']??'Adult Unisex V-Neck',$_POST['jersey_size']??'',$_POST['jersey_chest']?:null,$_POST['jersey_length']?:null,$_POST['shorts_category']??'Adult Unisex Shorts',$_POST['shorts_size']??'',$_POST['shorts_waist']?:null,$_POST['shorts_inseam']?:null,(int)($_POST['quantity']??1),$_POST['issued_date']?:date('Y-m-d'),$_POST['note']?:null];
         try{
-            if($id){
-                $stmt=$pdo->prepare("UPDATE athlete_uniforms SET member_id=?,jersey_number=?,jersey_category=?,jersey_size=?,jersey_chest=?,jersey_length=?,shorts_category=?,shorts_size=?,shorts_waist=?,shorts_inseam=?,quantity=?,issued_date=?,note=? WHERE id=?");
-                $stmt->execute([...$data,$id]);
-                go('uniforms','Uniform updated');
-            }else{
-                $stmt=$pdo->prepare("INSERT INTO athlete_uniforms(member_id,jersey_number,jersey_category,jersey_size,jersey_chest,jersey_length,shorts_category,shorts_size,shorts_waist,shorts_inseam,quantity,issued_date,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
-                $stmt->execute($data);
-                go('uniforms','Uniform saved');
-            }
+            if($id){$pdo->prepare("UPDATE athlete_uniforms SET member_id=?,jersey_number=?,jersey_category=?,jersey_size=?,jersey_chest=?,jersey_length=?,shorts_category=?,shorts_size=?,shorts_waist=?,shorts_inseam=?,quantity=?,issued_date=?,note=? WHERE id=?")->execute([...$data,$id]);go('uniforms','Uniform updated');}
+            else{$pdo->prepare("INSERT INTO athlete_uniforms(member_id,jersey_number,jersey_category,jersey_size,jersey_chest,jersey_length,shorts_category,shorts_size,shorts_waist,shorts_inseam,quantity,issued_date,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")->execute($data);go('uniforms','Uniform saved');}
         }catch(PDOException $e){
-            if(strpos($e->getMessage(),'unique')!==false) go('uniforms','This jersey number is already assigned. Use another number.');
+            if(strpos($e->getMessage(),'unique')!==false) go('uniforms','Jersey number already assigned. Use another number.');
             throw $e;
         }
     }
-    if($a==='delete_uniform'){
-        $pdo->prepare("DELETE FROM athlete_uniforms WHERE id=?")->execute([$_POST['id']]);
-        go('uniforms','Uniform record deleted');
-    }
-    if($a==='expense'){
-        $pdo->prepare("INSERT INTO expenses(expense_date,category,description,amount,paid_to,approved_by,zone_id) VALUES(?,?,?,?,?,?,?)")
-            ->execute([$_POST['expense_date'],$_POST['category'],$_POST['description'],$_POST['amount'],$_POST['paid_to'],$_POST['approved_by'],$_POST['zone_id']?:default_zone($pdo)]);
-        go('expenses','Expense saved');
-    }
+    if($a==='delete_uniform'){$pdo->prepare("DELETE FROM athlete_uniforms WHERE id=?")->execute([$_POST['id']]);go('uniforms','Uniform record deleted');}
 }
 
-$z=zones($pdo);$m=members($pdo);$am=active_members($pdo);$s=sessions($pdo);$st=staff($pdo);$p=period();$v=view();$msg=$_GET['msg']??'';
-$edit_member=null;$edit_staff=null;$edit_session=null;$edit_uniform=null;
+/* ════════════════════════════════════════════════════
+   EXPORTS
+════════════════════════════════════════════════════ */
+$p=period();
+if(($export_type=$_GET['export']??'')){
+    switch($export_type){
+        case 'non_payers':
+            $non_payers=non_payers_with_attendance($pdo,$p,$_GET['att_month']??$p);
+            export_csv(array_map(fn($r)=>[$r['full_name'],$r['zone_name'],$r['phone'],$r['guardian_name'],$r['guardian_phone'],$r['expected_amount'],$r['paid_amount'],$r['remaining'],$r['sessions_attended'],$r['sessions_list']],$non_payers),'non_payers_attendance_report',['Athlete','Zone','Phone','Guardian','Guardian Phone','Expected','Paid','Remaining','Sessions Attended','Sessions List']);
+        case 'overdue':
+            $overdue=overdue_payments_report($pdo,$p);
+            export_csv(array_map(fn($r)=>[$r['full_name'],$r['zone_name'],$r['phone'],$r['guardian_name'],$r['expected_amount'],$r['paid_amount'],$r['remaining'],$r['due_date'],$r['days_overdue'],bill_status($r['expected_amount'],$r['paid_amount'])],$overdue),'overdue_payments_report',['Athlete','Zone','Phone','Guardian','Expected','Paid','Remaining','Due Date','Days Overdue','Status']);
+        case 'attendance_summary':
+            $att_summary=attendance_summary($pdo,null,$_GET['att_month']??$p);
+            export_csv(array_map(fn($r)=>[$r['full_name'],$r['zone_name'],$r['total_sessions'],$r['present_count'],$r['absent_count'],$r['late_count'],$r['attendance_rate']],$att_summary),'attendance_summary_report',['Athlete','Zone','Total Sessions','Present','Absent','Late','Attendance Rate %']);
+    }
+}
+if(($_GET['export']??'')==='uniform_excel'){
+    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
+    export_csv(array_map(fn($r)=>[$r['jersey_number'],$r['full_name'],$r['zone_name'],$r['jersey_category'],$r['jersey_size'],$r['jersey_chest'],$r['jersey_length'],$r['shorts_category'],$r['shorts_size'],$r['shorts_waist'],$r['shorts_inseam'],$r['quantity'],$r['issued_date'],$r['note']],$rows),'uniform_report',['Jersey #','Athlete','Zone','Jersey Category','Jersey Size','Chest','Length','Shorts Category','Shorts Size','Waist','Inseam','Qty','Issued Date','Note']);
+}
+if(($_GET['export']??'')==='uniform_pdf'){
+    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
+    $totalQty=0;foreach($rows as $r){$totalQty+=(int)$r['quantity'];}
+    ?><!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Uniform Report</title><style>body{font-family:Arial,sans-serif;color:#111;margin:0;padding:28px}.btn{background:#111;color:#fff;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;margin-bottom:18px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ccc;padding:7px;text-align:left}th{background:#111;color:#fff}@media print{.no-print{display:none}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body>
+    <div class="no-print"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
+    <h2>Uniform Report — <?=date('Y-m-d H:i')?></h2>
+    <p>Records: <?=count($rows)?> · Total Qty: <?=$totalQty?></p>
+    <table><thead><tr><th>#</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Note</th></tr></thead><tbody>
+    <?php if(empty($rows)): ?><tr><td colspan="13">No records.</td></tr><?php endif; ?>
+    <?php foreach($rows as $r): ?><tr><td><?=h($r['jersey_number'])?></td><td><?=h($r['full_name'])?></td><td><?=h($r['zone_name'])?></td><td><?=h($r['jersey_category'])?></td><td><?=h($r['jersey_size'])?></td><td><?=h($r['jersey_chest'])?></td><td><?=h($r['jersey_length'])?></td><td><?=h($r['shorts_size'])?></td><td><?=h($r['shorts_waist'])?></td><td><?=h($r['shorts_inseam'])?></td><td><?=h($r['quantity'])?></td><td><?=h($r['issued_date'])?></td><td><?=h($r['note'])?></td></tr><?php endforeach; ?>
+    </tbody></table></body></html><?php exit;
+}
+
+/* ════════════════════════════════════════════════════
+   PAGE DATA
+════════════════════════════════════════════════════ */
+$z=zones($pdo);$m=members($pdo);$am=active_members($pdo);$s=sessions($pdo);$st=staff($pdo);$v=view();$msg=$_GET['msg']??'';
+$edit_member=null;$edit_staff=null;$edit_session=null;$edit_uniform=null;$edit_bill=null;
 if(isset($_GET['edit_member'])){$q=$pdo->prepare("SELECT * FROM members WHERE id=?");$q->execute([$_GET['edit_member']]);$edit_member=$q->fetch();}
 if(isset($_GET['edit_staff'])){$q=$pdo->prepare("SELECT * FROM staff WHERE id=?");$q->execute([$_GET['edit_staff']]);$edit_staff=$q->fetch();}
 if(isset($_GET['edit_session'])){$q=$pdo->prepare("SELECT * FROM sessions WHERE id=?");$q->execute([$_GET['edit_session']]);$edit_session=$q->fetch();}
 if(isset($_GET['edit_uniform'])){$q=$pdo->prepare("SELECT * FROM athlete_uniforms WHERE id=?");$q->execute([$_GET['edit_uniform']]);$edit_uniform=$q->fetch();}
+if(isset($_GET['edit_bill'])){$q=$pdo->prepare("SELECT b.*,m.full_name FROM monthly_bills b JOIN members m ON m.id=b.member_id WHERE b.id=?");$q->execute([$_GET['edit_bill']]);$edit_bill=$q->fetch();}
 
-// Handle exports
-if(($export_type = $_GET['export'] ?? '')) {
-    switch($export_type) {
-        case 'non_payers':
-            $non_payers = non_payers_with_attendance($pdo, $p, $_GET['att_month'] ?? $p);
-            $headers = ['Athlete', 'Zone', 'Phone', 'Guardian', 'Guardian Phone', 'Expected', 'Paid', 'Remaining', 'Sessions Attended', 'Sessions List'];
-            $data = array_map(function($row) {
-                return [
-                    $row['full_name'], $row['zone_name'], $row['phone'], $row['guardian_name'], $row['guardian_phone'],
-                    $row['expected_amount'], $row['paid_amount'], $row['remaining'], $row['sessions_attended'], $row['sessions_list']
-                ];
-            }, $non_payers);
-            export_csv($data, 'non_payers_attendance_report', $headers);
-            break;
-        case 'overdue':
-            $overdue = overdue_payments_report($pdo, $p);
-            $headers = ['Athlete', 'Zone', 'Phone', 'Guardian', 'Expected', 'Paid', 'Remaining', 'Due Date', 'Days Overdue', 'Status'];
-            $data = array_map(function($row) {
-                $status = bill_status($row['expected_amount'], $row['paid_amount']);
-                return [
-                    $row['full_name'], $row['zone_name'], $row['phone'], $row['guardian_name'],
-                    $row['expected_amount'], $row['paid_amount'], $row['remaining'], $row['due_date'], $row['days_overdue'], $status
-                ];
-            }, $overdue);
-            export_csv($data, 'overdue_payments_report', $headers);
-            break;
-        case 'attendance_summary':
-            $att_summary = attendance_summary($pdo, null, $_GET['att_month'] ?? $p);
-            $headers = ['Athlete', 'Zone', 'Total Sessions', 'Present', 'Absent', 'Late', 'Attendance Rate %'];
-            $data = array_map(function($row) {
-                return [
-                    $row['full_name'], $row['zone_name'], $row['total_sessions'], $row['present_count'],
-                    $row['absent_count'], $row['late_count'], $row['attendance_rate']
-                ];
-            }, $att_summary);
-            export_csv($data, 'attendance_summary_report', $headers);
-            break;
-    }
-}
-
-if(($_GET['export']??'')==='uniform_excel'){
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename="uniform_report_'.date('Ymd_His').'.csv"');
-    $out=fopen('php://output','w');
-    fputcsv($out,['Jersey Number','Athlete','Zone','Jersey Category','Jersey Size','Chest','Length','Shorts Category','Shorts Size','Waist','Inseam','Quantity','Issued Date','Note']);
-    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC,m.full_name ASC")->fetchAll();
-    foreach($rows as $r){
-        fputcsv($out,[$r['jersey_number'],$r['full_name'],$r['zone_name'],$r['jersey_category'],$r['jersey_size'],$r['jersey_chest'],$r['jersey_length'],$r['shorts_category'],$r['shorts_size'],$r['shorts_waist'],$r['shorts_inseam'],$r['quantity'],$r['issued_date'],$r['note']]);
-    }
-    fclose($out);exit;
-}
-
-if(($_GET['export']??'')==='uniform_pdf'){
-    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC,m.full_name ASC")->fetchAll();
-    $totalQty=0; foreach($rows as $r){ $totalQty += (int)$r['quantity']; }
-    ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Uniform Report</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{font-family:Arial,sans-serif;color:#111;margin:0;padding:28px;background:#fff}.top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #111;padding-bottom:14px;margin-bottom:18px}.brand h1{margin:0;font-size:26px}.brand p{margin:5px 0 0;color:#555;font-size:12px}.meta{text-align:right;font-size:12px;color:#555}.stats{display:flex;gap:10px;margin:16px 0 20px}.stat{border:1px solid #ddd;border-radius:10px;padding:10px 14px;min-width:130px}.stat b{font-size:20px;display:block}.stat span{font-size:11px;color:#555;text-transform:uppercase;letter-spacing:.08em}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ccc;padding:7px;text-align:left;vertical-align:top}th{background:#111;color:#fff}.actions{margin-bottom:18px}.btn{background:#111;color:#fff;border:0;border-radius:8px;padding:10px 14px;cursor:pointer}.footer{margin-top:22px;font-size:11px;color:#777}@media print{.actions{display:none}body{padding:0}.top{margin-top:0}th{background:#111!important;color:#fff!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-</style>
-</head>
-<body>
-<div class="actions"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
-<div class="top">
-  <div class="brand"><h1>Uniform Report</h1><p>Academy AMS · Athlete jersey and kit assignment</p></div>
-  <div class="meta">Generated: <?= date('Y-m-d H:i') ?><br>Total Records: <?= count($rows) ?><br>Total Quantity: <?= $totalQty ?></div>
-</div>
-<div class="stats"><div class="stat"><b><?= count($rows) ?></b><span>Uniform Records</span></div><div class="stat"><b><?= $totalQty ?></b><span>Total Kit Quantity</span></div></div>
-<table>
-<thead>
-<tr><th>#</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Note</th></tr>
-</thead>
-<tbody>
-<?php if(empty($rows)): ?><tr><td colspan="13">No uniform records found.</td></tr><?php endif; ?>
-<?php foreach($rows as $r): ?>
-<tr>
-   <td><?= h($r['jersey_number']) ?></td>
-   <td><?= h($r['full_name']) ?></td>
-   <td><?= h($r['zone_name']) ?></td>
-   <td><?= h($r['jersey_category']) ?></td>
-   <td><?= h($r['jersey_size']) ?></td>
-   <td><?= h($r['jersey_chest']) ?></td>
-   <td><?= h($r['jersey_length']) ?></td>
-   <td><?= h($r['shorts_size']) ?></td>
-   <td><?= h($r['shorts_waist']) ?></td>
-   <td><?= h($r['shorts_inseam']) ?></td>
-   <td><?= h($r['quantity']) ?></td>
-   <td><?= h($r['issued_date']) ?></td>
-   <td><?= h($r['note']) ?></td>
-</tr>
-<?php endforeach; ?>
-</tbody>
-</table>
-<div class="footer">Prepared by Academy AMS.</div>
-</body>
-</html>
-<?php exit; }
-
+/* Safe stats — use prepared statement approach via subquery with param */
+$safe_p=$pdo->quote($p);
 $stats=$pdo->query("
 SELECT
 (SELECT COUNT(*) FROM members WHERE is_active=TRUE) athletes,
-(SELECT COUNT(*) FROM staff WHERE is_active=TRUE) staff,
-(SELECT COALESCE(SUM(paid_amount),0) FROM monthly_bills WHERE period='$p') revenue,
-(SELECT COALESCE(SUM(expected_amount-paid_amount),0) FROM monthly_bills WHERE period='$p') outstanding,
-(SELECT COALESCE(SUM(amount),0) FROM expenses WHERE TO_CHAR(expense_date,'YYYY-MM')='$p') expenses,
-(SELECT COALESCE(SUM(amount_paid),0) FROM coach_payroll WHERE period='$p') payroll
+(SELECT COUNT(*) FROM staff WHERE is_active=TRUE) staff_count,
+(SELECT COALESCE(SUM(paid_amount),0) FROM monthly_bills WHERE period=$safe_p) revenue,
+(SELECT COALESCE(SUM(GREATEST(expected_amount-paid_amount,0)),0) FROM monthly_bills WHERE period=$safe_p) outstanding,
+(SELECT COALESCE(SUM(amount),0) FROM expenses WHERE TO_CHAR(expense_date,'YYYY-MM')=$safe_p) expenses,
+(SELECT COALESCE(SUM(amount_paid),0) FROM coach_payroll WHERE period=$safe_p) payroll
 ")->fetch();
 
-$nav_items = [
-    'dashboard' => ['icon'=>'▲','label'=>'Dashboard'],
-    'members'   => ['icon'=>'◈','label'=>'Athletes'],
-    'attendance'=> ['icon'=>'◉','label'=>'Attendance'],
-    'payments'  => ['icon'=>'◆','label'=>'Billing'],
-    'staff'     => ['icon'=>'◍','label'=>'Staff'],
-    'payroll'   => ['icon'=>'▣','label'=>'Payroll'],
-    'expenses'  => ['icon'=>'◐','label'=>'Expenses'],
-    'uniforms'  => ['icon'=>'▤','label'=>'Uniforms'],
-    'reports'   => ['icon'=>'◧','label'=>'Reports'],
+$nav_items=[
+    'dashboard'=>['icon'=>'▲','label'=>'Dashboard'],
+    'members'  =>['icon'=>'◈','label'=>'Athletes'],
+    'attendance'=>['icon'=>'◉','label'=>'Attendance'],
+    'payments' =>['icon'=>'◆','label'=>'Billing'],
+    'staff'    =>['icon'=>'◍','label'=>'Staff'],
+    'payroll'  =>['icon'=>'▣','label'=>'Payroll'],
+    'expenses' =>['icon'=>'◐','label'=>'Expenses'],
+    'uniforms' =>['icon'=>'▤','label'=>'Uniforms'],
+    'reports'  =>['icon'=>'◧','label'=>'Reports'],
 ];
+$prev=date('Y-m',strtotime($p.'-01 -1 month'));
+$next=date('Y-m',strtotime($p.'-01 +1 month'));
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -537,801 +488,215 @@ $nav_items = [
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
-/* ─────────────────────────────────────────────────────────
-   DESIGN TOKENS (YOUR ORIGINAL DESIGN PRESERVED)
-───────────────────────────────────────────────────────── */
-:root {
-  --bg:        #040810;
-  --bg2:       #060c18;
-  --surface:   #0a1628;
-  --surface2:  #0f1e38;
-  --surface3:  #142440;
-  --border:    #1c2e4a;
-  --border2:   #243a5e;
-  --border3:   #2e4870;
-
-  --lime:      #c6f135;
-  --lime-dim:  rgba(198,241,53,0.12);
-  --lime-glow: rgba(198,241,53,0.25);
-  --teal:      #00d9c0;
-  --teal-dim:  rgba(0,217,192,0.1);
-  --blue:      #4d9fff;
-  --blue-dim:  rgba(77,159,255,0.1);
-  --amber:     #ffb740;
-  --amber-dim: rgba(255,183,64,0.1);
-  --red:       #ff4f6b;
-  --red-dim:   rgba(255,79,107,0.1);
-  --purple:    #a78bfa;
-
-  --text:      #e8f0fe;
-  --text2:     #9bb5d8;
-  --muted:     #4d6a8a;
-  --muted2:    #3a5070;
-
-  --radius:    16px;
-  --radius-sm: 10px;
-  --radius-xs: 6px;
-  --sidebar-w: 256px;
-
-  --font-display: 'Clash Display', sans-serif;
-  --font-body:    'Plus Jakarta Sans', sans-serif;
-  --font-mono:    'JetBrains Mono', monospace;
-
-  --transition: 0.2s cubic-bezier(0.4,0,0.2,1);
+:root{
+  --bg:#040810;--bg2:#060c18;--surface:#0a1628;--surface2:#0f1e38;--surface3:#142440;
+  --border:#1c2e4a;--border2:#243a5e;--border3:#2e4870;
+  --lime:#c6f135;--lime-dim:rgba(198,241,53,0.12);--lime-glow:rgba(198,241,53,0.25);
+  --teal:#00d9c0;--teal-dim:rgba(0,217,192,0.1);
+  --blue:#4d9fff;--blue-dim:rgba(77,159,255,0.1);
+  --amber:#ffb740;--amber-dim:rgba(255,183,64,0.1);
+  --red:#ff4f6b;--red-dim:rgba(255,79,107,0.1);
+  --purple:#a78bfa;
+  --text:#e8f0fe;--text2:#9bb5d8;--muted:#4d6a8a;--muted2:#3a5070;
+  --radius:16px;--radius-sm:10px;--radius-xs:6px;--sidebar-w:256px;
+  --font-display:'Clash Display',sans-serif;--font-body:'Plus Jakarta Sans',sans-serif;--font-mono:'JetBrains Mono',monospace;
+  --transition:0.2s cubic-bezier(0.4,0,0.2,1);
 }
-
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html{scroll-behavior:smooth;}
+body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-size:14px;min-height:100vh;display:flex;overflow-x:hidden;}
+body::before{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");pointer-events:none;z-index:0;}
 
-html { scroll-behavior: smooth; }
+/* SIDEBAR */
+.sidebar{position:fixed;top:0;left:0;width:var(--sidebar-w);height:100vh;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;z-index:100;box-shadow:4px 0 40px rgba(0,0,0,0.4);}
+.sidebar-top{padding:28px 20px 24px;border-bottom:1px solid var(--border);}
+.logo{display:flex;align-items:center;gap:12px;}
+.logo-mark{width:42px;height:42px;background:var(--lime);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative;overflow:hidden;}
+.logo-mark::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,0.3),transparent);}
+.logo-mark span{font-family:var(--font-display);font-size:20px;font-weight:700;color:#000;position:relative;z-index:1;}
+.logo-text{font-family:var(--font-display);font-size:17px;font-weight:700;color:var(--text);letter-spacing:-0.01em;line-height:1.15;}
+.logo-sub{font-size:10px;color:var(--muted);font-family:var(--font-mono);letter-spacing:0.15em;text-transform:uppercase;margin-top:1px;}
+.nav-body{padding:16px 12px;flex:1;}
+.nav-label{font-size:10px;color:var(--muted);letter-spacing:0.2em;text-transform:uppercase;font-family:var(--font-mono);padding:0 8px;margin:8px 0 6px;}
+.nav a{display:flex;align-items:center;gap:10px;color:var(--text2);text-decoration:none;padding:10px 12px;border-radius:var(--radius-sm);margin-bottom:1px;font-size:13.5px;font-weight:500;transition:all var(--transition);border:1px solid transparent;position:relative;}
+.nav a:hover{color:var(--text);background:var(--surface2);border-color:var(--border);}
+.nav a.active{color:var(--lime);background:var(--lime-dim);border-color:rgba(198,241,53,0.2);font-weight:600;}
+.nav a.active::before{content:'';position:absolute;left:-1px;top:20%;bottom:20%;width:3px;background:var(--lime);border-radius:0 2px 2px 0;}
+.nav-icon{font-size:13px;width:16px;text-align:center;opacity:0.8;}
+.sidebar-footer{padding:16px;border-top:1px solid var(--border);}
+.period-widget{background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:12px 14px;position:relative;overflow:hidden;}
+.period-widget::before{content:'';position:absolute;top:-20px;right:-20px;width:80px;height:80px;background:radial-gradient(circle,var(--lime-glow),transparent 70%);}
+.period-widget-label{font-size:10px;color:var(--muted);font-family:var(--font-mono);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:4px;}
+.period-widget-val{font-family:var(--font-display);font-size:18px;font-weight:700;color:var(--lime);letter-spacing:-0.01em;}
 
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--font-body);
-  font-size: 14px;
-  min-height: 100vh;
-  display: flex;
-  overflow-x: hidden;
-}
+/* MAIN */
+.main{margin-left:var(--sidebar-w);flex:1;padding:36px 40px;max-width:calc(100vw - var(--sidebar-w));position:relative;z-index:1;}
 
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");
-  pointer-events: none;
-  z-index: 0;
-}
+/* PAGE HEADER */
+.page-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:30px;flex-wrap:wrap;gap:14px;}
+.page-title{font-family:var(--font-display);font-size:32px;font-weight:700;letter-spacing:-0.03em;line-height:1;color:var(--text);}
+.page-title em{font-style:normal;color:var(--lime);}
+.page-sub{font-size:12px;color:var(--muted);font-family:var(--font-mono);margin-top:6px;letter-spacing:0.05em;}
 
-/* ─── SIDEBAR ────────────────────────────────────── */
-.sidebar {
-  position: fixed;
-  top: 0; left: 0;
-  width: var(--sidebar-w);
-  height: 100vh;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  overflow-y: auto;
-  z-index: 100;
-  box-shadow: 4px 0 40px rgba(0,0,0,0.4);
-}
+/* PERIOD NAV */
+.period-nav{display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:5px;}
+.period-nav a{display:inline-flex;align-items:center;justify-content:center;color:var(--text2);text-decoration:none;background:transparent;border:1px solid transparent;border-radius:var(--radius-xs);padding:6px 12px;font-size:12px;font-family:var(--font-mono);transition:all var(--transition);}
+.period-nav a:hover{border-color:var(--border2);color:var(--text);background:var(--surface2);}
+.period-nav .cur{font-family:var(--font-mono);color:var(--lime);font-size:13px;font-weight:500;padding:6px 14px;background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-xs);cursor:default;letter-spacing:0.04em;}
 
-.sidebar-top {
-  padding: 28px 20px 24px;
-  border-bottom: 1px solid var(--border);
-}
+/* FLASH */
+.flash{display:flex;align-items:center;gap:12px;background:linear-gradient(90deg,rgba(198,241,53,0.08),rgba(0,217,192,0.05));border:1px solid rgba(198,241,53,0.2);border-left:3px solid var(--lime);color:var(--lime);padding:13px 18px;border-radius:var(--radius-sm);margin-bottom:24px;font-size:13px;font-weight:500;animation:slideDown 0.3s ease;}
+.flash-icon{width:22px;height:22px;background:var(--lime);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#000;font-size:12px;font-weight:900;flex-shrink:0;}
+@keyframes slideDown{from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:translateY(0);}}
 
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.logo-mark {
-  width: 42px; height: 42px;
-  background: var(--lime);
-  border-radius: 12px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-  position: relative;
-  overflow: hidden;
-}
-.logo-mark::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,0.3), transparent);
-}
-.logo-mark span {
-  font-family: var(--font-display);
-  font-size: 20px;
-  font-weight: 700;
-  color: #000;
-  position: relative;
-  z-index: 1;
-}
-.logo-text {
-  font-family: var(--font-display);
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--text);
-  letter-spacing: -0.01em;
-  line-height: 1.15;
-}
-.logo-sub {
-  font-size: 10px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  margin-top: 1px;
-}
+/* CARDS */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:26px;margin-bottom:20px;position:relative;overflow:hidden;transition:border-color var(--transition);}
+.card:hover{border-color:var(--border2);}
+.card-corner{position:absolute;top:0;right:0;width:100px;height:100px;background:radial-gradient(circle at top right,rgba(198,241,53,0.04),transparent 70%);pointer-events:none;}
+.card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;gap:10px;flex-wrap:wrap;}
+.card-title{font-family:var(--font-display);font-size:15px;font-weight:600;display:flex;align-items:center;gap:10px;letter-spacing:-0.01em;}
+.card-title-bar{width:4px;height:18px;background:linear-gradient(180deg,var(--lime),var(--teal));border-radius:2px;flex-shrink:0;}
 
-.nav-body {
-  padding: 16px 12px;
-  flex: 1;
-}
-.nav-label {
-  font-size: 10px;
-  color: var(--muted);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  font-family: var(--font-mono);
-  padding: 0 8px;
-  margin: 8px 0 6px;
-}
-.nav a {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text2);
-  text-decoration: none;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  margin-bottom: 1px;
-  font-size: 13.5px;
-  font-weight: 500;
-  transition: all var(--transition);
-  border: 1px solid transparent;
-  position: relative;
-}
-.nav a:hover {
-  color: var(--text);
-  background: var(--surface2);
-  border-color: var(--border);
-}
-.nav a.active {
-  color: var(--lime);
-  background: var(--lime-dim);
-  border-color: rgba(198,241,53,0.2);
-  font-weight: 600;
-}
-.nav a.active::before {
-  content: '';
-  position: absolute;
-  left: -1px; top: 20%; bottom: 20%;
-  width: 3px;
-  background: var(--lime);
-  border-radius: 0 2px 2px 0;
-}
-.nav-icon {
-  font-size: 13px;
-  width: 16px;
-  text-align: center;
-  opacity: 0.8;
-}
+/* STAT GRID */
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:20px;}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px 24px;position:relative;overflow:hidden;transition:all var(--transition);cursor:default;}
+.stat-card:hover{border-color:var(--border3);transform:translateY(-1px);box-shadow:0 8px 30px rgba(0,0,0,0.3);}
+.stat-card::after{content:'';position:absolute;bottom:-20px;right:-20px;width:90px;height:90px;border-radius:50%;background:var(--stat-glow,rgba(198,241,53,0.05));}
+.stat-card[data-color="lime"]{--stat-glow:rgba(198,241,53,0.06);}
+.stat-card[data-color="teal"]{--stat-glow:rgba(0,217,192,0.06);}
+.stat-card[data-color="amber"]{--stat-glow:rgba(255,183,64,0.06);}
+.stat-card[data-color="red"]{--stat-glow:rgba(255,79,107,0.06);}
+.stat-card[data-color="blue"]{--stat-glow:rgba(77,159,255,0.06);}
+.stat-card[data-color="purple"]{--stat-glow:rgba(167,139,250,0.06);}
+.stat-icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;margin-bottom:14px;}
+.stat-card[data-color="lime"]  .stat-icon{background:var(--lime-dim);}
+.stat-card[data-color="teal"]  .stat-icon{background:var(--teal-dim);}
+.stat-card[data-color="amber"] .stat-icon{background:var(--amber-dim);}
+.stat-card[data-color="red"]   .stat-icon{background:var(--red-dim);}
+.stat-card[data-color="blue"]  .stat-icon{background:var(--blue-dim);}
+.stat-card[data-color="purple"].stat-icon{background:rgba(167,139,250,0.1);}
+.stat-label{font-size:11px;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted);font-family:var(--font-mono);margin-bottom:6px;}
+.stat-value{font-family:var(--font-display);font-size:28px;font-weight:700;line-height:1;letter-spacing:-0.03em;}
+.stat-card[data-color="lime"]  .stat-value{color:var(--lime);}
+.stat-card[data-color="teal"]  .stat-value{color:var(--teal);}
+.stat-card[data-color="amber"] .stat-value{color:var(--amber);}
+.stat-card[data-color="red"]   .stat-value{color:var(--red);}
+.stat-card[data-color="blue"]  .stat-value{color:var(--blue);}
+.stat-card[data-color="purple"].stat-value{color:var(--purple);}
 
-.sidebar-footer {
-  padding: 16px;
-  border-top: 1px solid var(--border);
-}
-.period-widget {
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: var(--radius-sm);
-  padding: 12px 14px;
-  position: relative;
-  overflow: hidden;
-}
-.period-widget::before {
-  content: '';
-  position: absolute;
-  top: -20px; right: -20px;
-  width: 80px; height: 80px;
-  background: radial-gradient(circle, var(--lime-glow), transparent 70%);
-}
-.period-widget-label {
-  font-size: 10px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  margin-bottom: 4px;
-}
-.period-widget-val {
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--lime);
-  letter-spacing: -0.01em;
-}
+/* TABLES */
+.table-wrap{overflow-x:auto;border-radius:var(--radius-sm);}
+table{width:100%;border-collapse:collapse;}
+thead th{color:var(--muted);font-size:10.5px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.12em;padding:11px 14px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;background:var(--surface2);}
+tbody td{padding:13px 14px;border-bottom:1px solid rgba(28,46,74,0.6);font-size:13.5px;transition:background var(--transition);vertical-align:middle;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:hover td{background:rgba(255,255,255,0.018);}
+.no-data{text-align:center;color:var(--muted);padding:50px 0;font-size:13px;font-family:var(--font-mono);letter-spacing:0.05em;}
 
-/* ─── MAIN ────────────────────────────────────────── */
-.main {
-  margin-left: var(--sidebar-w);
-  flex: 1;
-  padding: 36px 40px;
-  max-width: calc(100vw - var(--sidebar-w));
-  position: relative;
-  z-index: 1;
-}
+/* BADGES */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;font-family:var(--font-mono);white-space:nowrap;letter-spacing:0.04em;}
+.b-zone   {background:var(--blue-dim);color:#82b4ff;border:1px solid rgba(77,159,255,0.2);}
+.b-paid   {background:var(--lime-dim);color:var(--lime);border:1px solid rgba(198,241,53,0.2);}
+.b-partial{background:var(--amber-dim);color:var(--amber);border:1px solid rgba(255,183,64,0.2);}
+.b-unpaid {background:var(--red-dim);color:var(--red);border:1px solid rgba(255,79,107,0.2);}
+.b-nobill {background:rgba(77,106,138,0.1);color:var(--muted);border:1px solid rgba(77,106,138,0.2);}
+.b-active {background:var(--lime-dim);color:var(--lime);}
+.b-inactive{background:var(--red-dim);color:var(--red);}
+.b-present{background:var(--lime-dim);color:var(--lime);}
+.b-absent {background:var(--red-dim);color:var(--red);}
+.b-late   {background:var(--amber-dim);color:var(--amber);}
 
-/* ─── PAGE HEADER ─────────────────────────────────── */
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  margin-bottom: 30px;
-  flex-wrap: wrap;
-  gap: 14px;
-}
-.page-title {
-  font-family: var(--font-display);
-  font-size: 32px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1;
-  color: var(--text);
-}
-.page-title em {
-  font-style: normal;
-  color: var(--lime);
-}
-.page-sub {
-  font-size: 12px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  margin-top: 6px;
-  letter-spacing: 0.05em;
-}
+/* FORMS */
+.form-grid  {display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+.form-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;}
+.form-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
+.form-group label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted);font-family:var(--font-mono);margin-bottom:7px;}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:10px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:13.5px;outline:none;transition:border-color var(--transition),box-shadow var(--transition),background var(--transition);-webkit-appearance:none;}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--lime);background:var(--surface3);box-shadow:0 0 0 3px var(--lime-glow);}
+.form-group input::placeholder{color:var(--muted2);}
+.form-group select{cursor:pointer;}
+.form-group select option{background:var(--surface2);}
+.form-actions{display:flex;gap:10px;align-items:center;margin-top:20px;padding-top:18px;border-top:1px solid var(--border);flex-wrap:wrap;}
 
-/* ─── PERIOD NAV ──────────────────────────────────── */
-.period-nav {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 5px;
-}
-.period-nav a {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text2);
-  text-decoration: none;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-xs);
-  padding: 6px 12px;
-  font-size: 12px;
-  font-family: var(--font-mono);
-  transition: all var(--transition);
-}
-.period-nav a:hover {
-  border-color: var(--border2);
-  color: var(--text);
-  background: var(--surface2);
-}
-.period-nav .cur {
-  font-family: var(--font-mono);
-  color: var(--lime);
-  font-size: 13px;
-  font-weight: 500;
-  padding: 6px 14px;
-  background: var(--lime-dim);
-  border: 1px solid rgba(198,241,53,0.2);
-  border-radius: var(--radius-xs);
-  cursor: default;
-  letter-spacing: 0.04em;
-}
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:7px;padding:10px 20px;border-radius:var(--radius-sm);font-family:var(--font-display);font-size:13px;font-weight:600;cursor:pointer;border:none;text-decoration:none;transition:all var(--transition);white-space:nowrap;letter-spacing:0.01em;position:relative;overflow:hidden;}
+.btn::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,0.08),transparent);opacity:0;transition:opacity var(--transition);}
+.btn:hover::after{opacity:1;}
+.btn-primary{background:var(--lime);color:#050f0a;box-shadow:0 4px 16px rgba(198,241,53,0.2);}
+.btn-primary:hover{background:#d4f540;box-shadow:0 6px 24px rgba(198,241,53,0.35);transform:translateY(-1px);}
+.btn-ghost{background:var(--surface2);color:var(--text2);border:1px solid var(--border2);}
+.btn-ghost:hover{border-color:var(--border3);color:var(--text);background:var(--surface3);}
+.btn-danger{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,79,107,0.2);}
+.btn-danger:hover{background:rgba(255,79,107,0.2);}
+.btn-warning{background:var(--amber-dim);color:var(--amber);border:1px solid rgba(255,183,64,0.2);}
+.btn-warning:hover{background:rgba(255,183,64,0.2);}
+.btn-sm{padding:6px 13px;font-size:12px;}
+.btn-xs{padding:4px 10px;font-size:11px;}
+.actions-cell{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
 
-/* ─── FLASH MESSAGE ───────────────────────────────── */
-.flash {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: linear-gradient(90deg, rgba(198,241,53,0.08), rgba(0,217,192,0.05));
-  border: 1px solid rgba(198,241,53,0.2);
-  border-left: 3px solid var(--lime);
-  color: var(--lime);
-  padding: 13px 18px;
-  border-radius: var(--radius-sm);
-  margin-bottom: 24px;
-  font-size: 13px;
-  font-weight: 500;
-  animation: slideDown 0.3s ease;
-}
-.flash-icon {
-  width: 22px; height: 22px;
-  background: var(--lime);
-  border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  color: #000;
-  font-size: 12px;
-  font-weight: 900;
-  flex-shrink: 0;
-}
-@keyframes slideDown { from { opacity:0; transform: translateY(-8px); } to { opacity:1; transform: translateY(0); } }
+/* TOOLBAR / SEARCH */
+.toolbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center;}
+.search-box{position:relative;flex:1;min-width:200px;}
+.search-box-icon{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:14px;pointer-events:none;}
+.search-box input{width:100%;padding:10px 14px 10px 40px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:13.5px;outline:none;transition:all var(--transition);}
+.search-box input:focus{border-color:var(--lime);background:var(--surface3);box-shadow:0 0 0 3px var(--lime-glow);}
+.search-box input::placeholder{color:var(--muted2);}
+.toolbar select{padding:10px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-size:13px;outline:none;cursor:pointer;transition:all var(--transition);font-family:var(--font-body);-webkit-appearance:none;}
+.toolbar select:focus{border-color:var(--lime);box-shadow:0 0 0 3px var(--lime-glow);}
+.toolbar select option{background:var(--surface2);}
+.result-count{font-size:11px;color:var(--muted);font-family:var(--font-mono);margin-bottom:12px;letter-spacing:0.04em;}
 
-/* ─── CARDS ───────────────────────────────────────── */
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 26px;
-  margin-bottom: 20px;
-  position: relative;
-  overflow: hidden;
-  transition: border-color var(--transition);
-}
-.card:hover { border-color: var(--border2); }
-.card-corner {
-  position: absolute;
-  top: 0; right: 0;
-  width: 100px; height: 100px;
-  background: radial-gradient(circle at top right, rgba(198,241,53,0.04), transparent 70%);
-  pointer-events: none;
-}
+/* AUTOCOMPLETE */
+.autocomplete-wrap{position:relative;}
+.autocomplete-dropdown{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);box-shadow:0 16px 48px rgba(0,0,0,0.5);z-index:999;max-height:320px;overflow-y:auto;display:none;}
+.autocomplete-dropdown.open{display:block;}
+.ac-item{display:flex;align-items:center;gap:12px;padding:11px 14px;cursor:pointer;transition:background var(--transition);border-bottom:1px solid var(--border);}
+.ac-item:last-child{border-bottom:none;}
+.ac-item:hover,.ac-item.focused{background:var(--surface3);}
+.ac-avatar{width:32px;height:32px;border-radius:10px;background:var(--lime-dim);border:1px solid rgba(198,241,53,0.15);display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-size:13px;font-weight:700;color:var(--lime);flex-shrink:0;text-transform:uppercase;}
+.ac-info{flex:1;min-width:0;}
+.ac-name{font-size:13.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ac-meta{font-size:11px;color:var(--muted);font-family:var(--font-mono);margin-top:1px;}
+.ac-badge{font-size:11px;color:var(--teal);font-family:var(--font-mono);white-space:nowrap;}
+.ac-empty{padding:20px;text-align:center;color:var(--muted);font-size:12px;font-family:var(--font-mono);}
+.selected-athlete-info{display:none;align-items:center;gap:14px;background:var(--surface2);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-sm);padding:12px 16px;margin-top:10px;}
+.selected-athlete-info.visible{display:flex;}
+.sa-avatar{width:40px;height:40px;border-radius:12px;background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-size:16px;font-weight:700;color:var(--lime);flex-shrink:0;text-transform:uppercase;}
+.sa-name{font-size:14px;font-weight:600;color:var(--text);}
+.sa-detail{font-size:11px;color:var(--muted);font-family:var(--font-mono);margin-top:2px;}
 
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 20px;
-}
-.card-title {
-  font-family: var(--font-display);
-  font-size: 15px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  letter-spacing: -0.01em;
-}
-.card-title-bar {
-  width: 4px; height: 18px;
-  background: linear-gradient(180deg, var(--lime), var(--teal));
-  border-radius: 2px;
-  flex-shrink: 0;
-}
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
+.modal-overlay.hidden{display:none;}
+.modal-box{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:28px;width:90%;max-width:520px;position:relative;box-shadow:0 24px 80px rgba(0,0,0,0.6);}
+.modal-title{font-family:var(--font-display);font-size:18px;font-weight:700;margin-bottom:20px;color:var(--lime);}
+.modal-close{position:absolute;top:16px;right:16px;background:var(--surface2);border:1px solid var(--border2);color:var(--text2);width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;}
+.modal-close:hover{color:var(--red);border-color:var(--red);}
 
-/* ─── STAT GRID ───────────────────────────────────── */
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-  margin-bottom: 20px;
-}
-.stat-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 22px 24px;
-  position: relative;
-  overflow: hidden;
-  transition: all var(--transition);
-  cursor: default;
-}
-.stat-card:hover {
-  border-color: var(--border3);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 30px rgba(0,0,0,0.3);
-}
-.stat-card::after {
-  content: '';
-  position: absolute;
-  bottom: -20px; right: -20px;
-  width: 90px; height: 90px;
-  border-radius: 50%;
-  background: var(--stat-glow, rgba(198,241,53,0.05));
-}
-.stat-card[data-color="lime"]  { --stat-glow: rgba(198,241,53,0.06); }
-.stat-card[data-color="teal"]  { --stat-glow: rgba(0,217,192,0.06); }
-.stat-card[data-color="amber"] { --stat-glow: rgba(255,183,64,0.06); }
-.stat-card[data-color="red"]   { --stat-glow: rgba(255,79,107,0.06); }
-.stat-card[data-color="blue"]  { --stat-glow: rgba(77,159,255,0.06); }
-.stat-card[data-color="purple"]{ --stat-glow: rgba(167,139,250,0.06); }
+/* SUMMARY ROW */
+.summary-row td{font-weight:700;background:var(--surface2)!important;color:var(--lime);font-family:var(--font-mono);border-top:2px solid var(--border2);}
 
-.stat-icon {
-  width: 36px; height: 36px;
-  border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 16px;
-  margin-bottom: 14px;
-  background: var(--stat-icon-bg, var(--lime-dim));
-}
-.stat-card[data-color="lime"]   .stat-icon { background: var(--lime-dim); }
-.stat-card[data-color="teal"]   .stat-icon { background: var(--teal-dim); }
-.stat-card[data-color="amber"]  .stat-icon { background: var(--amber-dim); }
-.stat-card[data-color="red"]    .stat-icon { background: var(--red-dim); }
-.stat-card[data-color="blue"]   .stat-icon { background: var(--blue-dim); }
-.stat-card[data-color="purple"] .stat-icon { background: rgba(167,139,250,0.1); }
+/* SCROLLBAR */
+::-webkit-scrollbar{width:6px;height:6px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:var(--border3);}
 
-.stat-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  margin-bottom: 6px;
-}
-.stat-value {
-  font-family: var(--font-display);
-  font-size: 28px;
-  font-weight: 700;
-  line-height: 1;
-  letter-spacing: -0.03em;
-}
-.stat-card[data-color="lime"]   .stat-value { color: var(--lime); }
-.stat-card[data-color="teal"]   .stat-value { color: var(--teal); }
-.stat-card[data-color="amber"]  .stat-value { color: var(--amber); }
-.stat-card[data-color="red"]    .stat-value { color: var(--red); }
-.stat-card[data-color="blue"]   .stat-value { color: var(--blue); }
-.stat-card[data-color="purple"] .stat-value { color: var(--purple); }
-
-/* ─── TABLES ──────────────────────────────────────── */
-.table-wrap { overflow-x: auto; border-radius: var(--radius-sm); }
-table { width: 100%; border-collapse: collapse; }
-thead th {
-  color: var(--muted);
-  font-size: 10.5px;
-  font-family: var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-  white-space: nowrap;
-  background: var(--surface2);
-}
-thead th:first-child { border-radius: var(--radius-xs) 0 0 0; }
-thead th:last-child  { border-radius: 0 var(--radius-xs) 0 0; }
-tbody td {
-  padding: 13px 14px;
-  border-bottom: 1px solid rgba(28,46,74,0.6);
-  font-size: 13.5px;
-  transition: background var(--transition);
-  vertical-align: middle;
-}
-tbody tr:last-child td { border-bottom: none; }
-tbody tr:hover td { background: rgba(255,255,255,0.018); }
-.no-data {
-  text-align: center;
-  color: var(--muted);
-  padding: 50px 0;
-  font-size: 13px;
-  font-family: var(--font-mono);
-  letter-spacing: 0.05em;
-}
-
-/* ─── BADGES ──────────────────────────────────────── */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  white-space: nowrap;
-  letter-spacing: 0.04em;
-}
-.b-zone    { background: var(--blue-dim); color: #82b4ff; border: 1px solid rgba(77,159,255,0.2); }
-.b-paid    { background: var(--lime-dim); color: var(--lime); border: 1px solid rgba(198,241,53,0.2); }
-.b-partial { background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(255,183,64,0.2); }
-.b-unpaid  { background: var(--red-dim); color: var(--red); border: 1px solid rgba(255,79,107,0.2); }
-.b-nobill  { background: rgba(77,106,138,0.1); color: var(--muted); border: 1px solid rgba(77,106,138,0.2); }
-.b-active  { background: var(--lime-dim); color: var(--lime); }
-.b-inactive{ background: var(--red-dim); color: var(--red); }
-.b-present { background: var(--lime-dim); color: var(--lime); }
-.b-absent  { background: var(--red-dim); color: var(--red); }
-.b-late    { background: var(--amber-dim); color: var(--amber); }
-
-/* ─── FORMS ───────────────────────────────────────── */
-.form-grid   { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
-.form-grid-2 { display: grid; grid-template-columns: repeat(2,1fr); gap: 14px; }
-.form-grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
-
-.form-group label {
-  display: block;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  margin-bottom: 7px;
-}
-.form-group input,
-.form-group select,
-.form-group textarea {
-  width: 100%;
-  padding: 10px 14px;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-family: var(--font-body);
-  font-size: 13.5px;
-  outline: none;
-  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
-  -webkit-appearance: none;
-}
-.form-group input:focus,
-.form-group select:focus,
-.form-group textarea:focus {
-  border-color: var(--lime);
-  background: var(--surface3);
-  box-shadow: 0 0 0 3px var(--lime-glow);
-}
-.form-group input::placeholder { color: var(--muted2); }
-.form-group select { cursor: pointer; }
-.form-group select option { background: var(--surface2); }
-
-.form-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-top: 20px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-
-/* ─── BUTTONS ─────────────────────────────────────── */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 10px 20px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-display);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  border: none;
-  text-decoration: none;
-  transition: all var(--transition);
-  white-space: nowrap;
-  letter-spacing: 0.01em;
-  position: relative;
-  overflow: hidden;
-}
-.btn::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(135deg, rgba(255,255,255,0.08), transparent);
-  opacity: 0;
-  transition: opacity var(--transition);
-}
-.btn:hover::after { opacity: 1; }
-
-.btn-primary {
-  background: var(--lime);
-  color: #050f0a;
-  box-shadow: 0 4px 16px rgba(198,241,53,0.2);
-}
-.btn-primary:hover {
-  background: #d4f540;
-  box-shadow: 0 6px 24px rgba(198,241,53,0.35);
-  transform: translateY(-1px);
-}
-.btn-ghost {
-  background: var(--surface2);
-  color: var(--text2);
-  border: 1px solid var(--border2);
-}
-.btn-ghost:hover {
-  border-color: var(--border3);
-  color: var(--text);
-  background: var(--surface3);
-}
-.btn-danger {
-  background: var(--red-dim);
-  color: var(--red);
-  border: 1px solid rgba(255,79,107,0.2);
-}
-.btn-danger:hover { background: rgba(255,79,107,0.2); }
-.btn-sm { padding: 6px 13px; font-size: 12px; }
-.btn-xs { padding: 4px 10px; font-size: 11px; }
-
-.actions-cell { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-
-/* ─── SEARCH & FILTER BAR ─────────────────────────── */
-.toolbar {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.search-box {
-  position: relative;
-  flex: 1;
-  min-width: 200px;
-}
-.search-box-icon {
-  position: absolute;
-  left: 13px; top: 50%;
-  transform: translateY(-50%);
-  color: var(--muted);
-  font-size: 14px;
-  pointer-events: none;
-}
-.search-box input {
-  width: 100%;
-  padding: 10px 14px 10px 40px;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-family: var(--font-body);
-  font-size: 13.5px;
-  outline: none;
-  transition: all var(--transition);
-}
-.search-box input:focus {
-  border-color: var(--lime);
-  background: var(--surface3);
-  box-shadow: 0 0 0 3px var(--lime-glow);
-}
-.search-box input::placeholder { color: var(--muted2); }
-.toolbar select {
-  padding: 10px 14px;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-size: 13px;
-  outline: none;
-  cursor: pointer;
-  transition: all var(--transition);
-  font-family: var(--font-body);
-  -webkit-appearance: none;
-}
-.toolbar select:focus {
-  border-color: var(--lime);
-  box-shadow: 0 0 0 3px var(--lime-glow);
-}
-.toolbar select option { background: var(--surface2); }
-
-.result-count {
-  font-size: 11px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  margin-bottom: 12px;
-  letter-spacing: 0.04em;
-}
-
-/* ─── OVERDUE CHIP ────────────────────────────────── */
-.overdue {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  padding: 3px 9px;
-  border-radius: 999px;
-}
-.overdue.over { background: var(--red-dim); color: var(--red); }
-.overdue.ok   { color: var(--muted); }
-
-/* ─── ATHLETE SEARCH AUTOCOMPLETE ────────────────── */
-.autocomplete-wrap { position: relative; }
-.autocomplete-dropdown {
-  position: absolute;
-  top: calc(100% + 6px); left: 0; right: 0;
-  background: var(--surface2);
-  border: 1px solid var(--border2);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
-  z-index: 999;
-  max-height: 320px;
-  overflow-y: auto;
-  display: none;
-}
-.autocomplete-dropdown.open { display: block; }
-.ac-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 14px;
-  cursor: pointer;
-  transition: background var(--transition);
-  border-bottom: 1px solid var(--border);
-}
-.ac-item:last-child { border-bottom: none; }
-.ac-item:hover, .ac-item.focused { background: var(--surface3); }
-.ac-avatar {
-  width: 32px; height: 32px;
-  border-radius: 10px;
-  background: var(--lime-dim);
-  border: 1px solid rgba(198,241,53,0.15);
-  display: flex; align-items: center; justify-content: center;
-  font-family: var(--font-display);
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--lime);
-  flex-shrink: 0;
-  text-transform: uppercase;
-}
-.ac-info { flex: 1; min-width: 0; }
-.ac-name { font-size: 13.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ac-meta { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 1px; }
-.ac-badge { font-size: 11px; color: var(--teal); font-family: var(--font-mono); white-space: nowrap; }
-.ac-empty { padding: 20px; text-align: center; color: var(--muted); font-size: 12px; font-family: var(--font-mono); }
-.selected-athlete-info {
-  display: none;
-  align-items: center;
-  gap: 14px;
-  background: var(--surface2);
-  border: 1px solid rgba(198,241,53,0.2);
-  border-radius: var(--radius-sm);
-  padding: 12px 16px;
-  margin-top: 10px;
-}
-.selected-athlete-info.visible { display: flex; }
-.sa-avatar {
-  width: 40px; height: 40px;
-  border-radius: 12px;
-  background: var(--lime-dim);
-  border: 1px solid rgba(198,241,53,0.2);
-  display: flex; align-items: center; justify-content: center;
-  font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--lime);
-  flex-shrink: 0;
-  text-transform: uppercase;
-}
-.sa-name { font-size: 14px; font-weight: 600; color: var(--text); }
-.sa-detail { font-size: 11px; color: var(--muted); font-family: var(--font-mono); margin-top: 2px; }
-
-/* ─── ZONE TABLE ──────────────────────────────────── */
-.zone-section th { background: var(--bg2); }
-
-/* ─── DIVIDER ─────────────────────────────────────── */
-.divider { height: 1px; background: var(--border); margin: 22px 0; }
-
-/* ─── SCROLLBAR ───────────────────────────────────── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border3); }
-
-/* ─── MOBILE ──────────────────────────────────────── */
 @media(max-width:960px){
-  :root { --sidebar-w: 220px; }
-  .main { padding: 20px; }
-  .stat-grid { grid-template-columns: repeat(2,1fr); }
-  .form-grid { grid-template-columns: repeat(2,1fr); }
-  .form-grid-4 { grid-template-columns: repeat(2,1fr); }
+  :root{--sidebar-w:220px;}
+  .main{padding:20px;}
+  .stat-grid,.form-grid,.form-grid-4{grid-template-columns:repeat(2,1fr);}
 }
 @media(max-width:680px){
-  :root { --sidebar-w: 0px; }
-  .sidebar { transform: translateX(-100%); }
-  .stat-grid,.form-grid,.form-grid-2,.form-grid-4 { grid-template-columns: 1fr; }
+  :root{--sidebar-w:0px;}
+  .sidebar{transform:translateX(-100%);}
+  .stat-grid,.form-grid,.form-grid-2,.form-grid-4{grid-template-columns:1fr;}
 }
-
-/* ─── REPORT SUMMARY ROW ──────────────────────────── */
-.summary-row td { font-weight: 700; background: var(--surface2) !important; color: var(--lime); font-family: var(--font-mono); border-top: 2px solid var(--border2); }
 </style>
 </head>
 <body>
 
-<!-- ── SIDEBAR ───────────────────────────────────────── -->
+<!-- ── SIDEBAR ── -->
 <aside class="sidebar">
   <div class="sidebar-top">
     <div class="logo">
@@ -1361,22 +726,17 @@ tbody tr:hover td { background: rgba(255,255,255,0.018); }
   </div>
 </aside>
 
-<!-- ── MAIN ──────────────────────────────────────────── -->
+<!-- ── MAIN ── -->
 <main class="main">
 
 <?php if($msg): ?>
 <div class="flash"><div class="flash-icon">✓</div><?= h($msg) ?></div>
 <?php endif; ?>
 
-<?php
-$prev = date('Y-m', strtotime($p.'-01 -1 month'));
-$next = date('Y-m', strtotime($p.'-01 +1 month'));
-
-/* ════════════════════════════════════════════════════
+<?php /* ════════════════════════════════════
    DASHBOARD
-════════════════════════════════════════════════════ */
-if($v==='dashboard'):
-?>
+════════════════════════════════════ */
+if($v==='dashboard'): ?>
 <div class="page-header">
   <div>
     <div class="page-title">Good day, <em>Coach</em></div>
@@ -1390,36 +750,12 @@ if($v==='dashboard'):
 </div>
 
 <div class="stat-grid">
-  <div class="stat-card" data-color="lime">
-    <div class="stat-icon">⚽</div>
-    <div class="stat-label">Active Athletes</div>
-    <div class="stat-value"><?= $stats['athletes'] ?></div>
-  </div>
-  <div class="stat-card" data-color="blue">
-    <div class="stat-icon">👤</div>
-    <div class="stat-label">Active Staff</div>
-    <div class="stat-value"><?= $stats['staff'] ?></div>
-  </div>
-  <div class="stat-card" data-color="teal">
-    <div class="stat-icon">💰</div>
-    <div class="stat-label">Revenue <?= h($p) ?></div>
-    <div class="stat-value" style="font-size:18px"><?= money($stats['revenue']) ?></div>
-  </div>
-  <div class="stat-card" data-color="amber">
-    <div class="stat-icon">⏳</div>
-    <div class="stat-label">Outstanding</div>
-    <div class="stat-value" style="font-size:18px"><?= money($stats['outstanding']) ?></div>
-  </div>
-  <div class="stat-card" data-color="red">
-    <div class="stat-icon">📤</div>
-    <div class="stat-label">Expenses</div>
-    <div class="stat-value" style="font-size:18px"><?= money($stats['expenses']) ?></div>
-  </div>
-  <div class="stat-card" data-color="purple">
-    <div class="stat-icon">💳</div>
-    <div class="stat-label">Payroll Paid</div>
-    <div class="stat-value" style="font-size:18px"><?= money($stats['payroll']) ?></div>
-  </div>
+  <div class="stat-card" data-color="lime"><div class="stat-icon">⚽</div><div class="stat-label">Active Athletes</div><div class="stat-value"><?= $stats['athletes'] ?></div></div>
+  <div class="stat-card" data-color="blue"><div class="stat-icon">👤</div><div class="stat-label">Active Staff</div><div class="stat-value"><?= $stats['staff_count'] ?></div></div>
+  <div class="stat-card" data-color="teal"><div class="stat-icon">💰</div><div class="stat-label">Revenue <?= h($p) ?></div><div class="stat-value" style="font-size:18px"><?= money($stats['revenue']) ?></div></div>
+  <div class="stat-card" data-color="amber"><div class="stat-icon">⏳</div><div class="stat-label">Outstanding</div><div class="stat-value" style="font-size:18px"><?= money($stats['outstanding']) ?></div></div>
+  <div class="stat-card" data-color="red"><div class="stat-icon">📤</div><div class="stat-label">Expenses</div><div class="stat-value" style="font-size:18px"><?= money($stats['expenses']) ?></div></div>
+  <div class="stat-card" data-color="purple"><div class="stat-icon">💳</div><div class="stat-label">Payroll Paid</div><div class="stat-value" style="font-size:18px"><?= money($stats['payroll']) ?></div></div>
 </div>
 
 <div class="card">
@@ -1432,32 +768,32 @@ if($v==='dashboard'):
     <thead><tr><th>Zone</th><th>Athletes</th><th>Staff</th><th>Revenue</th><th>Expenses</th></tr></thead>
     <tbody>
     <?php
-    $rows=$pdo->query("
-    SELECT z.name,COUNT(DISTINCT m.id) athletes,COUNT(DISTINCT st.id) staff,
-    COALESCE(SUM(DISTINCT b.paid_amount),0) revenue,COALESCE(SUM(DISTINCT e.amount),0) expenses
+    $safe_p2=$pdo->quote($p);
+    $zrows=$pdo->query("
+    SELECT z.name,COUNT(DISTINCT m.id) athletes,COUNT(DISTINCT st.id) staff_cnt,
+    COALESCE((SELECT SUM(b2.paid_amount) FROM monthly_bills b2 JOIN members m2 ON m2.id=b2.member_id WHERE m2.zone_id=z.id AND b2.period=$safe_p2),0) revenue,
+    COALESCE((SELECT SUM(e2.amount) FROM expenses e2 WHERE e2.zone_id=z.id AND TO_CHAR(e2.expense_date,'YYYY-MM')=$safe_p2),0) expenses
     FROM academy_zones z
     LEFT JOIN members m ON m.zone_id=z.id AND m.is_active=TRUE
     LEFT JOIN staff st ON st.zone_id=z.id AND st.is_active=TRUE
-    LEFT JOIN monthly_bills b ON b.member_id=m.id AND b.period='$p'
-    LEFT JOIN expenses e ON e.zone_id=z.id AND TO_CHAR(e.expense_date,'YYYY-MM')='$p'
     GROUP BY z.id,z.name ORDER BY z.id")->fetchAll();
-    foreach($rows as $r): ?>
+    foreach($zrows as $r): ?>
     <tr>
       <td><strong style="font-family:var(--font-display)"><?= h($r['name']) ?></strong></td>
       <td><span style="font-family:var(--font-mono);color:var(--blue)"><?= $r['athletes'] ?></span></td>
-      <td><span style="font-family:var(--font-mono);color:var(--text2)"><?= $r['staff'] ?></span></td>
+      <td><span style="font-family:var(--font-mono);color:var(--text2)"><?= $r['staff_cnt'] ?></span></td>
       <td><span style="font-family:var(--font-mono);color:var(--lime)"><?= money($r['revenue']) ?></span></td>
       <td><span style="font-family:var(--font-mono);color:var(--red)"><?= money($r['expenses']) ?></span></td>
     </tr>
     <?php endforeach; ?>
     </tbody>
-  追赶
+  </table>
   </div>
 </div>
 
-<?php /* Quick unpaid summary */
-$unpaid=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period='$p' AND paid_amount=0 AND expected_amount>0")->fetchColumn();
-$partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period='$p' AND paid_amount>0 AND paid_amount<expected_amount")->fetchColumn();
+<?php
+$unpaid=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AND paid_amount=0 AND expected_amount>0")->fetchColumn();
+$partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AND paid_amount>0 AND paid_amount<expected_amount")->fetchColumn();
 ?>
 <div class="card">
   <div class="card-corner"></div>
@@ -1466,39 +802,28 @@ $partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period='$p' AND p
     <a href="?view=payments&period=<?= h($p) ?>" class="btn btn-ghost btn-sm">View Billing →</a>
   </div>
   <div style="display:flex;gap:14px;flex-wrap:wrap">
-    <div style="background:var(--red-dim);border:1px solid rgba(255,79,107,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px">
-      <div class="stat-label">Unpaid</div>
-      <div style="font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--red)"><?= $unpaid ?></div>
-    </div>
-    <div style="background:var(--amber-dim);border:1px solid rgba(255,183,64,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px">
-      <div class="stat-label">Partial</div>
-      <div style="font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--amber)"><?= $partial ?></div>
-    </div>
-    <div style="background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px">
-      <div class="stat-label">Net Income</div>
-      <div style="font-family:var(--font-display);font-size:20px;font-weight:700;color:var(--lime)"><?= money((float)$stats['revenue']-(float)$stats['expenses']-(float)$stats['payroll']) ?></div>
-    </div>
+    <div style="background:var(--red-dim);border:1px solid rgba(255,79,107,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px"><div class="stat-label">Unpaid</div><div style="font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--red)"><?= $unpaid ?></div></div>
+    <div style="background:var(--amber-dim);border:1px solid rgba(255,183,64,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px"><div class="stat-label">Partial</div><div style="font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--amber)"><?= $partial ?></div></div>
+    <div style="background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px"><div class="stat-label">Net Income</div><div style="font-family:var(--font-display);font-size:20px;font-weight:700;color:var(--lime)"><?= money((float)$stats['revenue']-(float)$stats['expenses']-(float)$stats['payroll']) ?></div></div>
   </div>
 </div>
-
 <?php endif; ?>
 
-<?php /* ════════════════════════════════════════════════════
-   MEMBERS / ATHLETES
-════════════════════════════════════════════════════ */
+
+<?php /* ════════════════════════════════════
+   ATHLETES
+════════════════════════════════════ */
 if($v==='members'): ?>
 <div class="page-header">
   <div>
-    <div class="page-title"><?= $edit_member ? 'Edit <em>Athlete</em>' : 'Athletes <em>Registry</em>' ?></div>
-    <div class="page-sub"><?= count($m) ?> total registered · <?= count($am) ?> active</div>
+    <div class="page-title"><?= $edit_member?'Edit <em>Athlete</em>':'Athletes <em>Registry</em>' ?></div>
+    <div class="page-sub"><?= count($m) ?> total · <?= count($am) ?> active</div>
   </div>
 </div>
 
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span><?= $edit_member ? 'Edit Athlete' : 'Register New Athlete' ?></div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_member?'Edit Athlete':'Register New Athlete' ?></div></div>
   <form method="POST">
     <input type="hidden" name="action" value="save_member">
     <input type="hidden" name="id" value="<?= h($edit_member['id']??'') ?>">
@@ -1517,7 +842,7 @@ if($v==='members'): ?>
       <div class="form-group"><label>Notes</label><input name="notes" value="<?= h($edit_member['notes']??'') ?>" placeholder="Optional notes"></div>
     </div>
     <div class="form-actions">
-      <button class="btn btn-primary" type="submit">💾 <?= $edit_member ? 'Update Athlete' : 'Save Athlete' ?></button>
+      <button class="btn btn-primary" type="submit">💾 <?= $edit_member?'Update Athlete':'Save Athlete' ?></button>
       <?php if($edit_member): ?><a class="btn btn-ghost" href="?view=members&period=<?= h($p) ?>">✕ Cancel</a><?php endif; ?>
     </div>
   </form>
@@ -1525,23 +850,11 @@ if($v==='members'): ?>
 
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>All Athletes</div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>All Athletes</div></div>
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="memberSearch" placeholder="Search name, phone, zone, position, school…" oninput="filterTable('memberSearch','memberTbl','memberCnt')">
-    </div>
-    <select id="mZoneF" onchange="filterTable('memberSearch','memberTbl','memberCnt')">
-      <option value="">All Zones</option>
-      <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
-    </select>
-    <select id="mStatF" onchange="filterTable('memberSearch','memberTbl','memberCnt')">
-      <option value="">All Status</option>
-      <option value="Active">Active</option>
-      <option value="Inactive">Inactive</option>
-    </select>
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="memberSearch" placeholder="Search name, phone, zone, position…" oninput="filterTable('memberSearch','memberTbl','memberCnt')"></div>
+    <select id="mZoneF" onchange="filterTable('memberSearch','memberTbl','memberCnt')"><option value="">All Zones</option><?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?></select>
+    <select id="mStatF" onchange="filterTable('memberSearch','memberTbl','memberCnt')"><option value="">All Status</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select>
   </div>
   <div class="result-count" id="memberCnt"></div>
   <div class="table-wrap">
@@ -1552,11 +865,10 @@ if($v==='members'): ?>
     <tr>
       <td>
         <div style="display:flex;align-items:center;gap:10px">
-          <div style="width:32px;height:32px;border-radius:10px;background:var(--lime-dim);border:1px solid rgba(198,241,53,0.15);display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-size:12px;font-weight:700;color:var(--lime);flex-shrink:0;text-transform:uppercase"><?= mb_substr($x['full_name'],0,1) ?></div>
+          <div style="width:32px;height:32px;border-radius:10px;background:var(--lime-dim);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--lime);font-size:12px"><?= mb_substr($x['full_name'],0,1) ?></div>
           <strong><?= h($x['full_name']) ?></strong>
         </div>
-        </div>
-       </td>
+      </td>
       <td><span class="badge b-zone"><?= h($x['zone_name']) ?></span></td>
       <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h($x['phone']) ?></td>
       <td style="color:var(--text2)"><?= h($x['position']) ?></td>
@@ -1571,22 +883,21 @@ if($v==='members'): ?>
             <button class="btn btn-danger btn-sm" type="submit">Deactivate</button>
           </form>
         </div>
-       </td>
+      </td>
     </tr>
     <?php endforeach; ?>
     </tbody>
-  追赶
+  </table>
   </div>
 </div>
-
 <?php endif; ?>
 
-<?php /* ════════════════════════════════════════════════════
+
+<?php /* ════════════════════════════════════
    ATTENDANCE
-════════════════════════════════════════════════════ */
+════════════════════════════════════ */
 if($v==='attendance'):
-// Build members JSON for autocomplete
-$membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name'],'zone'=>$x['zone_name'],'phone'=>$x['phone'],'position'=>$x['position']],$am));
+$membersJson=json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name'],'zone'=>$x['zone_name'],'phone'=>$x['phone'],'position'=>$x['position']],$am));
 ?>
 <div class="page-header">
   <div>
@@ -1597,9 +908,7 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
 
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span><?= $edit_session ? 'Edit Session' : 'Create Session' ?></div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_session?'Edit Session':'Create Session' ?></div></div>
   <form method="POST">
     <input type="hidden" name="action" value="save_session">
     <input type="hidden" name="id" value="<?= h($edit_session['id']??'') ?>">
@@ -1609,7 +918,7 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
       <div class="form-group"><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>" <?= (($edit_session['zone_id']??'')==$zone['id'])?'selected':'' ?>><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
     </div>
     <div class="form-actions">
-      <button class="btn btn-primary" type="submit">💾 <?= $edit_session ? 'Update Session' : 'Create Session' ?></button>
+      <button class="btn btn-primary" type="submit">💾 <?= $edit_session?'Update Session':'Create Session' ?></button>
       <?php if($edit_session): ?><a class="btn btn-ghost" href="?view=attendance&period=<?= h($p) ?>">✕ Cancel</a><?php endif; ?>
     </div>
   </form>
@@ -1617,9 +926,7 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
 
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Record Attendance</div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Record Attendance</div></div>
   <form method="POST" id="attendanceForm">
     <input type="hidden" name="action" value="attendance">
     <input type="hidden" name="member_id" id="att_member_id" value="">
@@ -1635,15 +942,12 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
       <div class="form-group">
         <label>Search Athlete</label>
         <div class="autocomplete-wrap" id="attAcWrap">
-          <input type="text" id="attAthleteSearch" placeholder="Type athlete name to search…" autocomplete="off">
+          <input type="text" id="attAthleteSearch" placeholder="Type athlete name…" autocomplete="off">
           <div class="autocomplete-dropdown" id="attDropdown"></div>
         </div>
         <div class="selected-athlete-info" id="attSelectedInfo">
           <div class="sa-avatar" id="attSelAvatar"></div>
-          <div>
-            <div class="sa-name" id="attSelName"></div>
-            <div class="sa-detail" id="attSelDetail"></div>
-          </div>
+          <div><div class="sa-name" id="attSelName"></div><div class="sa-detail" id="attSelDetail"></div></div>
         </div>
       </div>
       <div class="form-group">
@@ -1664,14 +968,9 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
 
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Sessions</div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Sessions</div></div>
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="sessionSearch" placeholder="Search sessions by name, date, zone…" oninput="filterTable('sessionSearch','sessionTbl','sessionCnt')">
-    </div>
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="sessionSearch" placeholder="Search sessions…" oninput="filterTable('sessionSearch','sessionTbl','sessionCnt')"></div>
   </div>
   <div class="result-count" id="sessionCnt"></div>
   <div class="table-wrap">
@@ -1692,125 +991,85 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
             <button class="btn btn-danger btn-sm" type="submit">Delete</button>
           </form>
         </div>
-       </td>
+      </td>
     </tr>
     <?php endforeach; ?>
     </tbody>
-  追赶
+  </table>
   </div>
 </div>
 
 <script>
 (function(){
-  const members = <?= $membersJson ?>;
-  const searchInput = document.getElementById('attAthleteSearch');
-  const dropdown = document.getElementById('attDropdown');
-  const memberIdInput = document.getElementById('att_member_id');
-  const selectedInfo = document.getElementById('attSelectedInfo');
-  const selAvatar = document.getElementById('attSelAvatar');
-  const selName = document.getElementById('attSelName');
-  const selDetail = document.getElementById('attSelDetail');
-  const submitBtn = document.getElementById('attSubmitBtn');
-  const hint = document.getElementById('attHint');
-  let focusedIndex = -1;
-
+  const members=<?= $membersJson ?>;
+  const searchInput=document.getElementById('attAthleteSearch');
+  const dropdown=document.getElementById('attDropdown');
+  const memberIdInput=document.getElementById('att_member_id');
+  const selectedInfo=document.getElementById('attSelectedInfo');
+  const selAvatar=document.getElementById('attSelAvatar');
+  const selName=document.getElementById('attSelName');
+  const selDetail=document.getElementById('attSelDetail');
+  const submitBtn=document.getElementById('attSubmitBtn');
+  const hint=document.getElementById('attHint');
+  let focusedIndex=-1;
+  function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
   function renderDropdown(items){
-    dropdown.innerHTML = '';
-    if(items.length === 0){
-      dropdown.innerHTML = '<div class="ac-empty">No athletes found</div>';
-    } else {
-      items.slice(0,10).forEach((m,i)=>{
-        const div = document.createElement('div');
-        div.className = 'ac-item';
-        div.dataset.id = m.id;
-        const initials = m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
-        div.innerHTML = `
-          <div class="ac-avatar">${initials}</div>
-          <div class="ac-info">
-            <div class="ac-name">${escHtml(m.name)}</div>
-            <div class="ac-meta">${escHtml(m.zone||'')}${m.position?' · '+escHtml(m.position):''}</div>
-          </div>
-          <div class="ac-badge">${escHtml(m.phone||'')}</div>`;
-        div.addEventListener('mousedown',()=>selectAthlete(m));
-        dropdown.appendChild(div);
-      });
-    }
-    dropdown.classList.add('open');
-    focusedIndex = -1;
+    dropdown.innerHTML='';
+    if(!items.length){dropdown.innerHTML='<div class="ac-empty">No athletes found</div>';}
+    else items.slice(0,10).forEach((m,i)=>{
+      const div=document.createElement('div');div.className='ac-item';div.dataset.id=m.id;
+      const ini=m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+      div.innerHTML=`<div class="ac-avatar">${ini}</div><div class="ac-info"><div class="ac-name">${escH(m.name)}</div><div class="ac-meta">${escH(m.zone||'')}${m.position?' · '+escH(m.position):''}</div></div><div class="ac-badge">${escH(m.phone||'')}</div>`;
+      div.addEventListener('mousedown',()=>selectAthlete(m));
+      dropdown.appendChild(div);
+    });
+    dropdown.classList.add('open');focusedIndex=-1;
   }
-
   function selectAthlete(m){
-    searchInput.value = m.name;
-    memberIdInput.value = m.id;
-    dropdown.classList.remove('open');
+    searchInput.value=m.name;memberIdInput.value=m.id;dropdown.classList.remove('open');
     selectedInfo.classList.add('visible');
-    const initials = m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
-    selAvatar.textContent = initials;
-    selName.textContent = m.name;
-    selDetail.textContent = (m.zone||'') + (m.position?' · '+m.position:'') + (m.phone?' · '+m.phone:'');
-    submitBtn.disabled = false;
-    hint.textContent = 'Athlete selected — choose status and save';
+    selAvatar.textContent=m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+    selName.textContent=m.name;selDetail.textContent=(m.zone||'')+(m.position?' · '+m.position:'')+(m.phone?' · '+m.phone:'');
+    submitBtn.disabled=false;hint.textContent='Athlete selected — choose status and save';
   }
-
-  function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
   searchInput.addEventListener('input',function(){
-    const q = this.value.toLowerCase().trim();
-    memberIdInput.value = '';
-    selectedInfo.classList.remove('visible');
-    submitBtn.disabled = true;
-    hint.textContent = 'Search and select an athlete above';
-    if(q.length < 1){ dropdown.classList.remove('open'); return; }
-    const filtered = members.filter(m=>m.name.toLowerCase().includes(q) || (m.phone||'').includes(q) || (m.zone||'').toLowerCase().includes(q));
-    renderDropdown(filtered);
+    const q=this.value.toLowerCase().trim();
+    memberIdInput.value='';selectedInfo.classList.remove('visible');submitBtn.disabled=true;hint.textContent='Search and select an athlete above';
+    if(q.length<1){dropdown.classList.remove('open');return;}
+    renderDropdown(members.filter(m=>m.name.toLowerCase().includes(q)||(m.phone||'').includes(q)||(m.zone||'').toLowerCase().includes(q)));
   });
-
   searchInput.addEventListener('keydown',function(e){
-    const items = dropdown.querySelectorAll('.ac-item');
-    if(e.key==='ArrowDown'){
-      e.preventDefault();
-      focusedIndex = Math.min(focusedIndex+1, items.length-1);
-      items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex));
-    } else if(e.key==='ArrowUp'){
-      e.preventDefault();
-      focusedIndex = Math.max(focusedIndex-1, 0);
-      items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex));
-    } else if(e.key==='Enter' && focusedIndex>=0){
-      e.preventDefault();
-      const id = parseInt(items[focusedIndex].dataset.id);
-      const m = members.find(x=>x.id===id);
-      if(m) selectAthlete(m);
-    } else if(e.key==='Escape'){
-      dropdown.classList.remove('open');
-    }
+    const items=dropdown.querySelectorAll('.ac-item');
+    if(e.key==='ArrowDown'){e.preventDefault();focusedIndex=Math.min(focusedIndex+1,items.length-1);items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex));}
+    else if(e.key==='ArrowUp'){e.preventDefault();focusedIndex=Math.max(focusedIndex-1,0);items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex));}
+    else if(e.key==='Enter'&&focusedIndex>=0){e.preventDefault();const id=parseInt(items[focusedIndex].dataset.id);const m=members.find(x=>x.id===id);if(m)selectAthlete(m);}
+    else if(e.key==='Escape'){dropdown.classList.remove('open');}
   });
-
-  document.addEventListener('click',function(e){
-    if(!document.getElementById('attAcWrap').contains(e.target)){
-      dropdown.classList.remove('open');
-    }
-  });
-
-  document.getElementById('attendanceForm').addEventListener('submit',function(e){
-    if(!memberIdInput.value){ e.preventDefault(); alert('Please select an athlete first.'); }
-  });
+  document.addEventListener('click',function(e){if(!document.getElementById('attAcWrap').contains(e.target))dropdown.classList.remove('open');});
+  document.getElementById('attendanceForm').addEventListener('submit',function(e){if(!memberIdInput.value){e.preventDefault();alert('Please select an athlete first.');}});
 })();
 </script>
-
 <?php endif; ?>
 
-<?php /* ════════════════════════════════════════════════════
-   PAYMENTS / BILLING - MODIFIED: Only show athletes who attended sessions
-════════════════════════════════════════════════════ */
+
+<?php /* ════════════════════════════════════
+   PAYMENTS / BILLING
+════════════════════════════════════ */
 if($v==='payments'):
-// Get only athletes who attended sessions this period
-$attendedAthletes = athletes_with_attendance($pdo, $p);
-$membersJson = json_encode($attendedAthletes);
+// Ensure bills exist for all active members
+foreach($am as $mbr) ensure_bill($pdo,$mbr['id'],$p);
+
+$attendedAthletes=athletes_with_attendance($pdo,$p);
+$membersJson=json_encode($attendedAthletes);
+
+/* Edit bill modal data */
+$editBillData=null;
+if($edit_bill) $editBillData=$edit_bill;
 ?>
 <div class="page-header">
   <div>
     <div class="page-title">Billing <em>&amp; Payments</em></div>
-    <div class="page-sub">Period: <?= h($p) ?> · Showing athletes who attended sessions</div>
+    <div class="page-sub">Period: <?= h($p) ?> · Athletes who attended sessions</div>
   </div>
   <div class="period-nav">
     <a href="?view=payments&period=<?= $prev ?>">← Prev</a>
@@ -1819,11 +1078,10 @@ $membersJson = json_encode($attendedAthletes);
   </div>
 </div>
 
+<!-- ── RECORD NEW PAYMENT ── -->
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Record Payment</div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Record Payment</div></div>
   <form method="POST" id="paymentForm">
     <input type="hidden" name="action" value="payment">
     <input type="hidden" name="member_id" id="pay_member_id" value="">
@@ -1831,20 +1089,17 @@ $membersJson = json_encode($attendedAthletes);
       <div class="form-group">
         <label>Search Athlete *</label>
         <div class="autocomplete-wrap" id="payAcWrap">
-          <input type="text" id="payAthleteSearch" placeholder="Type athlete name to search…" autocomplete="off" required>
+          <input type="text" id="payAthleteSearch" placeholder="Type athlete name…" autocomplete="off" required>
           <div class="autocomplete-dropdown" id="payDropdown"></div>
         </div>
         <div class="selected-athlete-info" id="paySelectedInfo">
           <div class="sa-avatar" id="paySelAvatar"></div>
-          <div>
-            <div class="sa-name" id="paySelName"></div>
-            <div class="sa-detail" id="paySelDetail"></div>
-          </div>
+          <div><div class="sa-name" id="paySelName"></div><div class="sa-detail" id="paySelDetail"></div></div>
         </div>
       </div>
-      <div class="form-group"><label>Amount (RWF) *</label><input type="number" name="amount" id="payAmount" required placeholder="0"></div>
-      <div class="form-group"><label>Period</label><input name="period" value="<?= h($p) ?>"></div>
-      <div class="form-group"><label>Note</label><input name="note" placeholder="Optional reference / receipt no."></div>
+      <div class="form-group"><label>Amount (RWF) *</label><input type="number" name="amount" id="payAmount" required min="1" placeholder="0"></div>
+      <div class="form-group"><label>Period</label><input name="period" value="<?= h($p) ?>" pattern="\d{4}-\d{2}" title="YYYY-MM"></div>
+      <div class="form-group"><label>Note / Receipt #</label><input name="note" placeholder="Optional reference"></div>
     </div>
     <div class="form-actions">
       <button class="btn btn-primary" type="submit" id="paySubmitBtn" disabled>💳 Record Payment</button>
@@ -1853,23 +1108,57 @@ $membersJson = json_encode($attendedAthletes);
   </form>
 </div>
 
-<!-- Show list of athletes who attended sessions and their payment status -->
+<!-- ── EDIT PAYMENT MODAL ── -->
+<div class="modal-overlay hidden" id="editPayModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="document.getElementById('editPayModal').classList.add('hidden')">✕</button>
+    <div class="modal-title">✏️ Edit Payment Record</div>
+    <form method="POST">
+      <input type="hidden" name="action" value="edit_payment">
+      <input type="hidden" name="bill_id" id="editBillId">
+      <div class="form-grid-2">
+        <div class="form-group"><label>Athlete</label><input id="editBillAthlete" readonly style="opacity:0.6"></div>
+        <div class="form-group"><label>Period</label><input id="editBillPeriod" readonly style="opacity:0.6"></div>
+        <div class="form-group"><label>Expected Amount (RWF)</label><input id="editBillExpected" readonly style="opacity:0.6"></div>
+        <div class="form-group"><label>Paid Amount (RWF) *</label><input type="number" name="paid_amount" id="editBillPaid" min="0" step="0.01" required></div>
+      </div>
+      <div class="form-group" style="margin-top:14px"><label>Note</label><input name="note" id="editBillNote" placeholder="Optional note"></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">💾 Save Changes</button>
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('editPayModal').classList.add('hidden')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── CLEAR PAYMENT MODAL ── -->
+<div class="modal-overlay hidden" id="clearPayModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="document.getElementById('clearPayModal').classList.add('hidden')">✕</button>
+    <div class="modal-title" style="color:var(--red)">⚠️ Clear Payment</div>
+    <p style="color:var(--text2);margin-bottom:20px;font-size:14px">This will reset the paid amount to 0 for <strong id="clearBillName"></strong> (period: <span id="clearBillPeriod"></span>). This cannot be undone easily.</p>
+    <form method="POST">
+      <input type="hidden" name="action" value="delete_payment">
+      <input type="hidden" name="bill_id" id="clearBillId">
+      <div class="form-actions">
+        <button class="btn btn-danger" type="submit">🗑 Yes, Clear Payment</button>
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('clearPayModal').classList.add('hidden')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ── ATTENDED ATHLETES TABLE ── -->
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Attended Athletes Payment Status — <?= h($p) ?></div>
-    <span class="badge b-present"><?= count($attendedAthletes) ?> athletes attended</span>
+    <div class="card-title"><span class="card-title-bar"></span>Attended Athletes — <?= h($p) ?></div>
+    <span class="badge b-present"><?= count($attendedAthletes) ?> athletes</span>
   </div>
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="attendedPaySearch" placeholder="Search athlete, zone, status…" oninput="filterTable('attendedPaySearch','attendedPayTbl','attendedPayCnt')">
-    </div>
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="attendedPaySearch" placeholder="Search athlete, zone, status…" oninput="filterTable('attendedPaySearch','attendedPayTbl','attendedPayCnt')"></div>
     <select id="apStatusF" onchange="filterTable('attendedPaySearch','attendedPayTbl','attendedPayCnt')">
-      <option value="">All Status</option>
-      <option value="PAID">Paid</option>
-      <option value="PARTIAL">Partial</option>
-      <option value="UNPAID">Unpaid</option>
+      <option value="">All Status</option><option value="PAID">Paid</option><option value="PARTIAL">Partial</option><option value="UNPAID">Unpaid</option>
     </select>
     <select id="apZoneF" onchange="filterTable('attendedPaySearch','attendedPayTbl','attendedPayCnt')">
       <option value="">All Zones</option>
@@ -1879,147 +1168,201 @@ $membersJson = json_encode($attendedAthletes);
   <div class="result-count" id="attendedPayCnt"></div>
   <div class="table-wrap">
   <table id="attendedPayTbl">
-    <thead>
-      <tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Sessions</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Actions</th></tr>
-    </thead>
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Sessions</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>
+    <?php if(empty($attendedAthletes)): ?>
+    <tr><td colspan="9" class="no-data">No athletes attended sessions this period. Mark attendance first.</td></tr>
+    <?php endif; ?>
     <?php foreach($attendedAthletes as $att):
-      $stt = bill_status($att['expected_amount'], $att['paid_amount']);
+      $stt=bill_status($att['expected_amount'],$att['paid_amount']);
+      /* Fetch bill id for edit/clear */
+      $billRow=$pdo->prepare("SELECT id FROM monthly_bills WHERE member_id=? AND period=?");
+      $billRow->execute([$att['id'],$p]);$billRow=$billRow->fetch();$bill_id=$billRow['id']??null;
     ?>
     <tr>
-      <td><div style="display:flex;align-items:center;gap:10px">
+      <td>
+        <div style="display:flex;align-items:center;gap:10px">
           <div style="width:32px;height:32px;border-radius:10px;background:var(--lime-dim);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--lime)"><?= mb_substr($att['full_name'],0,1) ?></div>
           <strong><?= h($att['full_name']) ?></strong>
-        </div></td>
+        </div>
+      </td>
       <td><span class="badge b-zone"><?= h($att['zone_name']) ?></span></td>
       <td style="font-family:var(--font-mono);font-size:12px"><?= h($att['phone']) ?></td>
-      <td><span class="badge b-present"><?= $att['sessions_attended'] ?></span> sessions</small></td>
+      <td><span class="badge b-present"><?= $att['sessions_attended'] ?></span></td>
       <td style="font-family:var(--font-mono);color:var(--text2)"><?= money($att['expected_amount']) ?></td>
       <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($att['paid_amount']) ?></td>
       <td style="font-family:var(--font-mono);color:<?= $att['remaining']>0?'var(--amber)':'var(--muted)' ?>"><?= money($att['remaining']) ?></td>
       <td><span class="badge <?= $stt==='PAID'?'b-paid':($stt==='PARTIAL'?'b-partial':'b-unpaid') ?>"><?= $stt ?></span></td>
       <td>
-        <button class="btn btn-primary btn-sm" onclick="selectAthleteForPayment(<?= htmlspecialchars(json_encode($att)) ?>)">💰 Pay</button>
+        <div class="actions-cell">
+          <button class="btn btn-primary btn-sm" onclick="selectAthleteForPayment(<?= h(json_encode($att)) ?>)">💰 Pay</button>
+          <?php if($bill_id): ?>
+          <button class="btn btn-warning btn-sm" onclick="openEditModal(<?= $bill_id ?>,'<?= h(addslashes($att['full_name'])) ?>','<?= h($p) ?>',<?= (float)$att['expected_amount'] ?>,<?= (float)$att['paid_amount'] ?>,'<?= h(addslashes('')) ?>')">✏️ Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="openClearModal(<?= $bill_id ?>,'<?= h(addslashes($att['full_name'])) ?>','<?= h($p) ?>')">🗑</button>
+          <?php endif; ?>
+        </div>
       </td>
     </tr>
     <?php endforeach; ?>
-    <?php if(empty($attendedAthletes)): ?>
-    <tr><td colspan="9" class="no-data">No athletes attended sessions this period. Please mark attendance first.</td></tr><?php endif; ?>
     </tbody>
-  追赶
+  </table>
+  </div>
+</div>
+
+<!-- ── FULL BILLING LIST ── -->
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Full Billing List — <?= h($p) ?></div>
+  </div>
+  <div class="toolbar">
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="billSearch" placeholder="Search athlete, zone, status…" oninput="filterTable('billSearch','billTbl','billCnt')"></div>
+    <select id="bStatusF" onchange="filterTable('billSearch','billTbl','billCnt')">
+      <option value="">All Status</option><option value="PAID">Paid</option><option value="PARTIAL">Partial</option><option value="UNPAID">Unpaid</option><option value="NO BILL">No Bill</option>
+    </select>
+  </div>
+  <div class="result-count" id="billCnt"></div>
+  <div class="table-wrap">
+  <table id="billTbl">
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Due Date</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+    <?php
+    $billRows=$pdo->prepare("SELECT m.full_name,m.phone,z.name zone_name,b.*,GREATEST(b.expected_amount-b.paid_amount,0) remaining FROM monthly_bills b JOIN members m ON m.id=b.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id WHERE b.period=? ORDER BY z.id,m.full_name");
+    $billRows->execute([$p]);$billRows=$billRows->fetchAll();
+    $totExp2=0;$totPaid2=0;$totRem2=0;
+    foreach($billRows as $br):
+      $stt=bill_status($br['expected_amount'],$br['paid_amount']);
+      $totExp2+=$br['expected_amount'];$totPaid2+=$br['paid_amount'];$totRem2+=$br['remaining'];
+    ?>
+    <tr>
+      <td><strong><?= h($br['full_name']) ?></strong></td>
+      <td><span class="badge b-zone"><?= h($br['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= money($br['expected_amount']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($br['paid_amount']) ?></td>
+      <td style="font-family:var(--font-mono);color:<?= $br['remaining']>0?'var(--amber)':'var(--muted)' ?>"><?= money($br['remaining']) ?></td>
+      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h($br['due_date']) ?></td>
+      <td><span class="badge <?= $stt==='PAID'?'b-paid':($stt==='PARTIAL'?'b-partial':($stt==='NO BILL'?'b-nobill':'b-unpaid')) ?>"><?= $stt ?></span></td>
+      <td>
+        <div class="actions-cell">
+          <button class="btn btn-warning btn-sm" onclick="openEditModal(<?= $br['id'] ?>,'<?= h(addslashes($br['full_name'])) ?>','<?= h($br['period']) ?>',<?= (float)$br['expected_amount'] ?>,<?= (float)$br['paid_amount'] ?>,'<?= h(addslashes($br['note']??'')) ?>')">✏️ Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="openClearModal(<?= $br['id'] ?>,'<?= h(addslashes($br['full_name'])) ?>','<?= h($br['period']) ?>')">🗑 Clear</button>
+        </div>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    <?php if(!empty($billRows)): ?>
+    <tr class="summary-row">
+      <td colspan="2">TOTALS</td>
+      <td><?= money($totExp2) ?></td>
+      <td><?= money($totPaid2) ?></td>
+      <td><?= money($totRem2) ?></td>
+      <td colspan="3">—</td>
+    </tr>
+    <?php endif; ?>
+    <?php if(empty($billRows)): ?><tr><td colspan="8" class="no-data">No billing records for <?= h($p) ?>.</td></tr><?php endif; ?>
+    </tbody>
+  </table>
   </div>
 </div>
 
 <script>
-function selectAthleteForPayment(athlete) {
-    document.getElementById('payAthleteSearch').value = athlete.full_name;
-    document.getElementById('pay_member_id').value = athlete.id;
-    document.getElementById('paySelectedInfo').classList.add('visible');
-    const initials = athlete.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
-    document.getElementById('paySelAvatar').textContent = initials;
-    document.getElementById('paySelName').textContent = athlete.full_name;
-    document.getElementById('paySelDetail').innerHTML = (athlete.zone_name||'') + ' · Fee: ' + formatMoney(athlete.expected_amount) + '/month · ' + athlete.sessions_attended + ' sessions';
-    document.getElementById('payAmount').value = athlete.expected_amount;
-    document.getElementById('paySubmitBtn').disabled = false;
-    document.getElementById('payHint').textContent = 'Athlete selected — enter amount and save';
-    document.getElementById('payDropdown').classList.remove('open');
-    document.getElementById('payAthleteSearch').scrollIntoView({ behavior: 'smooth', block: 'center' });
+function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function formatMoney(n){return Number(n).toLocaleString()+' RWF';}
+
+function openEditModal(billId,name,period,expected,paid,note){
+  document.getElementById('editBillId').value=billId;
+  document.getElementById('editBillAthlete').value=name;
+  document.getElementById('editBillPeriod').value=period;
+  document.getElementById('editBillExpected').value=formatMoney(expected);
+  document.getElementById('editBillPaid').value=paid;
+  document.getElementById('editBillNote').value=note;
+  document.getElementById('editPayModal').classList.remove('hidden');
+}
+function openClearModal(billId,name,period){
+  document.getElementById('clearBillId').value=billId;
+  document.getElementById('clearBillName').textContent=name;
+  document.getElementById('clearBillPeriod').textContent=period;
+  document.getElementById('clearPayModal').classList.remove('hidden');
 }
 
-function formatMoney(amount) {
-    return Number(amount).toLocaleString() + ' RWF';
+function selectAthleteForPayment(athlete){
+  document.getElementById('payAthleteSearch').value=athlete.full_name;
+  document.getElementById('pay_member_id').value=athlete.id;
+  document.getElementById('paySelectedInfo').classList.add('visible');
+  const ini=athlete.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+  document.getElementById('paySelAvatar').textContent=ini;
+  document.getElementById('paySelName').textContent=athlete.full_name;
+  document.getElementById('paySelDetail').textContent=(athlete.zone_name||'')+' · Fee: '+formatMoney(athlete.expected_amount)+'/month · '+athlete.sessions_attended+' sessions';
+  document.getElementById('payAmount').value=athlete.remaining>0?athlete.remaining:athlete.expected_amount;
+  document.getElementById('paySubmitBtn').disabled=false;
+  document.getElementById('payHint').textContent='Athlete selected — enter amount and save';
+  document.getElementById('payDropdown').classList.remove('open');
+  document.getElementById('payAthleteSearch').scrollIntoView({behavior:'smooth',block:'center'});
 }
 
-function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-// Autocomplete for payment form
+// Payment autocomplete
 (function(){
-  const members = <?= $membersJson ?>;
-  const searchInput = document.getElementById('payAthleteSearch');
-  const dropdown = document.getElementById('payDropdown');
-  const memberIdInput = document.getElementById('pay_member_id');
-  const selectedInfo = document.getElementById('paySelectedInfo');
-  const selAvatar = document.getElementById('paySelAvatar');
-  const selName = document.getElementById('paySelName');
-  const selDetail = document.getElementById('paySelDetail');
-  const submitBtn = document.getElementById('paySubmitBtn');
-  const hint = document.getElementById('payHint');
-  const amountInput = document.getElementById('payAmount');
-  let focusedIndex = -1;
+  const members=<?= $membersJson ?>;
+  const searchInput=document.getElementById('payAthleteSearch');
+  const dropdown=document.getElementById('payDropdown');
+  const memberIdInput=document.getElementById('pay_member_id');
+  const selectedInfo=document.getElementById('paySelectedInfo');
+  const selAvatar=document.getElementById('paySelAvatar');
+  const selName=document.getElementById('paySelName');
+  const selDetail=document.getElementById('paySelDetail');
+  const submitBtn=document.getElementById('paySubmitBtn');
+  const hint=document.getElementById('payHint');
+  const amountInput=document.getElementById('payAmount');
+  let focusedIndex=-1;
 
   function renderDropdown(items){
-    dropdown.innerHTML = '';
-    if(items.length === 0){
-      dropdown.innerHTML = '<div class="ac-empty">No athletes found</div>';
-    } else {
-      items.slice(0,10).forEach((m,i)=>{
-        const div = document.createElement('div');
-        div.className = 'ac-item';
-        div.dataset.id = m.id;
-        div.dataset.fee = m.expected_amount;
-        const initials = m.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
-        div.innerHTML = `
-          <div class="ac-avatar">${initials}</div>
-          <div class="ac-info">
-            <div class="ac-name">${escHtml(m.full_name)}</div>
-            <div class="ac-meta">${escHtml(m.zone_name||'')} · ${m.sessions_attended} sessions attended</div>
-          </div>
-          <div class="ac-badge">${formatMoney(m.expected_amount)}/mo</div>`;
-        div.addEventListener('mousedown',()=>{
-          memberIdInput.value = m.id;
-          searchInput.value = m.full_name;
-          dropdown.classList.remove('open');
-          selectedInfo.classList.add('visible');
-          const initials2 = m.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
-          selAvatar.textContent = initials2;
-          selName.textContent = m.full_name;
-          selDetail.innerHTML = (m.zone_name||'') + ' · ' + m.sessions_attended + ' sessions · Fee: ' + formatMoney(m.expected_amount) + '/month';
-          if(m.expected_amount > 0) amountInput.value = m.expected_amount;
-          submitBtn.disabled = false;
-          hint.textContent = 'Athlete selected — enter amount and save';
-        });
-        dropdown.appendChild(div);
+    dropdown.innerHTML='';
+    if(!items.length){dropdown.innerHTML='<div class="ac-empty">No athletes found</div>';}
+    else items.slice(0,10).forEach((m)=>{
+      const div=document.createElement('div');div.className='ac-item';div.dataset.id=m.id;
+      const ini=m.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+      div.innerHTML=`<div class="ac-avatar">${ini}</div><div class="ac-info"><div class="ac-name">${escH(m.full_name)}</div><div class="ac-meta">${escH(m.zone_name||'')} · ${m.sessions_attended} sessions</div></div><div class="ac-badge">${formatMoney(m.expected_amount)}/mo</div>`;
+      div.addEventListener('mousedown',()=>{
+        memberIdInput.value=m.id;searchInput.value=m.full_name;dropdown.classList.remove('open');
+        selectedInfo.classList.add('visible');
+        const ini2=m.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+        selAvatar.textContent=ini2;selName.textContent=m.full_name;
+        selDetail.textContent=(m.zone_name||'')+' · '+m.sessions_attended+' sessions · Fee: '+formatMoney(m.expected_amount)+'/month';
+        amountInput.value=m.remaining>0?m.remaining:m.expected_amount;
+        submitBtn.disabled=false;hint.textContent='Athlete selected — enter amount and save';
       });
-    }
-    dropdown.classList.add('open');
-    focusedIndex = -1;
+      dropdown.appendChild(div);
+    });
+    dropdown.classList.add('open');focusedIndex=-1;
   }
-
   searchInput.addEventListener('input',function(){
-    const q = this.value.toLowerCase().trim();
-    if(!memberIdInput.value) {
-        selectedInfo.classList.remove('visible');
-        submitBtn.disabled = true;
-        hint.textContent = 'Search and select an athlete above';
-    }
-    if(q.length < 1){ dropdown.classList.remove('open'); return; }
-    const filtered = members.filter(m=>m.full_name.toLowerCase().includes(q) || (m.phone||'').includes(q) || (m.zone_name||'').toLowerCase().includes(q));
-    renderDropdown(filtered);
+    const q=this.value.toLowerCase().trim();
+    memberIdInput.value='';selectedInfo.classList.remove('visible');submitBtn.disabled=true;hint.textContent='Search and select an athlete above';
+    if(!q){dropdown.classList.remove('open');return;}
+    renderDropdown(members.filter(m=>m.full_name.toLowerCase().includes(q)||(m.phone||'').includes(q)||(m.zone_name||'').toLowerCase().includes(q)));
   });
-
   searchInput.addEventListener('keydown',function(e){
-    const items = dropdown.querySelectorAll('.ac-item');
-    if(e.key==='ArrowDown'){ e.preventDefault(); focusedIndex=Math.min(focusedIndex+1,items.length-1); items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex)); }
-    else if(e.key==='ArrowUp'){ e.preventDefault(); focusedIndex=Math.max(focusedIndex-1,0); items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex)); }
-    else if(e.key==='Enter'&&focusedIndex>=0){ e.preventDefault(); const clickEvent = new Event('mousedown'); items[focusedIndex].dispatchEvent(clickEvent); }
-    else if(e.key==='Escape'){ dropdown.classList.remove('open'); }
+    const items=dropdown.querySelectorAll('.ac-item');
+    if(e.key==='ArrowDown'){e.preventDefault();focusedIndex=Math.min(focusedIndex+1,items.length-1);items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex));}
+    else if(e.key==='ArrowUp'){e.preventDefault();focusedIndex=Math.max(focusedIndex-1,0);items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex));}
+    else if(e.key==='Enter'&&focusedIndex>=0){e.preventDefault();items[focusedIndex].dispatchEvent(new Event('mousedown'));}
+    else if(e.key==='Escape'){dropdown.classList.remove('open');}
   });
-
-  document.addEventListener('click',function(e){
-    if(!document.getElementById('payAcWrap').contains(e.target)) dropdown.classList.remove('open');
-  });
-
-  document.getElementById('paymentForm').addEventListener('submit',function(e){
-    if(!memberIdInput.value){ e.preventDefault(); alert('Please select an athlete first.'); }
-  });
+  document.addEventListener('click',function(e){if(!document.getElementById('payAcWrap').contains(e.target))dropdown.classList.remove('open');});
+  document.getElementById('paymentForm').addEventListener('submit',function(e){if(!memberIdInput.value){e.preventDefault();alert('Please select an athlete first.');}});
 })();
-</script>
 
+// Close modals on overlay click
+['editPayModal','clearPayModal'].forEach(id=>{
+  document.getElementById(id).addEventListener('click',function(e){if(e.target===this)this.classList.add('hidden');});
+});
+</script>
 <?php endif; ?>
 
-<?php /* ════════════════════════════════════════════════════
+
+<?php /* ════════════════════════════════════
    STAFF
-════════════════════════════════════════════════════ */
+════════════════════════════════════ */
 if($v==='staff'): ?>
 <div class="page-header">
   <div>
@@ -2027,12 +1370,9 @@ if($v==='staff'): ?>
     <div class="page-sub"><?= count($st) ?> total staff</div>
   </div>
 </div>
-
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span><?= $edit_staff ? 'Edit Staff Member' : 'Add Staff Member' ?></div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_staff?'Edit Staff Member':'Add Staff Member' ?></div></div>
   <form method="POST">
     <input type="hidden" name="action" value="save_staff">
     <input type="hidden" name="id" value="<?= h($edit_staff['id']??'') ?>">
@@ -2054,32 +1394,17 @@ if($v==='staff'): ?>
       <div class="form-group"><label>Monthly Salary (RWF)</label><input type="number" name="monthly_salary" value="<?= h($edit_staff['monthly_salary']??0) ?>"></div>
     </div>
     <div class="form-actions">
-      <button class="btn btn-primary" type="submit">💾 <?= $edit_staff ? 'Update Staff' : 'Save Staff' ?></button>
+      <button class="btn btn-primary" type="submit">💾 <?= $edit_staff?'Update Staff':'Save Staff' ?></button>
       <?php if($edit_staff): ?><a class="btn btn-ghost" href="?view=staff&period=<?= h($p) ?>">✕ Cancel</a><?php endif; ?>
     </div>
   </form>
 </div>
-
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Staff Directory</div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Staff Directory</div></div>
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="staffSearch" placeholder="Search name, role, zone, phone…" oninput="filterTable('staffSearch','staffTbl','staffCnt')">
-    </div>
-    <select id="stRoleF" onchange="filterTable('staffSearch','staffTbl','staffCnt')">
-      <option value="">All Roles</option>
-      <?php foreach(['coach','assistant_coach','manager','accountant'] as $role): ?>
-      <option value="<?= $role ?>"><?= $role ?></option>
-      <?php endforeach; ?>
-    </select>
-    <select id="stZoneF" onchange="filterTable('staffSearch','staffTbl','staffCnt')">
-      <option value="">All Zones</option>
-      <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
-    </select>
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="staffSearch" placeholder="Search name, role, zone…" oninput="filterTable('staffSearch','staffTbl','staffCnt')"></div>
+    <select id="stZoneF" onchange="filterTable('staffSearch','staffTbl','staffCnt')"><option value="">All Zones</option><?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?></select>
   </div>
   <div class="result-count" id="staffCnt"></div>
   <div class="table-wrap">
@@ -2110,12 +1435,12 @@ if($v==='staff'): ?>
   </table>
   </div>
 </div>
-
 <?php endif; ?>
 
-<?php /* ════════════════════════════════════════════════════
+
+<?php /* ════════════════════════════════════
    PAYROLL
-════════════════════════════════════════════════════ */
+════════════════════════════════════ */
 if($v==='payroll'): ?>
 <div class="page-header">
   <div>
@@ -2128,12 +1453,9 @@ if($v==='payroll'): ?>
     <a href="?view=payroll&period=<?= $next ?>">Next →</a>
   </div>
 </div>
-
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Add / Update Payroll Entry</div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Add / Update Payroll Entry</div></div>
   <form method="POST">
     <input type="hidden" name="action" value="payroll">
     <div class="form-grid">
@@ -2142,27 +1464,21 @@ if($v==='payroll'): ?>
           <?php foreach($st as $x): ?><option value="<?= $x['id'] ?>"><?= h($x['full_name'].' ['.$x['zone_name'].']') ?></option><?php endforeach; ?>
         </select>
       </div>
-      <div class="form-group"><label>Period</label><input name="period" value="<?= h($p) ?>"></div>
-      <div class="form-group"><label>Base Salary (RWF)</label><input type="number" name="base_salary" value="0"></div>
-      <div class="form-group"><label>Bonus (RWF)</label><input type="number" name="bonus" value="0"></div>
-      <div class="form-group"><label>Deductions (RWF)</label><input type="number" name="deductions" value="0"></div>
-      <div class="form-group"><label>Amount Paid (RWF)</label><input type="number" name="amount_paid" value="0"></div>
+      <div class="form-group"><label>Period</label><input name="period" value="<?= h($p) ?>" pattern="\d{4}-\d{2}"></div>
+      <div class="form-group"><label>Base Salary (RWF)</label><input type="number" name="base_salary" value="0" min="0"></div>
+      <div class="form-group"><label>Bonus (RWF)</label><input type="number" name="bonus" value="0" min="0"></div>
+      <div class="form-group"><label>Deductions (RWF)</label><input type="number" name="deductions" value="0" min="0"></div>
+      <div class="form-group"><label>Amount Paid (RWF)</label><input type="number" name="amount_paid" value="0" min="0"></div>
       <div class="form-group"><label>Note</label><input name="note" placeholder="Optional"></div>
     </div>
     <div class="form-actions"><button class="btn btn-primary" type="submit">💾 Save Payroll</button></div>
   </form>
 </div>
-
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Payroll — <?= h($p) ?></div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Payroll — <?= h($p) ?></div></div>
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="payrollSearch" placeholder="Search staff name, zone, status…" oninput="filterTable('payrollSearch','payrollTbl','payrollCnt')">
-    </div>
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="payrollSearch" placeholder="Search staff name…" oninput="filterTable('payrollSearch','payrollTbl','payrollCnt')"></div>
   </div>
   <div class="result-count" id="payrollCnt"></div>
   <div class="table-wrap">
@@ -2170,10 +1486,13 @@ if($v==='payroll'): ?>
     <thead><tr><th>Staff</th><th>Zone</th><th>Base</th><th>Bonus</th><th>Deductions</th><th>Net Salary</th><th>Paid</th><th>Status</th></tr></thead>
     <tbody>
     <?php
-    $pay=$pdo->query("SELECT c.*,s.full_name,z.name zone_name FROM coach_payroll c JOIN staff s ON s.id=c.staff_id LEFT JOIN academy_zones z ON z.id=s.zone_id WHERE c.period='$p' ORDER BY z.id,s.full_name")->fetchAll();
+    $safe_p3=$pdo->quote($p);
+    $pay=$pdo->query("SELECT c.*,s.full_name,z.name zone_name FROM coach_payroll c JOIN staff s ON s.id=c.staff_id LEFT JOIN academy_zones z ON z.id=s.zone_id WHERE c.period=$safe_p3 ORDER BY z.id,s.full_name")->fetchAll();
     $totBase=$totBonus=$totDed=$totNet=$totPaid=0;
     foreach($pay as $x):
       $totBase+=$x['base_salary'];$totBonus+=$x['bonus'];$totDed+=$x['deductions'];$totNet+=$x['net_salary'];$totPaid+=$x['amount_paid'];
+      /* FIX: use payment_status column */
+      $ps=$x['payment_status']??$x['status']??'UNPAID';
     ?>
     <tr>
       <td><strong><?= h($x['full_name']) ?></strong></td>
@@ -2183,31 +1502,23 @@ if($v==='payroll'): ?>
       <td style="font-family:var(--font-mono);color:var(--red)"><?= money($x['deductions']) ?></td>
       <td style="font-family:var(--font-mono);font-weight:700;color:var(--text)"><?= money($x['net_salary']) ?></td>
       <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($x['amount_paid']) ?></td>
-      <td><span class="badge <?= $x['status']==='PAID'?'b-paid':($x['status']==='PARTIAL'?'b-partial':'b-unpaid') ?>"><?= h($x['status']) ?></span></td>
+      <td><span class="badge <?= $ps==='PAID'?'b-paid':($ps==='PARTIAL'?'b-partial':'b-unpaid') ?>"><?= h($ps) ?></span></td>
     </tr>
     <?php endforeach; ?>
     <?php if(!empty($pay)): ?>
-    <tr class="summary-row">
-      <td colspan="2">TOTALS</td>
-      <td><?= money($totBase) ?></td>
-      <td><?= money($totBonus) ?></td>
-      <td><?= money($totDed) ?></td>
-      <td><?= money($totNet) ?></td>
-      <td><?= money($totPaid) ?></td>
-      <td>—</td>
-    </tr>
+    <tr class="summary-row"><td colspan="2">TOTALS</td><td><?= money($totBase) ?></td><td><?= money($totBonus) ?></td><td><?= money($totDed) ?></td><td><?= money($totNet) ?></td><td><?= money($totPaid) ?></td><td>—</td></tr>
     <?php endif; ?>
     <?php if(empty($pay)): ?><tr><td colspan="8" class="no-data">No payroll records for <?= h($p) ?></td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
 </div>
-
 <?php endif; ?>
 
-<?php /* ════════════════════════════════════════════════════
+
+<?php /* ════════════════════════════════════
    EXPENSES
-════════════════════════════════════════════════════ */
+════════════════════════════════════ */
 if($v==='expenses'): ?>
 <div class="page-header">
   <div>
@@ -2220,12 +1531,9 @@ if($v==='expenses'): ?>
     <a href="?view=expenses&period=<?= $next ?>">Next →</a>
   </div>
 </div>
-
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Log New Expense</div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Log New Expense</div></div>
   <form method="POST">
     <input type="hidden" name="action" value="expense">
     <div class="form-grid">
@@ -2233,38 +1541,27 @@ if($v==='expenses'): ?>
       <div class="form-group"><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>"><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
       <div class="form-group"><label>Category</label><input name="category" placeholder="e.g. Equipment, Utility, Travel"></div>
       <div class="form-group"><label>Description *</label><input name="description" required placeholder="What was this expense for?"></div>
-      <div class="form-group"><label>Amount (RWF) *</label><input type="number" name="amount" required placeholder="0"></div>
+      <div class="form-group"><label>Amount (RWF) *</label><input type="number" name="amount" required placeholder="0" min="1"></div>
       <div class="form-group"><label>Paid To</label><input name="paid_to" placeholder="Vendor / person name"></div>
       <div class="form-group"><label>Approved By</label><input name="approved_by" placeholder="Manager / supervisor"></div>
     </div>
     <div class="form-actions"><button class="btn btn-primary" type="submit">💾 Save Expense</button></div>
   </form>
 </div>
-
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Expense Records</div>
-  </div>
-  <?php $expenses = $pdo->query("SELECT e.*,z.name zone_name FROM expenses e LEFT JOIN academy_zones z ON z.id=e.zone_id ORDER BY e.expense_date DESC,e.id DESC")->fetchAll(); ?>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Expense Records</div></div>
+  <?php $expenses=$pdo->query("SELECT e.*,z.name zone_name FROM expenses e LEFT JOIN academy_zones z ON z.id=e.zone_id ORDER BY e.expense_date DESC,e.id DESC")->fetchAll(); ?>
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="expenseSearch" placeholder="Search description, category, zone, paid to…" oninput="filterTable('expenseSearch','expenseTbl','expenseCnt')">
-    </div>
-    <select id="eZoneF" onchange="filterTable('expenseSearch','expenseTbl','expenseCnt')">
-      <option value="">All Zones</option>
-      <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
-    </select>
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="expenseSearch" placeholder="Search description, category, zone…" oninput="filterTable('expenseSearch','expenseTbl','expenseCnt')"></div>
+    <select id="eZoneF" onchange="filterTable('expenseSearch','expenseTbl','expenseCnt')"><option value="">All Zones</option><?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?></select>
   </div>
   <div class="result-count" id="expenseCnt"></div>
   <div class="table-wrap">
   <table id="expenseTbl">
     <thead><tr><th>Date</th><th>Zone</th><th>Category</th><th>Description</th><th>Amount</th><th>Paid To</th><th>Approved</th></tr></thead>
     <tbody>
-    <?php
-    $totExp=0;
-    foreach($expenses as $e): $totExp+=$e['amount']; ?>
+    <?php $totExp=0; foreach($expenses as $e): $totExp+=$e['amount']; ?>
     <tr>
       <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h($e['expense_date']) ?></td>
       <td><span class="badge b-zone"><?= h($e['zone_name']) ?></span></td>
@@ -2276,46 +1573,42 @@ if($v==='expenses'): ?>
     </tr>
     <?php endforeach; ?>
     <?php if(!empty($expenses)): ?>
-    <tr class="summary-row">
-      <td colspan="4">TOTAL EXPENSES</td>
-      <td><?= money($totExp) ?></td>
-      <td colspan="2">—</td>
-    </tr>
+    <tr class="summary-row"><td colspan="4">TOTAL EXPENSES</td><td><?= money($totExp) ?></td><td colspan="2">—</td></tr>
     <?php endif; ?>
-    <?php if(empty($expenses)): ?><td><td colspan="7" class="no-data">No expenses recorded yet</td><?php endif; ?>
+    <?php if(empty($expenses)): ?><tr><td colspan="7" class="no-data">No expenses recorded yet</td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
 </div>
-
 <?php endif; ?>
 
 
-<?php /* ════════════════════════════════════════════════════
+<?php /* ════════════════════════════════════
    UNIFORMS
-════════════════════════════════════════════════════ */
+════════════════════════════════════ */
 if($v==='uniforms'):
-$uniforms=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC,m.full_name ASC")->fetchAll();
-$totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
+$uniforms=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
+$totalQty=0;foreach($uniforms as $uu){$totalQty+=(int)$uu['quantity'];}
 ?>
 <div class="page-header">
   <div>
-    <div class="page-title"><?= $edit_uniform ? 'Edit <em>Uniform</em>' : 'Athlete <em>Uniforms</em>' ?></div>
-    <div class="page-sub">Jersey numbers · Jersey sizes · Shorts sizes · Uniform report</div>
+    <div class="page-title"><?= $edit_uniform?'Edit <em>Uniform</em>':'Athlete <em>Uniforms</em>' ?></div>
+    <div class="page-sub">Jersey numbers · Sizes · Kit report</div>
   </div>
-  <div style="display:flex;gap:10px;flex-wrap:wrap"><a class="btn btn-ghost" href="?view=uniforms&period=<?= h($p) ?>&export=uniform_excel">📊 Excel Export</a><a class="btn btn-primary" href="?view=uniforms&period=<?= h($p) ?>&export=uniform_pdf" target="_blank">📄 PDF Export</a></div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <a class="btn btn-ghost" href="?view=uniforms&period=<?= h($p) ?>&export=uniform_excel">📊 CSV Export</a>
+    <a class="btn btn-primary" href="?view=uniforms&period=<?= h($p) ?>&export=uniform_pdf" target="_blank">📄 PDF Export</a>
+  </div>
 </div>
-
 <div class="stat-grid">
   <div class="stat-card" data-color="lime"><div class="stat-icon">▤</div><div class="stat-label">Uniform Records</div><div class="stat-value"><?= count($uniforms) ?></div></div>
   <div class="stat-card" data-color="blue"><div class="stat-icon">#</div><div class="stat-label">Total Kits Qty</div><div class="stat-value"><?= $totalQty ?></div></div>
   <div class="stat-card" data-color="amber"><div class="stat-icon">👕</div><div class="stat-label">Active Athletes</div><div class="stat-value"><?= count($am) ?></div></div>
 </div>
-
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_uniform ? 'Edit Uniform Data' : 'Insert Uniform Data' ?></div></div>
-  <form method="POST" id="uniformForm">
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_uniform?'Edit Uniform Data':'Insert Uniform Data' ?></div></div>
+  <form method="POST">
     <input type="hidden" name="action" value="save_uniform">
     <input type="hidden" name="id" value="<?= h($edit_uniform['id']??'') ?>">
     <div class="form-grid">
@@ -2324,22 +1617,21 @@ $totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
       <div class="form-group"><label>Quantity</label><input type="number" min="1" name="quantity" value="<?= h($edit_uniform['quantity']??1) ?>"></div>
       <div class="form-group"><label>Jersey Category *</label><select name="jersey_category" required><?php $jc=$edit_uniform['jersey_category']??''; foreach(['Adult Unisex V-Neck','Youth V-Neck','Women\'s Racerback','Girls Jersey','Reversible Adult','Reversible Women\'s','Reversible Youth'] as $opt): ?><option <?= $jc===$opt?'selected':'' ?>><?= h($opt) ?></option><?php endforeach; ?></select></div>
       <div class="form-group"><label>Jersey Size *</label><input name="jersey_size" required value="<?= h($edit_uniform['jersey_size']??'') ?>" placeholder="ML / YM / WXL"></div>
-      <div class="form-group"><label>Jersey Chest (inches)</label><input type="number" step="0.01" name="jersey_chest" value="<?= h($edit_uniform['jersey_chest']??'') ?>" placeholder="23"></div>
-      <div class="form-group"><label>Jersey Length (inches)</label><input type="number" step="0.01" name="jersey_length" value="<?= h($edit_uniform['jersey_length']??'') ?>" placeholder="29"></div>
+      <div class="form-group"><label>Jersey Chest (inches)</label><input type="number" step="0.01" name="jersey_chest" value="<?= h($edit_uniform['jersey_chest']??'') ?>"></div>
+      <div class="form-group"><label>Jersey Length (inches)</label><input type="number" step="0.01" name="jersey_length" value="<?= h($edit_uniform['jersey_length']??'') ?>"></div>
       <div class="form-group"><label>Shorts Category *</label><select name="shorts_category" required><?php $sc=$edit_uniform['shorts_category']??''; foreach(['Adult Unisex Shorts','Women\'s Shorts','Youth Shorts'] as $opt): ?><option <?= $sc===$opt?'selected':'' ?>><?= h($opt) ?></option><?php endforeach; ?></select></div>
       <div class="form-group"><label>Shorts Size *</label><input name="shorts_size" required value="<?= h($edit_uniform['shorts_size']??'') ?>" placeholder="ML / YM / WXL"></div>
-      <div class="form-group"><label>Shorts Waist (inches)</label><input type="number" step="0.01" name="shorts_waist" value="<?= h($edit_uniform['shorts_waist']??'') ?>" placeholder="15.5"></div>
-      <div class="form-group"><label>Shorts Inseam (inches)</label><input type="number" step="0.01" name="shorts_inseam" value="<?= h($edit_uniform['shorts_inseam']??'') ?>" placeholder="10.75"></div>
+      <div class="form-group"><label>Shorts Waist (inches)</label><input type="number" step="0.01" name="shorts_waist" value="<?= h($edit_uniform['shorts_waist']??'') ?>"></div>
+      <div class="form-group"><label>Shorts Inseam (inches)</label><input type="number" step="0.01" name="shorts_inseam" value="<?= h($edit_uniform['shorts_inseam']??'') ?>"></div>
       <div class="form-group"><label>Issued Date</label><input type="date" name="issued_date" value="<?= h($edit_uniform['issued_date']??date('Y-m-d')) ?>"></div>
       <div class="form-group"><label>Note</label><input name="note" value="<?= h($edit_uniform['note']??'') ?>" placeholder="Optional notes"></div>
     </div>
     <div class="form-actions">
-      <button class="btn btn-primary" type="submit">💾 <?= $edit_uniform ? 'Update Uniform' : 'Save Uniform' ?></button>
+      <button class="btn btn-primary" type="submit">💾 <?= $edit_uniform?'Update Uniform':'Save Uniform' ?></button>
       <?php if($edit_uniform): ?><a class="btn btn-ghost" href="?view=uniforms&period=<?= h($p) ?>">Cancel</a><?php endif; ?>
     </div>
   </form>
 </div>
-
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Uniform Report</div></div>
@@ -2347,60 +1639,67 @@ $totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
   <div class="result-count" id="uniformCnt"></div>
   <div class="table-wrap">
   <table id="uniformTbl">
-    <thead><tr><th>No.</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Category</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Actions</th></tr></thead>
+    <thead><tr><th>No.</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Cat.</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Actions</th></tr></thead>
     <tbody>
-    <?php if(!$uniforms): ?><tr><td colspan="14" class="no-data">No uniform data inserted yet.<?php endif; ?>
+    <?php if(empty($uniforms)): ?><tr><td colspan="14" class="no-data">No uniform data yet.</td></tr><?php endif; ?>
     <?php foreach($uniforms as $u): ?>
-      <tr>
-        <td><strong style="font-family:var(--font-display);color:var(--lime)"><?= h($u['jersey_number']) ?></strong></td>
-        <td><strong><?= h($u['full_name']) ?></strong></td>
-        <td><span class="badge b-zone"><?= h($u['zone_name']) ?></span></td>
-        <td><?= h($u['jersey_category']) ?></td>
-        <td><?= h($u['jersey_size']) ?></td>
-        <td><?= h($u['jersey_chest']) ?></td>
-        <td><?= h($u['jersey_length']) ?></td>
-        <td><?= h($u['shorts_category']) ?></td>
-        <td><?= h($u['shorts_size']) ?></td>
-        <td><?= h($u['shorts_waist']) ?></td>
-        <td><?= h($u['shorts_inseam']) ?></td>
-        <td><?= h($u['quantity']) ?></td>
-        <td style="font-family:var(--font-mono);color:var(--text2)"><?= h($u['issued_date']) ?></td>
-        <td><div class="actions-cell"><a class="btn btn-ghost btn-sm" href="?view=uniforms&period=<?= h($p) ?>&edit_uniform=<?= $u['id'] ?>">Edit</a><form method="POST" style="display:inline" onsubmit="return confirm('Delete this uniform record?')"><input type="hidden" name="action" value="delete_uniform"><input type="hidden" name="id" value="<?= $u['id'] ?>"><button class="btn btn-danger btn-sm" type="submit">Delete</button></form></div></td>
-      </tr>
+    <tr>
+      <td><strong style="font-family:var(--font-display);color:var(--lime)"><?= h($u['jersey_number']) ?></strong></td>
+      <td><strong><?= h($u['full_name']) ?></strong></td>
+      <td><span class="badge b-zone"><?= h($u['zone_name']) ?></span></td>
+      <td><?= h($u['jersey_category']) ?></td>
+      <td><?= h($u['jersey_size']) ?></td>
+      <td><?= h($u['jersey_chest']) ?></td>
+      <td><?= h($u['jersey_length']) ?></td>
+      <td><?= h($u['shorts_category']) ?></td>
+      <td><?= h($u['shorts_size']) ?></td>
+      <td><?= h($u['shorts_waist']) ?></td>
+      <td><?= h($u['shorts_inseam']) ?></td>
+      <td><?= h($u['quantity']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= h($u['issued_date']) ?></td>
+      <td>
+        <div class="actions-cell">
+          <a class="btn btn-ghost btn-sm" href="?view=uniforms&period=<?= h($p) ?>&edit_uniform=<?= $u['id'] ?>">Edit</a>
+          <form method="POST" style="display:inline" onsubmit="return confirm('Delete this uniform record?')">
+            <input type="hidden" name="action" value="delete_uniform">
+            <input type="hidden" name="id" value="<?= $u['id'] ?>">
+            <button class="btn btn-danger btn-sm" type="submit">Delete</button>
+          </form>
+        </div>
+      </td>
+    </tr>
     <?php endforeach; ?>
     </tbody>
   </table>
   </div>
 </div>
-
 <script>
-function checkJerseyNumber(input) {
-    const jerseyNum = input.value;
-    const currentId = document.querySelector('input[name="id"]').value;
-    if(!jerseyNum) return;
-    
-    fetch(`?view=uniforms&period=<?= h($p) ?>&check_jersey=${jerseyNum}&current_id=${currentId}`)
-        .then(response => response.json())
-        .then(data => {
-            if(data.exists) {
-                alert('Warning: Jersey number ' + jerseyNum + ' is already assigned to another athlete!');
-                input.style.borderColor = 'var(--red)';
-            } else {
-                input.style.borderColor = 'var(--border2)';
-            }
-        })
-        .catch(err => console.log(err));
+function checkJerseyNumber(input){
+  const jerseyNum=input.value;
+  const currentId=document.querySelector('input[name="id"]').value||'';
+  if(!jerseyNum) return;
+  fetch(`?check_jersey=${jerseyNum}&current_id=${currentId}`)
+    .then(r=>r.json())
+    .then(data=>{
+      input.style.borderColor=data.exists?'var(--red)':'var(--border2)';
+      if(data.exists) alert('Warning: Jersey number '+jerseyNum+' is already assigned!');
+    })
+    .catch(()=>{});
 }
 </script>
 <?php endif; ?>
 
-<?php /* ════════════════════════════════════════════════════
+
+<?php /* ════════════════════════════════════
    REPORTS
-════════════════════════════════════════════════════ */
-if($v==='reports'): 
-$non_payers = non_payers_with_attendance($pdo, $p);
-$overdue = overdue_payments_report($pdo, $p);
-$att_summary = attendance_summary($pdo, null, $p);
+════════════════════════════════════ */
+if($v==='reports'):
+$att_month=$_GET['att_month']??$p;
+$non_payers=non_payers_with_attendance($pdo,$p,$att_month);
+$overdue=overdue_payments_report($pdo,$p);
+$att_summary=attendance_summary($pdo,null,$p);
+$totalRev=(float)$stats['revenue'];$totalExp=(float)$stats['expenses'];$totalPay=(float)$stats['payroll'];
+$netIncome=$totalRev-$totalExp-$totalPay;
 ?>
 <div class="page-header">
   <div>
@@ -2414,111 +1713,66 @@ $att_summary = attendance_summary($pdo, null, $p);
   </div>
 </div>
 
-<!-- Financial Summary KPIs -->
-<?php
-$totalRev  = (float)$stats['revenue'];
-$totalExp  = (float)$stats['expenses'];
-$totalPay  = (float)$stats['payroll'];
-$totalOut  = (float)$stats['outstanding'];
-$netIncome = $totalRev - $totalExp - $totalPay;
-$totalExp2 = $totalExp + $totalPay;
-?>
-<div class="stat-grid" style="margin-bottom:20px">
-  <div class="stat-card" data-color="teal">
-    <div class="stat-icon">📥</div>
-    <div class="stat-label">Total Revenue</div>
-    <div class="stat-value" style="font-size:20px"><?= money($totalRev) ?></div>
-  </div>
-  <div class="stat-card" data-color="red">
-    <div class="stat-icon">📤</div>
-    <div class="stat-label">Total Outgoings</div>
-    <div class="stat-value" style="font-size:20px"><?= money($totalExp2) ?></div>
-  </div>
-  <div class="stat-card" data-color="<?= $netIncome>=0?'lime':'red' ?>">
-    <div class="stat-icon"><?= $netIncome>=0?'📈':'📉' ?></div>
-    <div class="stat-label">Net Income</div>
-    <div class="stat-value" style="font-size:20px"><?= money($netIncome) ?></div>
-  </div>
+<div class="stat-grid">
+  <div class="stat-card" data-color="teal"><div class="stat-icon">📥</div><div class="stat-label">Total Revenue</div><div class="stat-value" style="font-size:20px"><?= money($totalRev) ?></div></div>
+  <div class="stat-card" data-color="red"><div class="stat-icon">📤</div><div class="stat-label">Total Outgoings</div><div class="stat-value" style="font-size:20px"><?= money($totalExp+$totalPay) ?></div></div>
+  <div class="stat-card" data-color="<?= $netIncome>=0?'lime':'red' ?>"><div class="stat-icon"><?= $netIncome>=0?'📈':'📉' ?></div><div class="stat-label">Net Income</div><div class="stat-value" style="font-size:20px"><?= money($netIncome) ?></div></div>
 </div>
 
-<!-- Non-Payers Who Attend Sessions -->
+<!-- Non-Payers -->
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>⚠️ Non-Payers Who Attend Sessions — <?= h($p) ?></div>
-    <div>
-      <a class="btn btn-ghost btn-sm" href="?view=reports&period=<?= h($p) ?>&export=non_payers">📊 Export CSV</a>
-      <a class="btn btn-ghost btn-sm" href="javascript:void(0)" onclick="filterAttendanceMonth()">Filter by Attendance Month</a>
+    <div class="card-title"><span class="card-title-bar"></span>⚠️ Non-Payers Who Attend — <?= h($p) ?></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn btn-ghost btn-sm" href="?view=reports&period=<?= h($p) ?>&export=non_payers&att_month=<?= h($att_month) ?>">📊 Export CSV</a>
     </div>
   </div>
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="nonPaySearch" placeholder="Search athlete, zone..." oninput="filterTable('nonPaySearch','nonPayTbl','nonPayCnt')">
-    </div>
-    <select id="attMonthSelect" onchange="filterAttendanceMonth()">
-      <option value="<?= $p ?>">Current Period (<?= $p ?>)</option>
-      <option value="<?= $prev ?>">Previous Month (<?= $prev ?>)</option>
-      <option value="<?= date('Y-m', strtotime('-2 month')) ?>"><?= date('Y-m', strtotime('-2 month')) ?></option>
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="nonPaySearch" placeholder="Search athlete, zone…" oninput="filterTable('nonPaySearch','nonPayTbl','nonPayCnt')"></div>
+    <select onchange="window.location.href='?view=reports&period=<?= h($p) ?>&att_month='+this.value">
+      <option value="<?= h($p) ?>" <?= $att_month===$p?'selected':'' ?>>Current (<?= h($p) ?>)</option>
+      <option value="<?= $prev ?>" <?= $att_month===$prev?'selected':'' ?>>Previous (<?= $prev ?>)</option>
     </select>
   </div>
   <div class="result-count" id="nonPayCnt"></div>
   <div class="table-wrap">
   <table id="nonPayTbl">
-    <thead>
-      <tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Guardian</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Sessions Attended</th><th>Sessions List</th></tr>
-    </thead>
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Guardian</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Sessions</th><th>Sessions List</th></tr></thead>
     <tbody>
     <?php foreach($non_payers as $np): ?>
     <tr>
       <td><strong><?= h($np['full_name']) ?></strong></td>
       <td><span class="badge b-zone"><?= h($np['zone_name']) ?></span></td>
       <td style="font-family:var(--font-mono);font-size:12px"><?= h($np['phone']) ?></td>
-      <td style="font-size:12px"><?= h($np['guardian_name']) ?><br><small><?= h($np['guardian_phone']) ?></small></td>
+      <td style="font-size:12px"><?= h($np['guardian_name']) ?><br><small style="color:var(--muted)"><?= h($np['guardian_phone']) ?></small></td>
       <td style="font-family:var(--font-mono);color:var(--amber)"><?= money($np['expected_amount']) ?></td>
       <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($np['paid_amount']) ?></td>
       <td style="font-family:var(--font-mono);color:var(--red)"><?= money($np['remaining']) ?></td>
-      <td><span class="badge b-present"><?= $np['sessions_attended'] ?></span> sessions</small></td>
-      <td style="max-width:300px;font-size:11px;color:var(--text2)"><?= h(substr($np['sessions_list'],0,100)) ?>...</td>
+      <td><span class="badge b-present"><?= $np['sessions_attended'] ?></span></td>
+      <td style="max-width:240px;font-size:11px;color:var(--text2);word-break:break-all"><?= h(mb_substr($np['sessions_list']??'',0,120)) ?>…</td>
     </tr>
     <?php endforeach; ?>
-    <?php if(empty($non_payers)): ?>
-    <tr><td colspan="9" class="no-data">No non-payers who attend sessions found for this period.</td></tr>
-    <?php endif; ?>
+    <?php if(empty($non_payers)): ?><tr><td colspan="9" class="no-data">No non-payers attending sessions this period.</td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
 </div>
 
-<script>
-function filterAttendanceMonth() {
-    const select = document.getElementById('attMonthSelect');
-    const month = select.value;
-    window.location.href = '?view=reports&period=<?= h($p) ?>&att_month=' + month;
-}
-</script>
-
-<!-- Overdue Payments Report -->
+<!-- Overdue -->
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header">
     <div class="card-title"><span class="card-title-bar"></span>⏰ Overdue Payments — <?= h($p) ?></div>
     <a class="btn btn-ghost btn-sm" href="?view=reports&period=<?= h($p) ?>&export=overdue">📊 Export CSV</a>
   </div>
-  <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="overdueSearch" placeholder="Search athlete..." oninput="filterTable('overdueSearch','overdueTbl','overdueCnt')">
-    </div>
-  </div>
+  <div class="toolbar"><div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="overdueSearch" placeholder="Search athlete…" oninput="filterTable('overdueSearch','overdueTbl','overdueCnt')"></div></div>
   <div class="result-count" id="overdueCnt"></div>
   <div class="table-wrap">
   <table id="overdueTbl">
-    <thead>
-      <tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Due Date</th><th>Days Overdue</th><th>Status</th></tr>
-    </thead>
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Due Date</th><th>Days Overdue</th><th>Status</th></tr></thead>
     <tbody>
-    <?php foreach($overdue as $od): $stt = bill_status($od['expected_amount'], $od['paid_amount']); ?>
+    <?php foreach($overdue as $od): $stt=bill_status($od['expected_amount'],$od['paid_amount']); ?>
     <tr>
       <td><strong><?= h($od['full_name']) ?></strong></td>
       <td><span class="badge b-zone"><?= h($od['zone_name']) ?></span></td>
@@ -2526,37 +1780,28 @@ function filterAttendanceMonth() {
       <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($od['paid_amount']) ?></td>
       <td style="font-family:var(--font-mono);color:var(--red)"><?= money($od['remaining']) ?></td>
       <td style="font-family:var(--font-mono);font-size:12px"><?= h($od['due_date']) ?></td>
-      <td><span class="badge b-unpaid"><?= $od['days_overdue'] ?> days</span></td>
+      <td><span class="badge b-unpaid"><?= (int)$od['days_overdue'] ?> days</span></td>
       <td><span class="badge <?= $stt==='PARTIAL'?'b-partial':'b-unpaid' ?>"><?= $stt ?></span></td>
     </tr>
     <?php endforeach; ?>
-    <?php if(empty($overdue)): ?>
-    <tr><td colspan="8" class="no-data">No overdue payments found for this period.</td></tr>
-    <?php endif; ?>
+    <?php if(empty($overdue)): ?><tr><td colspan="8" class="no-data">No overdue payments for this period.</td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
 </div>
 
-<!-- Attendance Summary Report -->
+<!-- Attendance Summary -->
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header">
     <div class="card-title"><span class="card-title-bar"></span>📋 Attendance Summary — <?= h($p) ?></div>
     <a class="btn btn-ghost btn-sm" href="?view=reports&period=<?= h($p) ?>&export=attendance_summary&att_month=<?= h($p) ?>">📊 Export CSV</a>
   </div>
-  <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="attSumSearch" placeholder="Search athlete, zone..." oninput="filterTable('attSumSearch','attSumTbl','attSumCnt')">
-    </div>
-  </div>
+  <div class="toolbar"><div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="attSumSearch" placeholder="Search athlete, zone…" oninput="filterTable('attSumSearch','attSumTbl','attSumCnt')"></div></div>
   <div class="result-count" id="attSumCnt"></div>
   <div class="table-wrap">
   <table id="attSumTbl">
-    <thead>
-      <tr><th>Athlete</th><th>Zone</th><th>Total Sessions</th><th>Present</th><th>Absent</th><th>Late</th><th>Attendance Rate</th></tr>
-    </thead>
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Total Sessions</th><th>Present</th><th>Absent</th><th>Late</th><th>Attendance Rate</th></tr></thead>
     <tbody>
     <?php foreach($att_summary as $att): ?>
     <tr>
@@ -2569,77 +1814,52 @@ function filterAttendanceMonth() {
       <td>
         <div style="display:flex;align-items:center;gap:8px">
           <div style="flex:1;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;min-width:60px">
-            <div style="width:<?= $att['attendance_rate'] ?>%;height:100%;background:<?= $att['attendance_rate']>=80?'var(--lime)':($att['attendance_rate']>=50?'var(--amber)':'var(--red)') ?>;border-radius:3px;"></div>
+            <div style="width:<?= min(100,$att['attendance_rate']??0) ?>%;height:100%;background:<?= ($att['attendance_rate']??0)>=80?'var(--lime)':(($att['attendance_rate']??0)>=50?'var(--amber)':'var(--red)') ?>;border-radius:3px"></div>
           </div>
-          <span style="font-family:var(--font-mono);font-size:11px;color:<?= $att['attendance_rate']>=80?'var(--lime)':($att['attendance_rate']>=50?'var(--amber)':'var(--red)') ?>"><?= $att['attendance_rate'] ?>%</span>
+          <span style="font-family:var(--font-mono);font-size:11px;color:<?= ($att['attendance_rate']??0)>=80?'var(--lime)':(($att['attendance_rate']??0)>=50?'var(--amber)':'var(--red)') ?>"><?= $att['attendance_rate']??0 ?>%</span>
         </div>
       </td>
     </tr>
     <?php endforeach; ?>
-    <?php if(empty($att_summary)): ?>
-    <tr><td colspan="7" class="no-data">No attendance records for this period.</td></tr>
-    <?php endif; ?>
+    <?php if(empty($att_summary)): ?><tr><td colspan="7" class="no-data">No attendance records.</td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
 </div>
 
-<!-- Zone Financial Report -->
+<!-- Zone Financial -->
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Zone Financial Report — <?= h($p) ?></div>
-  </div>
-  <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="zoneRepSearch" placeholder="Search zones…" oninput="filterTable('zoneRepSearch','zoneRepTbl','zoneRepCnt')">
-    </div>
-  </div>
-  <div class="result-count" id="zoneRepCnt"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Zone Financial Report — <?= h($p) ?></div></div>
   <div class="table-wrap">
-  <table id="zoneRepTbl">
+  <table>
     <thead><tr><th>Zone</th><th>Expected</th><th>Collected</th><th>Remaining</th><th>Expenses</th><th>Payroll</th><th>Net</th></tr></thead>
     <tbody>
     <?php
-    $r=$pdo->query("
+    $safe_p4=$pdo->quote($p);
+    $zfin=$pdo->query("
     SELECT z.name,
-    COALESCE(SUM(DISTINCT b.expected_amount),0) expected,
-    COALESCE(SUM(DISTINCT b.paid_amount),0) paid,
-    COALESCE(SUM(DISTINCT GREATEST(b.expected_amount-b.paid_amount,0)),0) remaining,
-    COALESCE(SUM(DISTINCT e.amount),0) expenses,
-    COALESCE(SUM(DISTINCT c.amount_paid),0) payroll
-    FROM academy_zones z
-    LEFT JOIN members m ON m.zone_id=z.id
-    LEFT JOIN monthly_bills b ON b.member_id=m.id AND b.period='$p'
-    LEFT JOIN expenses e ON e.zone_id=z.id AND TO_CHAR(e.expense_date,'YYYY-MM')='$p'
-    LEFT JOIN staff st ON st.zone_id=z.id
-    LEFT JOIN coach_payroll c ON c.staff_id=st.id AND c.period='$p'
-    GROUP BY z.id,z.name ORDER BY z.id")->fetchAll();
-    $gExp=$gPaid=$gRem=$gExpenses=$gPayroll=0;
-    foreach($r as $x):
-      $net=(float)$x['paid']-(float)$x['expenses']-(float)$x['payroll'];
-      $gPaid+=$x['paid']; $gRem+=$x['remaining']; $gExpenses+=$x['expenses']; $gPayroll+=$x['payroll'];
+    COALESCE((SELECT SUM(b2.expected_amount) FROM monthly_bills b2 JOIN members m2 ON m2.id=b2.member_id WHERE m2.zone_id=z.id AND b2.period=$safe_p4),0) expected,
+    COALESCE((SELECT SUM(b2.paid_amount) FROM monthly_bills b2 JOIN members m2 ON m2.id=b2.member_id WHERE m2.zone_id=z.id AND b2.period=$safe_p4),0) paid,
+    COALESCE((SELECT SUM(e2.amount) FROM expenses e2 WHERE e2.zone_id=z.id AND TO_CHAR(e2.expense_date,'YYYY-MM')=$safe_p4),0) expenses,
+    COALESCE((SELECT SUM(c2.amount_paid) FROM coach_payroll c2 JOIN staff s2 ON s2.id=c2.staff_id WHERE s2.zone_id=z.id AND c2.period=$safe_p4),0) payroll
+    FROM academy_zones z ORDER BY z.id")->fetchAll();
+    $gPaid=0;$gExp=0;$gPay=0;$gRem=0;
+    foreach($zfin as $x):
+      $rem=max(0,$x['expected']-$x['paid']);$net=$x['paid']-$x['expenses']-$x['payroll'];
+      $gPaid+=$x['paid'];$gExp+=$x['expenses'];$gPay+=$x['payroll'];$gRem+=$rem;
     ?>
     <tr>
       <td><strong style="font-family:var(--font-display)"><?= h($x['name']) ?></strong></td>
       <td style="font-family:var(--font-mono);color:var(--text2)"><?= money($x['expected']) ?></td>
       <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($x['paid']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--amber)"><?= money($x['remaining']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--amber)"><?= money($rem) ?></td>
       <td style="font-family:var(--font-mono);color:var(--red)"><?= money($x['expenses']) ?></td>
       <td style="font-family:var(--font-mono);color:var(--purple)"><?= money($x['payroll']) ?></td>
       <td style="font-family:var(--font-mono);font-weight:700;color:<?= $net>=0?'var(--lime)':'var(--red)' ?>"><?= money($net) ?></td>
     </tr>
     <?php endforeach; ?>
-    <tr class="summary-row">
-      <td>TOTAL</td>
-      <td>—</td>
-      <td><?= money($gPaid) ?></td>
-      <td><?= money($gRem) ?></td>
-      <td><?= money($gExpenses) ?></td>
-      <td><?= money($gPayroll) ?></td>
-      <td><?= money($gPaid-$gExpenses-$gPayroll) ?></td>
-    </tr>
+    <tr class="summary-row"><td>TOTAL</td><td>—</td><td><?= money($gPaid) ?></td><td><?= money($gRem) ?></td><td><?= money($gExp) ?></td><td><?= money($gPay) ?></td><td><?= money($gPaid-$gExp-$gPay) ?></td></tr>
     </tbody>
   </table>
   </div>
@@ -2648,15 +1868,8 @@ function filterAttendanceMonth() {
 <!-- Payment Logs -->
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Payment Logs (Latest 200)</div>
-  </div>
-  <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="paylogSearch" placeholder="Search by athlete, period, note…" oninput="filterTable('paylogSearch','paylogTbl','paylogCnt')">
-    </div>
-  </div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Payment Logs (Latest 200)</div></div>
+  <div class="toolbar"><div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="paylogSearch" placeholder="Search by athlete, period…" oninput="filterTable('paylogSearch','paylogTbl','paylogCnt')"></div></div>
   <div class="result-count" id="paylogCnt"></div>
   <div class="table-wrap">
   <table id="paylogTbl">
@@ -2669,98 +1882,58 @@ function filterAttendanceMonth() {
     <tr>
       <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h(substr($l['created_at'],0,10)) ?></td>
       <td><strong><?= h($l['full_name']) ?></strong></td>
-      <td style="font-family:var(--font-mono);color:var(--text2)"><?= h($l['period']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= h(trim($l['period'])) ?></td>
       <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($l['amount_paid']) ?></td>
       <td style="color:var(--muted)"><?= h($l['note']) ?></td>
     </tr>
     <?php endforeach; ?>
     <?php if(!empty($logs)): ?>
-    <tr class="summary-row">
-      <td colspan="3">TOTAL COLLECTED (logs shown)</td>
-      <td><?= money($totLogs) ?></td>
-      <td>—</td>
-    </tr>
+    <tr class="summary-row"><td colspan="3">TOTAL</td><td><?= money($totLogs) ?></td><td>—</td></tr>
     <?php endif; ?>
-    <?php if(empty($logs)): ?><tr><td colspan="5" class="no-data">No payment logs yet</td><?php endif; ?>
+    <?php if(empty($logs)): ?><tr><td colspan="5" class="no-data">No payment logs yet.</td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
 </div>
-
 <?php endif; ?>
 
 </main>
 
 <script>
-/**
- * Universal table search + dropdown filter
- */
-function filterTable(searchId, tableId, countId) {
-  const searchInput = document.getElementById(searchId);
-  const table = document.getElementById(tableId);
-  const countEl = document.getElementById(countId);
+/* ── Universal table filter ── */
+function filterTable(searchId,tableId,countId){
+  const searchInput=document.getElementById(searchId);
+  const table=document.getElementById(tableId);
+  const countEl=document.getElementById(countId);
   if(!table) return;
-
-  const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
-  const card = table.closest('.card');
-  const filterSelects = card ? card.querySelectorAll('select[id$="F"]') : [];
-
-  const rows = table.querySelectorAll('tbody tr:not(.summary-row):not(.no-results-dyn)');
-  let visible = 0;
-
-  rows.forEach(row => {
-    const text = row.textContent.toLowerCase();
-    let show = true;
-    if(query && !text.includes(query)) show = false;
-    filterSelects.forEach(sel => {
-      const val = sel.value.toLowerCase();
-      if(val && !text.includes(val)) show = false;
-    });
-    row.style.display = show ? '' : 'none';
+  const query=searchInput?searchInput.value.toLowerCase().trim():'';
+  const card=table.closest('.card');
+  const filterSelects=card?card.querySelectorAll('select[id$="F"]'):[];
+  const rows=table.querySelectorAll('tbody tr:not(.summary-row):not(.no-results-dyn)');
+  let visible=0;
+  rows.forEach(row=>{
+    const text=row.textContent.toLowerCase();
+    let show=true;
+    if(query&&!text.includes(query)) show=false;
+    filterSelects.forEach(sel=>{const val=sel.value.toLowerCase();if(val&&!text.includes(val)) show=false;});
+    row.style.display=show?'':'none';
     if(show) visible++;
   });
-
-  if(countEl) {
-    const total = rows.length;
-    countEl.textContent = (query || [...filterSelects].some(s=>s.value))
-      ? `Showing ${visible} of ${total} records`
-      : `${total} record${total!==1?'s':''}`;
+  if(countEl){
+    const total=rows.length;
+    countEl.textContent=(query||[...filterSelects].some(s=>s.value))?`Showing ${visible} of ${total} records`:`${total} record${total!==1?'s':''}`;
   }
-
-  // Dynamic no-results row
-  let noRes = table.querySelector('.no-results-dyn');
-  if(visible === 0 && rows.length > 0) {
-    if(!noRes) {
-      const colspan = table.querySelector('thead tr')?.children.length || 6;
-      const tr = document.createElement('tr');
-      tr.className = 'no-results-dyn';
-      tr.innerHTML = `<td colspan="${colspan}" class="no-data">No results match your search</td>`;
-      table.querySelector('tbody').appendChild(tr);
-    }
-  } else {
-    noRes?.remove();
-  }
+  let noRes=table.querySelector('.no-results-dyn');
+  if(visible===0&&rows.length>0){
+    if(!noRes){const colspan=table.querySelector('thead tr')?.children.length||6;const tr=document.createElement('tr');tr.className='no-results-dyn';tr.innerHTML=`<td colspan="${colspan}" class="no-data">No results match your search</td>`;table.querySelector('tbody').appendChild(tr);}
+  } else {noRes?.remove();}
 }
-
-// Initialize all table counts on load
-document.addEventListener('DOMContentLoaded', () => {
-  const maps = [
-    ['memberSearch','memberTbl','memberCnt'],
-    ['sessionSearch','sessionTbl','sessionCnt'],
-    ['billSearch','billTbl','billCnt'],
-    ['staffSearch','staffTbl','staffCnt'],
-    ['payrollSearch','payrollTbl','payrollCnt'],
-    ['expenseSearch','expenseTbl','expenseCnt'],
-    ['zoneRepSearch','zoneRepTbl','zoneRepCnt'],
-    ['paylogSearch','paylogTbl','paylogCnt'],
-    ['attSumSearch','attSumTbl','attSumCnt'],
-    ['overdueSearch','overdueTbl','overdueCnt'],
-    ['nonPaySearch','nonPayTbl','nonPayCnt'],
-    ['attendedPaySearch','attendedPayTbl','attendedPayCnt'],
-  ];
-  maps.forEach(([s,t,c]) => {
-    if(document.getElementById(t)) filterTable(s,t,c);
-  });
+document.addEventListener('DOMContentLoaded',()=>{
+  [['memberSearch','memberTbl','memberCnt'],['sessionSearch','sessionTbl','sessionCnt'],['billSearch','billTbl','billCnt'],
+   ['staffSearch','staffTbl','staffCnt'],['payrollSearch','payrollTbl','payrollCnt'],['expenseSearch','expenseTbl','expenseCnt'],
+   ['paylogSearch','paylogTbl','paylogCnt'],['attSumSearch','attSumTbl','attSumCnt'],['overdueSearch','overdueTbl','overdueCnt'],
+   ['nonPaySearch','nonPayTbl','nonPayCnt'],['attendedPaySearch','attendedPayTbl','attendedPayCnt'],['uniformSearch','uniformTbl','uniformCnt']
+  ].forEach(([s,t,c])=>{if(document.getElementById(t)) filterTable(s,t,c);});
 });
 </script>
 </body>
