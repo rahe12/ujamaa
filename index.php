@@ -66,8 +66,7 @@ CREATE TABLE IF NOT EXISTS sessions(
  name VARCHAR(255) NOT NULL,
  session_date DATE NOT NULL DEFAULT CURRENT_DATE,
  zone_id INT REFERENCES academy_zones(id),
- created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
- UNIQUE(session_date, zone_id, name)  -- Prevent duplicate sessions
+ created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS attendance(
@@ -76,7 +75,7 @@ CREATE TABLE IF NOT EXISTS attendance(
  member_id INT REFERENCES members(id) ON DELETE CASCADE,
  status VARCHAR(20) DEFAULT 'present',
  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
- UNIQUE(session_id, member_id)  -- One attendance per session per athlete
+ UNIQUE(session_id, member_id)
 );
 
 CREATE TABLE IF NOT EXISTS monthly_bills(
@@ -90,14 +89,14 @@ CREATE TABLE IF NOT EXISTS monthly_bills(
  paid_at TIMESTAMP,
  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
- UNIQUE(member_id, period)  -- One bill per athlete per month
+ UNIQUE(member_id, period)
 );
 
 CREATE TABLE IF NOT EXISTS payment_logs(
  id SERIAL PRIMARY KEY,
  member_id INT REFERENCES members(id) ON DELETE CASCADE,
  amount_paid NUMERIC(12,2) NOT NULL,
- period CHAR(7) NOT NULL,
+ bill_period CHAR(7) NOT NULL,
  note TEXT,
  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -126,7 +125,7 @@ CREATE TABLE IF NOT EXISTS coach_payroll(
  paid_at TIMESTAMP,
  note TEXT,
  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
- UNIQUE(staff_id, period)  -- One payroll per staff per month
+ UNIQUE(staff_id, period)
 );
 
 CREATE TABLE IF NOT EXISTS expenses(
@@ -144,7 +143,7 @@ CREATE TABLE IF NOT EXISTS expenses(
 CREATE TABLE IF NOT EXISTS athlete_uniforms(
  id SERIAL PRIMARY KEY,
  member_id INT REFERENCES members(id) ON DELETE CASCADE,
- jersey_number INT NOT NULL UNIQUE,  -- No duplicate jersey numbers
+ jersey_number INT NOT NULL UNIQUE,
  jersey_category VARCHAR(60) NOT NULL,
  jersey_size VARCHAR(20) NOT NULL,
  jersey_chest NUMERIC(6,2),
@@ -158,22 +157,29 @@ CREATE TABLE IF NOT EXISTS athlete_uniforms(
  note TEXT,
  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Add missing columns if they don't exist
-ALTER TABLE members ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id);
-ALTER TABLE members ADD COLUMN IF NOT EXISTS guardian_name VARCHAR(255);
-ALTER TABLE members ADD COLUMN IF NOT EXISTS guardian_phone VARCHAR(50);
-ALTER TABLE members ADD COLUMN IF NOT EXISTS position VARCHAR(50);
-ALTER TABLE members ADD COLUMN IF NOT EXISTS school_name VARCHAR(255);
-ALTER TABLE members ADD COLUMN IF NOT EXISTS notes TEXT;
-
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_date DATE;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id);
-
-ALTER TABLE staff ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id);
-ALTER TABLE coach_payroll ADD COLUMN IF NOT EXISTS net_salary NUMERIC(12,2) DEFAULT 0;
-ALTER TABLE expenses ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id);
 ");
+
+// Add missing columns safely
+try {
+    $pdo->exec("ALTER TABLE members ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id)");
+    $pdo->exec("ALTER TABLE members ADD COLUMN IF NOT EXISTS guardian_name VARCHAR(255)");
+    $pdo->exec("ALTER TABLE members ADD COLUMN IF NOT EXISTS guardian_phone VARCHAR(50)");
+    $pdo->exec("ALTER TABLE members ADD COLUMN IF NOT EXISTS position VARCHAR(50)");
+    $pdo->exec("ALTER TABLE members ADD COLUMN IF NOT EXISTS school_name VARCHAR(255)");
+    $pdo->exec("ALTER TABLE members ADD COLUMN IF NOT EXISTS notes TEXT");
+    $pdo->exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_date DATE");
+    $pdo->exec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id)");
+    $pdo->exec("ALTER TABLE staff ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id)");
+    $pdo->exec("ALTER TABLE coach_payroll ADD COLUMN IF NOT EXISTS net_salary NUMERIC(12,2) DEFAULT 0");
+    $pdo->exec("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id)");
+    $pdo->exec("ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS bill_period CHAR(7)");
+    
+    // Migrate data if needed
+    $pdo->exec("UPDATE payment_logs SET bill_period = period WHERE bill_period IS NULL AND period IS NOT NULL");
+    $pdo->exec("ALTER TABLE payment_logs DROP COLUMN IF EXISTS period");
+} catch(PDOException $e) {
+    // Columns might already exist
+}
 }
 schema($pdo);
 
@@ -195,7 +201,6 @@ function ensure_bill($pdo,$member_id,$period){
     $m=$pdo->prepare("SELECT * FROM members WHERE id=?");$m->execute([$member_id]);$m=$m->fetch();
     if(!$m)return;
     $due=due_date($period,$m['due_day']??5);
-    // Use INSERT with ON CONFLICT to prevent duplicates
     $stmt=$pdo->prepare("INSERT INTO monthly_bills(member_id,period,expected_amount,paid_amount,due_date) VALUES(?,?,?,?,?) ON CONFLICT(member_id,period) DO NOTHING");
     $stmt->execute([$member_id,$period,$m['monthly_fee']??0,0,$due]);
 }
@@ -209,11 +214,11 @@ function billing_rows($pdo,$period){
     return $stmt->fetchAll();
 }
 
-// Get athletes who attended sessions (no duplicates due to DISTINCT)
+// Get athletes who attended sessions (no duplicates)
 function athletes_with_attendance($pdo, $period) {
     $stmt = $pdo->prepare("
         SELECT DISTINCT 
-            m.id, m.full_name, m.phone, m.guardian_name,
+            m.id, m.full_name, m.phone, m.guardian_name, m.guardian_phone,
             z.name as zone_name,
             COALESCE(b.expected_amount, 0) as expected_amount, 
             COALESCE(b.paid_amount, 0) as paid_amount,
@@ -228,7 +233,7 @@ function athletes_with_attendance($pdo, $period) {
             AND TO_CHAR(s.session_date, 'YYYY-MM') = ?
         WHERE m.is_active = TRUE
             AND a.id IS NOT NULL
-        GROUP BY m.id, m.full_name, m.phone, m.guardian_name, z.name, b.expected_amount, b.paid_amount
+        GROUP BY m.id, m.full_name, m.phone, m.guardian_name, m.guardian_phone, z.name, b.expected_amount, b.paid_amount
         HAVING COUNT(DISTINCT s.id) > 0
         ORDER BY z.name, m.full_name
     ");
@@ -319,9 +324,8 @@ function attendance_summary($pdo, $member_id = null, $year_month = null) {
     return $stmt->fetchAll();
 }
 
-// Export CSV (no duplicates in export)
+// Export CSV (no duplicates)
 function export_csv($data, $filename, $headers) {
-    // Remove duplicates by ID if present
     $unique = [];
     foreach($data as $row) {
         $key = isset($row['id']) ? $row['id'] : (isset($row['member_id']) ? $row['member_id'] : uniqid());
@@ -342,7 +346,7 @@ function export_csv($data, $filename, $headers) {
     exit;
 }
 
-// Check for duplicate before insert/update
+// Check for duplicates
 function check_duplicate_member($pdo, $full_name, $exclude_id = null) {
     $sql = "SELECT id FROM members WHERE full_name = ?";
     $params = [$full_name];
@@ -358,18 +362,6 @@ function check_duplicate_member($pdo, $full_name, $exclude_id = null) {
 function check_duplicate_staff($pdo, $full_name, $exclude_id = null) {
     $sql = "SELECT id FROM staff WHERE full_name = ?";
     $params = [$full_name];
-    if($exclude_id) {
-        $sql .= " AND id != ?";
-        $params[] = $exclude_id;
-    }
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    return $stmt->fetch();
-}
-
-function check_duplicate_session($pdo, $name, $session_date, $zone_id, $exclude_id = null) {
-    $sql = "SELECT id FROM sessions WHERE name = ? AND session_date = ? AND zone_id = ?";
-    $params = [$name, $session_date, $zone_id];
     if($exclude_id) {
         $sql .= " AND id != ?";
         $params[] = $exclude_id;
@@ -398,7 +390,6 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $id=$_POST['id']??'';
         $full_name = trim($_POST['full_name']);
         
-        // Check for duplicate name
         if(check_duplicate_member($pdo, $full_name, $id ?: null)) {
             go('members', 'Duplicate: Athlete with name "' . h($full_name) . '" already exists!');
         }
@@ -431,28 +422,12 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
     
     if($a==='save_session'){
         $id=$_POST['id']??'';
-        $name = trim($_POST['name']);
-        $session_date = $_POST['session_date'];
-        $zone_id = $_POST['zone_id'];
-        
-        // Check for duplicate session
-        if(check_duplicate_session($pdo, $name, $session_date, $zone_id, $id ?: null)) {
-            go('attendance', 'Duplicate: A session with same name, date, and zone already exists!');
-        }
-        
         if($id){
-            $pdo->prepare("UPDATE sessions SET name=?,session_date=?,zone_id=? WHERE id=?")->execute([$name, $session_date, $zone_id, $id]);
+            $pdo->prepare("UPDATE sessions SET name=?,session_date=?,zone_id=? WHERE id=?")->execute([$_POST['name'],$_POST['session_date'],$_POST['zone_id'],$id]);
             go('attendance','Session updated');
         }else{
-            try {
-                $pdo->prepare("INSERT INTO sessions(name,session_date,zone_id) VALUES(?,?,?)")->execute([$name, $session_date, $zone_id?:default_zone($pdo)]);
-                go('attendance','Session created');
-            } catch(PDOException $e) {
-                if(strpos($e->getMessage(),'unique') !== false) {
-                    go('attendance','Duplicate session. A session with same name, date, and zone already exists.');
-                }
-                throw $e;
-            }
+            $pdo->prepare("INSERT INTO sessions(name,session_date,zone_id) VALUES(?,?,?)")->execute([$_POST['name'],$_POST['session_date'],$_POST['zone_id']?:default_zone($pdo)]);
+            go('attendance','Session created');
         }
     }
     
@@ -466,17 +441,14 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $mid=$_POST['member_id'];
         $status=$_POST['status'];
         
-        // Check zone compatibility
         $check=$pdo->prepare("SELECT COUNT(*) FROM sessions s JOIN members m ON m.zone_id=s.zone_id WHERE s.id=? AND m.id=?");
         $check->execute([$sid,$mid]);
         if(!$check->fetchColumn()) {
             go('attendance','Wrong zone: athlete does not belong to that session zone');
         }
         
-        // Use ON CONFLICT to prevent duplicates
         $pdo->prepare("INSERT INTO attendance(session_id,member_id,status) VALUES(?,?,?) ON CONFLICT(session_id,member_id) DO UPDATE SET status=EXCLUDED.status")->execute([$sid,$mid,$status]);
         
-        // Mark unmarked athletes as absent (only once)
         $pdo->prepare("INSERT INTO attendance(session_id,member_id,status) SELECT s.id,m.id,'absent' FROM sessions s JOIN members m ON m.zone_id=s.zone_id WHERE s.id=? AND m.is_active=TRUE AND NOT EXISTS(SELECT 1 FROM attendance a WHERE a.session_id=s.id AND a.member_id=m.id)")->execute([$sid]);
         
         go('attendance','Attendance saved');
@@ -493,11 +465,11 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         
         ensure_bill($pdo,$mid,$per);
         
-        // Update payment - accumulate amount
+        // Update payment
         $pdo->prepare("UPDATE monthly_bills SET paid_amount=paid_amount+?, paid_at=NOW(), updated_at=NOW(), note=? WHERE member_id=? AND period=?")->execute([$amount, $_POST['note']?:null, $mid, $per]);
         
-        // Log payment
-        $pdo->prepare("INSERT INTO payment_logs(member_id,amount_paid,period,note) VALUES(?,?,?,?)")->execute([$mid, $amount, $per, $_POST['note']?:null]);
+        // Log payment with bill_period column
+        $pdo->prepare("INSERT INTO payment_logs(member_id, amount_paid, bill_period, note) VALUES(?,?,?,?)")->execute([$mid, $amount, $per, $_POST['note']?:null]);
         
         go('payments','Payment recorded');
     }
@@ -506,7 +478,6 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $id=$_POST['id']??'';
         $full_name = trim($_POST['full_name']);
         
-        // Check for duplicate staff name
         if(check_duplicate_staff($pdo, $full_name, $id ?: null)) {
             go('staff', 'Duplicate: Staff member with name "' . h($full_name) . '" already exists!');
         }
@@ -533,25 +504,10 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
     }
     
     if($a==='payroll'){
-        $staff_id = $_POST['staff_id'];
-        $period = $_POST['period'];
-        
-        // Check if payroll already exists for this staff and period
-        $check = $pdo->prepare("SELECT id FROM coach_payroll WHERE staff_id = ? AND period = ?");
-        $check->execute([$staff_id, $period]);
-        if($check->fetch()) {
-            // Update existing
-            $net=(float)$_POST['base_salary']+(float)$_POST['bonus']-(float)$_POST['deductions'];
-            $status=((float)$_POST['amount_paid']<=0)?'UNPAID':(((float)$_POST['amount_paid']<$net)?'PARTIAL':'PAID');
-            $pdo->prepare("UPDATE coach_payroll SET base_salary=?, bonus=?, deductions=?, net_salary=?, amount_paid=?, status=?, paid_at=NOW(), note=? WHERE staff_id=? AND period=?")
-                ->execute([$_POST['base_salary'], $_POST['bonus'], $_POST['deductions'], $net, $_POST['amount_paid'], $status, $_POST['note']?:null, $staff_id, $period]);
-        } else {
-            // Insert new
-            $net=(float)$_POST['base_salary']+(float)$_POST['bonus']-(float)$_POST['deductions'];
-            $status=((float)$_POST['amount_paid']<=0)?'UNPAID':(((float)$_POST['amount_paid']<$net)?'PARTIAL':'PAID');
-            $pdo->prepare("INSERT INTO coach_payroll(staff_id,period,base_salary,bonus,deductions,net_salary,amount_paid,status,paid_at,note) VALUES(?,?,?,?,?,?,?,?,NOW(),?)")
-                ->execute([$staff_id, $period, $_POST['base_salary'], $_POST['bonus'], $_POST['deductions'], $net, $_POST['amount_paid'], $status, $_POST['note']?:null]);
-        }
+        $net=(float)$_POST['base_salary']+(float)$_POST['bonus']-(float)$_POST['deductions'];
+        $status=((float)$_POST['amount_paid']<=0)?'UNPAID':(((float)$_POST['amount_paid']<$net)?'PARTIAL':'PAID');
+        $pdo->prepare("INSERT INTO coach_payroll(staff_id,period,base_salary,bonus,deductions,net_salary,amount_paid,status,paid_at,note) VALUES(?,?,?,?,?,?,?,?,NOW(),?) ON CONFLICT(staff_id,period) DO UPDATE SET base_salary=EXCLUDED.base_salary,bonus=EXCLUDED.bonus,deductions=EXCLUDED.deductions,net_salary=EXCLUDED.net_salary,amount_paid=EXCLUDED.amount_paid,status=EXCLUDED.status,paid_at=NOW(),note=EXCLUDED.note")
+        ->execute([$_POST['staff_id'],$_POST['period'],$_POST['base_salary'],$_POST['bonus'],$_POST['deductions'],$net,$_POST['amount_paid'],$status,$_POST['note']?:null]);
         go('payroll','Payroll saved');
     }
 
@@ -564,7 +520,6 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
             go('uniforms','Please select athlete and jersey number');
         }
         
-        // Check if jersey number already exists
         if(check_duplicate_uniform_number($pdo, $jersey_number, $id ?: null)) {
             go('uniforms','Jersey number ' . $jersey_number . ' is already assigned to another athlete.');
         }
@@ -658,47 +613,6 @@ if(($_GET['export']??'')==='uniform_excel'){
     exit;
 }
 
-if(($_GET['export']??'')==='uniform_pdf'){
-    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC,m.full_name ASC")->fetchAll();
-    $totalQty=0; foreach($rows as $r){ $totalQty += (int)$r['quantity']; }
-    ?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Uniform Report</title>
-<style>
-body{font-family:Arial,sans-serif;color:#111;margin:0;padding:28px;background:#fff}
-table{width:100%;border-collapse:collapse;font-size:11px}
-th,td{border:1px solid #ccc;padding:7px;text-align:left}
-th{background:#111;color:#fff}
-@media print{body{padding:0}}
-</style>
-</head>
-<body>
-<h1>Uniform Report</h1>
-<p>Generated: <?= date('Y-m-d H:i') ?> | Total Records: <?= count($rows) ?> | Total Quantity: <?= $totalQty ?></p>
-<table>
-<thead><tr><th>#</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Shorts Size</th><th>Qty</th><th>Date</th></tr></thead>
-<tbody>
-<?php foreach($rows as $r): ?>
-<tr>
-    <td><?= h($r['jersey_number']) ?></td>
-    <td><?= h($r['full_name']) ?></td>
-    <td><?= h($r['zone_name']) ?></td>
-    <td><?= h($r['jersey_category']) ?></td>
-    <td><?= h($r['jersey_size']) ?></td>
-    <td><?= h($r['shorts_size']) ?></td>
-    <td><?= h($r['quantity']) ?></td>
-    <td><?= h($r['issued_date']) ?></td>
-</tr>
-<?php endforeach; ?>
-</tbody>
-</table>
-</body>
-</html>
-<?php exit; }
-
 $stats=$pdo->query("
 SELECT
 (SELECT COUNT(*) FROM members WHERE is_active=TRUE) athletes,
@@ -710,15 +624,15 @@ SELECT
 ")->fetch();
 
 $nav_items = [
-    'dashboard' => ['icon'=>'▲','label'=>'Dashboard'],
-    'members'   => ['icon'=>'◈','label'=>'Athletes'],
-    'attendance'=> ['icon'=>'◉','label'=>'Attendance'],
-    'payments'  => ['icon'=>'◆','label'=>'Billing'],
-    'staff'     => ['icon'=>'◍','label'=>'Staff'],
-    'payroll'   => ['icon'=>'▣','label'=>'Payroll'],
-    'expenses'  => ['icon'=>'◐','label'=>'Expenses'],
-    'uniforms'  => ['icon'=>'▤','label'=>'Uniforms'],
-    'reports'   => ['icon'=>'◧','label'=>'Reports'],
+    'dashboard' => ['icon'=>'📊','label'=>'Dashboard'],
+    'members'   => ['icon'=>'👥','label'=>'Athletes'],
+    'attendance'=> ['icon'=>'✓','label'=>'Attendance'],
+    'payments'  => ['icon'=>'💰','label'=>'Billing'],
+    'staff'     => ['icon'=>'👔','label'=>'Staff'],
+    'payroll'   => ['icon'=>'💵','label'=>'Payroll'],
+    'expenses'  => ['icon'=>'📉','label'=>'Expenses'],
+    'uniforms'  => ['icon'=>'👕','label'=>'Uniforms'],
+    'reports'   => ['icon'=>'📈','label'=>'Reports'],
 ];
 ?>
 <!DOCTYPE html>
@@ -727,18 +641,20 @@ $nav_items = [
 <meta charset="UTF-8">
 <title>Academy AMS</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:'Inter',sans-serif;background:#0a0c12;color:#eef2ff;}
-.sidebar{position:fixed;left:0;top:0;width:260px;height:100vh;background:#11131a;border-right:1px solid #1f2230;padding:24px 16px;}
+body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0c12;color:#eef2ff;}
+.sidebar{position:fixed;left:0;top:0;width:260px;height:100vh;background:#11131a;border-right:1px solid #1f2230;padding:24px 16px;overflow-y:auto;}
 .main{margin-left:260px;padding:32px;}
 .card{background:#141824;border-radius:16px;border:1px solid #202433;padding:24px;margin-bottom:24px;}
-.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:8px;font-weight:500;cursor:pointer;border:none;transition:all 0.2s;}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:8px;font-weight:500;cursor:pointer;border:none;transition:all 0.2s;font-size:14px;}
 .btn-primary{background:#10b981;color:#fff;}
 .btn-primary:hover{background:#059669;}
 .btn-ghost{background:#1f2230;color:#eef2ff;border:1px solid #2d3142;}
+.btn-ghost:hover{background:#2d3142;}
 .btn-danger{background:#ef4444;color:#fff;}
+.btn-danger:hover{background:#dc2626;}
+.btn-sm{padding:4px 12px;font-size:12px;}
 table{width:100%;border-collapse:collapse;}
 th,td{padding:12px;text-align:left;border-bottom:1px solid #202433;}
 th{color:#9ca3af;font-weight:500;font-size:12px;}
@@ -747,23 +663,50 @@ th{color:#9ca3af;font-weight:500;font-size:12px;}
 .b-partial{background:#f59e0b20;color:#f59e0b;}
 .b-unpaid{background:#ef444420;color:#ef4444;}
 .b-zone{background:#3b82f620;color:#60a5fa;}
-input,select{background:#1f2230;border:1px solid #2d3142;padding:10px 14px;border-radius:8px;color:#eef2ff;width:100%;}
+.b-present{background:#10b98120;color:#10b981;}
+.b-absent{background:#ef444420;color:#ef4444;}
+input,select,textarea{background:#1f2230;border:1px solid #2d3142;padding:10px 14px;border-radius:8px;color:#eef2ff;width:100%;font-size:14px;}
+input:focus,select:focus{outline:none;border-color:#10b981;}
+label{display:block;margin-bottom:6px;font-size:12px;color:#9ca3af;}
 .form-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+.form-grid-2{grid-template-columns:repeat(2,1fr);}
 .result-count{font-size:12px;color:#6b7280;margin-bottom:12px;}
+.table-wrap{overflow-x:auto;}
+.flash{background:#10b98120;border:1px solid #10b981;border-radius:8px;padding:12px 16px;margin-bottom:20px;color:#10b981;}
+.nav-link{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:8px;color:#9ca3af;text-decoration:none;margin-bottom:4px;}
+.nav-link:hover{background:#1f2230;color:#eef2ff;}
+.nav-link.active{background:#10b98110;color:#10b981;}
+.period-nav{display:flex;gap:8px;align-items:center;}
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px;}
+.stat-card{background:#141824;border-radius:16px;border:1px solid #202433;padding:20px;}
+.actions-cell{display:flex;gap:8px;flex-wrap:wrap;}
 </style>
 </head>
 <body>
 <aside class="sidebar">
-    <div style="margin-bottom:32px"><h2 style="color:#10b981">Academy AMS</h2><p style="font-size:12px;color:#6b7280">Management System</p></div>
-    <nav style="display:flex;flex-direction:column;gap:4px">
-    <?php foreach($nav_items as $key=>$item): ?>
-    <a href="?view=<?= $key ?>&period=<?= h($p) ?>" style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:8px;color:<?= $v===$key?'#10b981':'#9ca3af' ?>;text-decoration:none;background:<?= $v===$key?'#10b98110':'transparent' ?>"><?= $item['icon'] ?> <?= $item['label'] ?></a>
-    <?php endforeach; ?>
+    <div style="margin-bottom:32px">
+        <h2 style="color:#10b981;font-size:24px">Academy AMS</h2>
+        <p style="font-size:12px;color:#6b7280;margin-top:4px">Management System</p>
+    </div>
+    <nav>
+        <?php foreach($nav_items as $key=>$item): ?>
+        <a href="?view=<?= $key ?>&period=<?= h($p) ?>" class="nav-link <?= $v===$key ? 'active' : '' ?>">
+            <span><?= $item['icon'] ?></span>
+            <span><?= $item['label'] ?></span>
+        </a>
+        <?php endforeach; ?>
     </nav>
+    <div style="margin-top:32px;padding-top:16px;border-top:1px solid #1f2230">
+        <div style="background:#1f2230;border-radius:12px;padding:12px">
+            <div style="font-size:11px;color:#6b7280">Active Period</div>
+            <div style="font-size:20px;font-weight:700;color:#10b981"><?= h($p) ?></div>
+        </div>
+    </div>
 </aside>
+
 <main class="main">
 <?php if($msg): ?>
-<div style="background:#10b98120;border:1px solid #10b981;border-radius:8px;padding:12px 16px;margin-bottom:20px;color:#10b981">✓ <?= h($msg) ?></div>
+<div class="flash">✓ <?= h($msg) ?></div>
 <?php endif; ?>
 
 <?php
@@ -774,19 +717,20 @@ $next = date('Y-m', strtotime($p.'-01 +1 month'));
 if($v==='dashboard'): ?>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px">
     <h1 style="font-size:32px">Dashboard <span style="color:#10b981"><?= h($p) ?></span></h1>
-    <div style="display:flex;gap:8px">
-        <a href="?view=dashboard&period=<?= $prev ?>" class="btn btn-ghost">← Prev</a>
+    <div class="period-nav">
+        <a href="?view=dashboard&period=<?= $prev ?>" class="btn btn-ghost btn-sm">← Prev</a>
         <span style="background:#1f2230;padding:8px 16px;border-radius:8px"><?= h($p) ?></span>
-        <a href="?view=dashboard&period=<?= $next ?>" class="btn btn-ghost">Next →</a>
+        <a href="?view=dashboard&period=<?= $next ?>" class="btn btn-ghost btn-sm">Next →</a>
     </div>
 </div>
-<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px">
-    <div class="card"><div>⚽ Active Athletes</div><div style="font-size:32px;font-weight:700;margin-top:8px"><?= $stats['athletes'] ?></div></div>
-    <div class="card"><div>👤 Active Staff</div><div style="font-size:32px;font-weight:700;margin-top:8px"><?= $stats['staff'] ?></div></div>
-    <div class="card"><div>💰 Revenue</div><div style="font-size:32px;font-weight:700;margin-top:8px;color:#10b981"><?= money($stats['revenue']) ?></div></div>
-    <div class="card"><div>⏳ Outstanding</div><div style="font-size:32px;font-weight:700;margin-top:8px;color:#f59e0b"><?= money($stats['outstanding']) ?></div></div>
-    <div class="card"><div>📤 Expenses</div><div style="font-size:32px;font-weight:700;margin-top:8px;color:#ef4444"><?= money($stats['expenses']) ?></div></div>
-    <div class="card"><div>💳 Payroll</div><div style="font-size:32px;font-weight:700;margin-top:8px"><?= money($stats['payroll']) ?></div></div>
+
+<div class="stat-grid">
+    <div class="stat-card"><div style="font-size:14px;color:#6b7280">⚽ Active Athletes</div><div style="font-size:32px;font-weight:700;margin-top:8px"><?= $stats['athletes'] ?></div></div>
+    <div class="stat-card"><div style="font-size:14px;color:#6b7280">👔 Active Staff</div><div style="font-size:32px;font-weight:700;margin-top:8px"><?= $stats['staff'] ?></div></div>
+    <div class="stat-card"><div style="font-size:14px;color:#6b7280">💰 Revenue</div><div style="font-size:32px;font-weight:700;margin-top:8px;color:#10b981"><?= money($stats['revenue']) ?></div></div>
+    <div class="stat-card"><div style="font-size:14px;color:#6b7280">⏳ Outstanding</div><div style="font-size:32px;font-weight:700;margin-top:8px;color:#f59e0b"><?= money($stats['outstanding']) ?></div></div>
+    <div class="stat-card"><div style="font-size:14px;color:#6b7280">📤 Expenses</div><div style="font-size:32px;font-weight:700;margin-top:8px;color:#ef4444"><?= money($stats['expenses']) ?></div></div>
+    <div class="stat-card"><div style="font-size:14px;color:#6b7280">💵 Payroll</div><div style="font-size:32px;font-weight:700;margin-top:8px"><?= money($stats['payroll']) ?></div></div>
 </div>
 <?php endif; ?>
 
@@ -802,10 +746,15 @@ if($v==='members'): ?>
             <div><label>Phone</label><input name="phone" value="<?= h($edit_member['phone']??'') ?>"></div>
             <div><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>" <?= (($edit_member['zone_id']??'')==$zone['id'])?'selected':'' ?>><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
             <div><label>Gender</label><select name="gender"><option>Male</option><option>Female</option></select></div>
+            <div><label>Guardian Name</label><input name="guardian_name" value="<?= h($edit_member['guardian_name']??'') ?>"></div>
+            <div><label>Guardian Phone</label><input name="guardian_phone" value="<?= h($edit_member['guardian_phone']??'') ?>"></div>
+            <div><label>Position</label><input name="position" value="<?= h($edit_member['position']??'') ?>"></div>
+            <div><label>School</label><input name="school_name" value="<?= h($edit_member['school_name']??'') ?>"></div>
             <div><label>Monthly Fee (RWF)</label><input type="number" name="monthly_fee" value="<?= h($edit_member['monthly_fee']??0) ?>"></div>
             <div><label>Due Day</label><input type="number" name="due_day" min="1" max="31" value="<?= h($edit_member['due_day']??5) ?>"></div>
+            <div><label>Notes</label><input name="notes" value="<?= h($edit_member['notes']??'') ?>"></div>
         </div>
-        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">Save Athlete</button></div>
+        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">💾 Save Athlete</button></div>
     </form>
 </div>
 
@@ -813,17 +762,26 @@ if($v==='members'): ?>
     <h3 style="margin-bottom:20px">All Athletes</h3>
     <div class="table-wrap">
     <table>
-        <thead><tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Monthly Fee</th><th>Status</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Position</th><th>Monthly Fee</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>
         <?php foreach($m as $x): ?>
         <tr>
             <td><strong><?= h($x['full_name']) ?></strong></td>
             <td><span class="badge b-zone"><?= h($x['zone_name']) ?></span></td>
             <td><?= h($x['phone']) ?></td>
+            <td><?= h($x['position']) ?></td>
             <td><?= money($x['monthly_fee']) ?></td>
             <td><span class="badge <?= $x['is_active']?'b-paid':'b-unpaid' ?>"><?= $x['is_active']?'Active':'Inactive' ?></span></td>
-            <td><a href="?view=members&period=<?= h($p) ?>&edit_member=<?= $x['id'] ?>" class="btn btn-ghost" style="padding:4px 12px">Edit</a>
-            <form method="POST" style="display:inline" onsubmit="return confirm('Deactivate?')"><input type="hidden" name="action" value="delete_member"><input type="hidden" name="id" value="<?= $x['id'] ?>"><button class="btn btn-danger" style="padding:4px 12px">Deactivate</button></form></td>
+            <td>
+                <div class="actions-cell">
+                    <a href="?view=members&period=<?= h($p) ?>&edit_member=<?= $x['id'] ?>" class="btn btn-ghost btn-sm">Edit</a>
+                    <form method="POST" style="display:inline" onsubmit="return confirm('Deactivate this athlete?')">
+                        <input type="hidden" name="action" value="delete_member">
+                        <input type="hidden" name="id" value="<?= $x['id'] ?>">
+                        <button class="btn btn-danger btn-sm" type="submit">Deactivate</button>
+                    </form>
+                </div>
+            </td>
         </tr>
         <?php endforeach; ?>
         </tbody>
@@ -832,27 +790,88 @@ if($v==='members'): ?>
 </div>
 <?php endif; ?>
 
-// PAYMENTS VIEW - ONLY ATHLETES WHO ATTENDED
+// ATTENDANCE VIEW
+if($v==='attendance'): ?>
+<div class="card">
+    <h3 style="margin-bottom:20px"><?= $edit_session ? 'Edit Session' : 'Create Session' ?></h3>
+    <form method="POST">
+        <input type="hidden" name="action" value="save_session">
+        <input type="hidden" name="id" value="<?= h($edit_session['id']??'') ?>">
+        <div class="form-grid">
+            <div><label>Session Name</label><input name="name" required value="<?= h($edit_session['name']??'') ?>"></div>
+            <div><label>Date</label><input type="date" name="session_date" required value="<?= h($edit_session['session_date']??date('Y-m-d')) ?>"></div>
+            <div><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>" <?= (($edit_session['zone_id']??'')==$zone['id'])?'selected':'' ?>><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
+        </div>
+        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">💾 Save Session</button></div>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="margin-bottom:20px">Record Attendance</h3>
+    <form method="POST">
+        <input type="hidden" name="action" value="attendance">
+        <div class="form-grid">
+            <div><label>Session</label><select name="session_id"><?php foreach($s as $ss): ?><option value="<?= $ss['id'] ?>"><?= h($ss['session_date'].' - '.$ss['name'].' ['.$ss['zone_name'].']') ?></option><?php endforeach; ?></select></div>
+            <div><label>Athlete</label><select name="member_id"><?php foreach($am as $a): ?><option value="<?= $a['id'] ?>"><?= h($a['full_name'].' ['.$a['zone_name'].']') ?></option><?php endforeach; ?></select></div>
+            <div><label>Status</label><select name="status"><option value="present">Present</option><option value="absent">Absent</option><option value="late">Late</option></select></div>
+        </div>
+        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">✓ Save Attendance</button></div>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="margin-bottom:20px">Sessions</h3>
+    <div class="table-wrap">
+    <table>
+        <thead><tr><th>Date</th><th>Session Name</th><th>Zone</th><th>Actions</th></tr></thead>
+        <tbody>
+        <?php foreach($s as $ss): ?>
+        <tr>
+            <td><?= h($ss['session_date']) ?></td>
+            <td><strong><?= h($ss['name']) ?></strong></td>
+            <td><span class="badge b-zone"><?= h($ss['zone_name']) ?></span></td>
+            <td><a href="?view=attendance&period=<?= h($p) ?>&edit_session=<?= $ss['id'] ?>" class="btn btn-ghost btn-sm">Edit</a> <form method="POST" style="display:inline" onsubmit="return confirm('Delete session?')"><input type="hidden" name="action" value="delete_session"><input type="hidden" name="id" value="<?= $ss['id'] ?>"><button class="btn btn-danger btn-sm">Delete</button></form></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+    </div>
+</div>
+<?php endif; ?>
+
+// PAYMENTS VIEW - ONLY ATHLETES WHO ATTENDED SESSIONS
 if($v==='payments'): 
 $attendedAthletes = athletes_with_attendance($pdo, $p);
 ?>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px">
     <h1>Billing <span style="color:#10b981"><?= h($p) ?></span></h1>
-    <div><a href="?view=payments&period=<?= $prev ?>" class="btn btn-ghost">← Prev</a> <span style="background:#1f2230;padding:8px 16px;border-radius:8px"><?= h($p) ?></span> <a href="?view=payments&period=<?= $next ?>" class="btn btn-ghost">Next →</a></div>
+    <div class="period-nav">
+        <a href="?view=payments&period=<?= $prev ?>" class="btn btn-ghost btn-sm">← Prev</a>
+        <span style="background:#1f2230;padding:8px 16px;border-radius:8px"><?= h($p) ?></span>
+        <a href="?view=payments&period=<?= $next ?>" class="btn btn-ghost btn-sm">Next →</a>
+    </div>
 </div>
 
 <div class="card">
-    <h3 style="margin-bottom:20px">Record Payment</h3>
+    <h3 style="margin-bottom:20px">💰 Record Payment</h3>
     <form method="POST" id="paymentForm">
         <input type="hidden" name="action" value="payment">
         <input type="hidden" name="member_id" id="pay_member_id" value="">
         <div class="form-grid">
-            <div><label>Search Athlete *</label><input type="text" id="payAthleteSearch" placeholder="Type athlete name..." list="athleteList" autocomplete="off"><datalist id="athleteList"><?php foreach($attendedAthletes as $att): ?><option value="<?= h($att['full_name']) ?>"><?php endforeach; ?></datalist></div>
-            <div><label>Amount (RWF)</label><input type="number" name="amount" id="payAmount" required></div>
+            <div>
+                <label>Search Athlete *</label>
+                <input type="text" id="payAthleteSearch" placeholder="Type athlete name..." list="athleteList" autocomplete="off">
+                <datalist id="athleteList">
+                    <?php foreach($attendedAthletes as $att): ?>
+                    <option value="<?= h($att['full_name']) ?>" data-id="<?= $att['id'] ?>" data-amount="<?= $att['expected_amount'] ?>">
+                    <?php endforeach; ?>
+                </datalist>
+            </div>
+            <div><label>Amount (RWF)</label><input type="number" name="amount" id="payAmount" required placeholder="0"></div>
             <div><label>Period</label><input name="period" value="<?= h($p) ?>"></div>
-            <div><label>Note</label><input name="note" placeholder="Receipt #"></div>
+            <div><label>Note / Receipt #</label><input name="note" placeholder="Optional reference"></div>
         </div>
-        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">Record Payment</button></div>
+        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">💳 Record Payment</button></div>
     </form>
 </div>
 
@@ -860,21 +879,26 @@ $attendedAthletes = athletes_with_attendance($pdo, $p);
     <h3 style="margin-bottom:20px">Athletes Who Attended Sessions (<?= count($attendedAthletes) ?>)</h3>
     <div class="table-wrap">
     <table>
-        <thead><tr><th>Athlete</th><th>Zone</th><th>Sessions</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Action</th></tr></thead>
+        <thead>
+            <tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Sessions</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Action</th>
+        </thead>
         <tbody>
         <?php foreach($attendedAthletes as $att): $stt = bill_status($att['expected_amount'], $att['paid_amount']); ?>
         <tr>
             <td><strong><?= h($att['full_name']) ?></strong></td>
             <td><span class="badge b-zone"><?= h($att['zone_name']) ?></span></td>
-            <td><span class="badge b-paid"><?= $att['sessions_attended'] ?></span> sessions</td>
+            <td><?= h($att['phone']) ?></td>
+            <td><span class="badge b-present"><?= $att['sessions_attended'] ?></span></td>
             <td><?= money($att['expected_amount']) ?></td>
             <td><?= money($att['paid_amount']) ?></td>
-            <td><?= money($att['remaining']) ?></td>
+            <td style="color:<?= $att['remaining']>0?'#f59e0b':'#6b7280' ?>"><?= money($att['remaining']) ?></td>
             <td><span class="badge <?= $stt==='PAID'?'b-paid':($stt==='PARTIAL'?'b-partial':'b-unpaid') ?>"><?= $stt ?></span></td>
-            <td><button class="btn btn-primary" onclick="selectAthlete('<?= h(addslashes($att['full_name'])) ?>', <?= $att['id'] ?>, <?= $att['expected_amount'] ?>)">Pay</button></td>
+            <td><button class="btn btn-primary btn-sm" onclick="selectAthlete('<?= h(addslashes($att['full_name'])) ?>', <?= $att['id'] ?>, <?= $att['expected_amount'] ?>)">Pay</button></td>
         </tr>
         <?php endforeach; ?>
-        <?php if(empty($attendedAthletes)): ?><tr><td colspan="8" style="text-align:center;padding:40px">No athletes attended sessions this period. Please mark attendance first.</td></tr><?php endif; ?>
+        <?php if(empty($attendedAthletes)): ?>
+        <tr><td colspan="9" style="text-align:center;padding:40px">❌ No athletes attended sessions this period. Please mark attendance first.</td></tr>
+        <?php endif; ?>
         </tbody>
     </table>
     </div>
@@ -886,23 +910,197 @@ function selectAthlete(name, id, amount) {
     document.getElementById('pay_member_id').value = id;
     document.getElementById('payAmount').value = amount;
 }
+
 document.getElementById('payAthleteSearch').addEventListener('input', function() {
     var input = this.value;
     var options = document.getElementById('athleteList').options;
-    for(var i=0; i<options.length; i++) {
+    for(var i = 0; i < options.length; i++) {
         if(options[i].value === input) {
-            // Find athlete data
-            <?php foreach($attendedAthletes as $att): ?>
-            if(input === '<?= h(addslashes($att['full_name'])) ?>') {
-                document.getElementById('pay_member_id').value = <?= $att['id'] ?>;
-                document.getElementById('payAmount').value = <?= $att['expected_amount'] ?>;
-            }
-            <?php endforeach; ?>
+            var id = options[i].getAttribute('data-id');
+            var amount = options[i].getAttribute('data-amount');
+            document.getElementById('pay_member_id').value = id;
+            document.getElementById('payAmount').value = amount;
             break;
         }
     }
 });
 </script>
+<?php endif; ?>
+
+// STAFF VIEW
+if($v==='staff'): ?>
+<div class="card">
+    <h3 style="margin-bottom:20px"><?= $edit_staff ? 'Edit Staff' : 'Add Staff Member' ?></h3>
+    <form method="POST">
+        <input type="hidden" name="action" value="save_staff">
+        <input type="hidden" name="id" value="<?= h($edit_staff['id']??'') ?>">
+        <div class="form-grid">
+            <div><label>Full Name *</label><input name="full_name" required value="<?= h($edit_staff['full_name']??'') ?>"></div>
+            <div><label>Phone</label><input name="phone" value="<?= h($edit_staff['phone']??'') ?>"></div>
+            <div><label>Role</label><select name="role"><option>coach</option><option>assistant_coach</option><option>manager</option><option>accountant</option></select></div>
+            <div><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>" <?= (($edit_staff['zone_id']??'')==$zone['id'])?'selected':'' ?>><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
+            <div><label>Monthly Salary (RWF)</label><input type="number" name="monthly_salary" value="<?= h($edit_staff['monthly_salary']??0) ?>"></div>
+        </div>
+        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">💾 Save Staff</button></div>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="margin-bottom:20px">Staff Directory</h3>
+    <div class="table-wrap">
+    <table>
+        <thead><tr><th>Name</th><th>Role</th><th>Zone</th><th>Phone</th><th>Salary</th><th>Status</th><th>Actions</th></tr></thead>
+        <tbody>
+        <?php foreach($st as $x): ?>
+        <tr>
+            <td><strong><?= h($x['full_name']) ?></strong></td>
+            <td><?= h($x['role']) ?></td>
+            <td><span class="badge b-zone"><?= h($x['zone_name']) ?></span></td>
+            <td><?= h($x['phone']) ?></td>
+            <td><?= money($x['monthly_salary']) ?></td>
+            <td><span class="badge <?= $x['is_active']?'b-paid':'b-unpaid' ?>"><?= $x['is_active']?'Active':'Inactive' ?></span></td>
+            <td><a href="?view=staff&period=<?= h($p) ?>&edit_staff=<?= $x['id'] ?>" class="btn btn-ghost btn-sm">Edit</a> <form method="POST" style="display:inline" onsubmit="return confirm('Deactivate staff?')"><input type="hidden" name="action" value="delete_staff"><input type="hidden" name="id" value="<?= $x['id'] ?>"><button class="btn btn-danger btn-sm">Deactivate</button></form></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+    </div>
+</div>
+<?php endif; ?>
+
+// PAYROLL VIEW
+if($v==='payroll'): ?>
+<div class="card">
+    <h3 style="margin-bottom:20px">Payroll Entry</h3>
+    <form method="POST">
+        <input type="hidden" name="action" value="payroll">
+        <div class="form-grid">
+            <div><label>Staff Member</label><select name="staff_id"><?php foreach($st as $x): ?><option value="<?= $x['id'] ?>"><?= h($x['full_name'].' ['.$x['zone_name'].']') ?></option><?php endforeach; ?></select></div>
+            <div><label>Period</label><input name="period" value="<?= h($p) ?>"></div>
+            <div><label>Base Salary</label><input type="number" name="base_salary" value="0"></div>
+            <div><label>Bonus</label><input type="number" name="bonus" value="0"></div>
+            <div><label>Deductions</label><input type="number" name="deductions" value="0"></div>
+            <div><label>Amount Paid</label><input type="number" name="amount_paid" value="0"></div>
+            <div><label>Note</label><input name="note"></div>
+        </div>
+        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">💾 Save Payroll</button></div>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="margin-bottom:20px">Payroll - <?= h($p) ?></h3>
+    <div class="table-wrap">
+    <table>
+        <thead><tr><th>Staff</th><th>Zone</th><th>Base</th><th>Bonus</th><th>Deductions</th><th>Net</th><th>Paid</th><th>Status</th></tr></thead>
+        <tbody>
+        <?php
+        $pay=$pdo->query("SELECT c.*,s.full_name,z.name zone_name FROM coach_payroll c JOIN staff s ON s.id=c.staff_id LEFT JOIN academy_zones z ON z.id=s.zone_id WHERE c.period='$p' ORDER BY z.id,s.full_name")->fetchAll();
+        foreach($pay as $x):
+        ?>
+        <tr>
+            <td><strong><?= h($x['full_name']) ?></strong></td>
+            <td><span class="badge b-zone"><?= h($x['zone_name']) ?></span></td>
+            <td><?= money($x['base_salary']) ?></td>
+            <td><?= money($x['bonus']) ?></td>
+            <td><?= money($x['deductions']) ?></td>
+            <td><?= money($x['net_salary']) ?></td>
+            <td><?= money($x['amount_paid']) ?></td>
+            <td><span class="badge <?= $x['status']==='PAID'?'b-paid':($x['status']==='PARTIAL'?'b-partial':'b-unpaid') ?>"><?= h($x['status']) ?></span></td>
+        </tr>
+        <?php endforeach; ?>
+        <?php if(empty($pay)): ?><tr><td colspan="8" style="text-align:center;padding:40px">No payroll records for <?= h($p) ?></td></tr><?php endif; ?>
+        </tbody>
+    </table>
+    </div>
+</div>
+<?php endif; ?>
+
+// EXPENSES VIEW
+if($v==='expenses'): ?>
+<div class="card">
+    <h3 style="margin-bottom:20px">Log Expense</h3>
+    <form method="POST">
+        <input type="hidden" name="action" value="expense">
+        <div class="form-grid">
+            <div><label>Date</label><input type="date" name="expense_date" value="<?= date('Y-m-d') ?>"></div>
+            <div><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>"><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
+            <div><label>Category</label><input name="category" placeholder="Equipment, Travel, etc"></div>
+            <div><label>Description</label><input name="description" required></div>
+            <div><label>Amount (RWF)</label><input type="number" name="amount" required></div>
+            <div><label>Paid To</label><input name="paid_to"></div>
+            <div><label>Approved By</label><input name="approved_by"></div>
+        </div>
+        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">💾 Save Expense</button></div>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="margin-bottom:20px">Expense Records</h3>
+    <?php $expenses = $pdo->query("SELECT e.*,z.name zone_name FROM expenses e LEFT JOIN academy_zones z ON z.id=e.zone_id ORDER BY e.expense_date DESC,e.id DESC LIMIT 100")->fetchAll(); ?>
+    <div class="table-wrap">
+    <table>
+        <thead><tr><th>Date</th><th>Zone</th><th>Category</th><th>Description</th><th>Amount</th><th>Paid To</th></tr></thead>
+        <tbody>
+        <?php foreach($expenses as $e): ?>
+        <tr>
+            <td><?= h($e['expense_date']) ?></td>
+            <td><span class="badge b-zone"><?= h($e['zone_name']) ?></span></td>
+            <td><?= h($e['category']) ?></td>
+            <td><?= h($e['description']) ?></td>
+            <td><?= money($e['amount']) ?></td>
+            <td><?= h($e['paid_to']) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+    </div>
+</div>
+<?php endif; ?>
+
+// UNIFORMS VIEW
+if($v==='uniforms'): 
+$uniforms=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
+$totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
+?>
+<div class="card">
+    <h3 style="margin-bottom:20px"><?= $edit_uniform ? 'Edit Uniform' : 'Assign Uniform' ?></h3>
+    <form method="POST">
+        <input type="hidden" name="action" value="save_uniform">
+        <input type="hidden" name="id" value="<?= h($edit_uniform['id']??'') ?>">
+        <div class="form-grid">
+            <div><label>Athlete</label><select name="member_id" required><?php foreach($am as $x): ?><option value="<?= $x['id'] ?>" <?= (($edit_uniform['member_id']??'')==$x['id'])?'selected':'' ?>><?= h($x['full_name']) ?></option><?php endforeach; ?></select></div>
+            <div><label>Jersey Number</label><input type="number" name="jersey_number" required value="<?= h($edit_uniform['jersey_number']??'') ?>"></div>
+            <div><label>Jersey Size</label><input name="jersey_size" required value="<?= h($edit_uniform['jersey_size']??'') ?>"></div>
+            <div><label>Shorts Size</label><input name="shorts_size" required value="<?= h($edit_uniform['shorts_size']??'') ?>"></div>
+            <div><label>Quantity</label><input type="number" name="quantity" value="<?= h($edit_uniform['quantity']??1) ?>"></div>
+            <div><label>Issued Date</label><input type="date" name="issued_date" value="<?= h($edit_uniform['issued_date']??date('Y-m-d')) ?>"></div>
+        </div>
+        <div style="margin-top:20px"><button class="btn btn-primary" type="submit">💾 Save Uniform</button></div>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="margin-bottom:20px">Uniform Report (<?= count($uniforms) ?> records, <?= $totalQty ?> items)</h3>
+    <div class="table-wrap">
+    <table>
+        <thead><tr><th>#</th><th>Athlete</th><th>Zone</th><th>Jersey</th><th>Shorts</th><th>Qty</th><th>Date</th><th>Actions</th></tr></thead>
+        <tbody>
+        <?php foreach($uniforms as $u): ?>
+        <tr>
+            <td><strong><?= h($u['jersey_number']) ?></strong></td>
+            <td><?= h($u['full_name']) ?></td>
+            <td><span class="badge b-zone"><?= h($u['zone_name']) ?></span></td>
+            <td><?= h($u['jersey_size']) ?></td>
+            <td><?= h($u['shorts_size']) ?></td>
+            <td><?= $u['quantity'] ?></td>
+            <td><?= h($u['issued_date']) ?></td>
+            <td><a href="?view=uniforms&period=<?= h($p) ?>&edit_uniform=<?= $u['id'] ?>" class="btn btn-ghost btn-sm">Edit</a> <form method="POST" style="display:inline" onsubmit="return confirm('Delete uniform?')"><input type="hidden" name="action" value="delete_uniform"><input type="hidden" name="id" value="<?= $u['id'] ?>"><button class="btn btn-danger btn-sm">Delete</button></form></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+    </div>
+</div>
 <?php endif; ?>
 
 // REPORTS VIEW
@@ -913,10 +1111,19 @@ $att_summary = attendance_summary($pdo, null, $p);
 ?>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px">
     <h1>Reports & Analytics <span style="color:#10b981"><?= h($p) ?></span></h1>
-    <div><a href="?view=reports&period=<?= $prev ?>" class="btn btn-ghost">← Prev</a> <span style="background:#1f2230;padding:8px 16px;border-radius:8px"><?= h($p) ?></span> <a href="?view=reports&period=<?= $next ?>" class="btn btn-ghost">Next →</a></div>
+    <div class="period-nav">
+        <a href="?view=reports&period=<?= $prev ?>" class="btn btn-ghost btn-sm">← Prev</a>
+        <span style="background:#1f2230;padding:8px 16px;border-radius:8px"><?= h($p) ?></span>
+        <a href="?view=reports&period=<?= $next ?>" class="btn btn-ghost btn-sm">Next →</a>
+    </div>
 </div>
 
-<!-- Non-Payers Who Attend -->
+<div class="stat-grid">
+    <div class="stat-card"><div>📥 Revenue</div><div style="font-size:24px;font-weight:700;color:#10b981"><?= money($stats['revenue']) ?></div></div>
+    <div class="stat-card"><div>📤 Expenses + Payroll</div><div style="font-size:24px;font-weight:700;color:#ef4444"><?= money($stats['expenses'] + $stats['payroll']) ?></div></div>
+    <div class="stat-card"><div>📈 Net Income</div><div style="font-size:24px;font-weight:700;color:<?= ($stats['revenue'] - $stats['expenses'] - $stats['payroll']) >=0 ? '#10b981' : '#ef4444' ?>"><?= money($stats['revenue'] - $stats['expenses'] - $stats['payroll']) ?></div></div>
+</div>
+
 <div class="card">
     <h3>⚠️ Non-Payers Who Attend Sessions (<?= count($non_payers) ?>)</h3>
     <div class="table-wrap">
@@ -931,7 +1138,7 @@ $att_summary = attendance_summary($pdo, null, $p);
             <td><?= money($np['expected_amount']) ?></td>
             <td><?= money($np['paid_amount']) ?></td>
             <td style="color:#ef4444"><?= money($np['remaining']) ?></td>
-            <td><span class="badge b-paid"><?= $np['sessions_attended'] ?></span></td>
+            <td><span class="badge b-present"><?= $np['sessions_attended'] ?></span></td>
         </tr>
         <?php endforeach; ?>
         </tbody>
@@ -939,12 +1146,11 @@ $att_summary = attendance_summary($pdo, null, $p);
     </div>
 </div>
 
-<!-- Overdue Payments -->
 <div class="card">
     <h3>⏰ Overdue Payments (<?= count($overdue) ?>)</h3>
     <div class="table-wrap">
     <table>
-        <thead><tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Due Date</th><th>Days Overdue</th></tr></thead>
+        <thead><tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Due Date</th><th>Days</th></tr></thead>
         <tbody>
         <?php foreach($overdue as $od): ?>
         <tr>
@@ -954,7 +1160,7 @@ $att_summary = attendance_summary($pdo, null, $p);
             <td><?= money($od['paid_amount']) ?></td>
             <td style="color:#ef4444"><?= money($od['remaining']) ?></td>
             <td><?= h($od['due_date']) ?></td>
-            <td><span class="badge b-unpaid"><?= $od['days_overdue'] ?> days</span></td>
+            <td><span class="badge b-unpaid"><?= $od['days_overdue'] ?>d</span></td>
         </tr>
         <?php endforeach; ?>
         </tbody>
@@ -962,12 +1168,11 @@ $att_summary = attendance_summary($pdo, null, $p);
     </div>
 </div>
 
-<!-- Attendance Summary -->
 <div class="card">
-    <h3>📋 Attendance Summary (<?= h($p) ?>)</h3>
+    <h3>📋 Attendance Summary</h3>
     <div class="table-wrap">
     <table>
-        <thead><tr><th>Athlete</th><th>Zone</th><th>Total</th><th>Present</th><th>Absent</th><th>Late</th><th>Rate</th></tr></thead>
+        <thead><tr><th>Athlete</th><th>Zone</th><th>Sessions</th><th>Present</th><th>Absent</th><th>Late</th><th>Rate</th></tr></thead>
         <tbody>
         <?php foreach($att_summary as $att): ?>
         <tr>
