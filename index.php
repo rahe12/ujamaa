@@ -172,11 +172,6 @@ try {
     $pdo->exec("ALTER TABLE staff ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id)");
     $pdo->exec("ALTER TABLE coach_payroll ADD COLUMN IF NOT EXISTS net_salary NUMERIC(12,2) DEFAULT 0");
     $pdo->exec("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS zone_id INT REFERENCES academy_zones(id)");
-    $pdo->exec("ALTER TABLE payment_logs ADD COLUMN IF NOT EXISTS bill_period CHAR(7)");
-    
-    // Migrate data if needed
-    $pdo->exec("UPDATE payment_logs SET bill_period = period WHERE bill_period IS NULL AND period IS NOT NULL");
-    $pdo->exec("ALTER TABLE payment_logs DROP COLUMN IF EXISTS period");
 } catch(PDOException $e) {
     // Columns might already exist
 }
@@ -465,10 +460,8 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         
         ensure_bill($pdo,$mid,$per);
         
-        // Update payment
         $pdo->prepare("UPDATE monthly_bills SET paid_amount=paid_amount+?, paid_at=NOW(), updated_at=NOW(), note=? WHERE member_id=? AND period=?")->execute([$amount, $_POST['note']?:null, $mid, $per]);
         
-        // Log payment with bill_period column
         $pdo->prepare("INSERT INTO payment_logs(member_id, amount_paid, bill_period, note) VALUES(?,?,?,?)")->execute([$mid, $amount, $per, $_POST['note']?:null]);
         
         go('payments','Payment recorded');
@@ -669,7 +662,6 @@ input,select,textarea{background:#1f2230;border:1px solid #2d3142;padding:10px 1
 input:focus,select:focus{outline:none;border-color:#10b981;}
 label{display:block;margin-bottom:6px;font-size:12px;color:#9ca3af;}
 .form-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
-.form-grid-2{grid-template-columns:repeat(2,1fr);}
 .result-count{font-size:12px;color:#6b7280;margin-bottom:12px;}
 .table-wrap{overflow-x:auto;}
 .flash{background:#10b98120;border:1px solid #10b981;border-radius:8px;padding:12px 16px;margin-bottom:20px;color:#10b981;}
@@ -732,10 +724,7 @@ if($v==='dashboard'): ?>
     <div class="stat-card"><div style="font-size:14px;color:#6b7280">📤 Expenses</div><div style="font-size:32px;font-weight:700;margin-top:8px;color:#ef4444"><?= money($stats['expenses']) ?></div></div>
     <div class="stat-card"><div style="font-size:14px;color:#6b7280">💵 Payroll</div><div style="font-size:32px;font-weight:700;margin-top:8px"><?= money($stats['payroll']) ?></div></div>
 </div>
-<?php endif; ?>
-
-// MEMBERS VIEW
-if($v==='members'): ?>
+<?php elseif($v==='members'): ?>
 <div class="card">
     <h3 style="margin-bottom:20px"><?= $edit_member ? 'Edit Athlete' : 'Add New Athlete' ?></h3>
     <form method="POST">
@@ -772,26 +761,15 @@ if($v==='members'): ?>
             <td><?= h($x['position']) ?></td>
             <td><?= money($x['monthly_fee']) ?></td>
             <td><span class="badge <?= $x['is_active']?'b-paid':'b-unpaid' ?>"><?= $x['is_active']?'Active':'Inactive' ?></span></td>
-            <td>
-                <div class="actions-cell">
-                    <a href="?view=members&period=<?= h($p) ?>&edit_member=<?= $x['id'] ?>" class="btn btn-ghost btn-sm">Edit</a>
-                    <form method="POST" style="display:inline" onsubmit="return confirm('Deactivate this athlete?')">
-                        <input type="hidden" name="action" value="delete_member">
-                        <input type="hidden" name="id" value="<?= $x['id'] ?>">
-                        <button class="btn btn-danger btn-sm" type="submit">Deactivate</button>
-                    </form>
-                </div>
-            </td>
+            <td><div class="actions-cell"><a href="?view=members&period=<?= h($p) ?>&edit_member=<?= $x['id'] ?>" class="btn btn-ghost btn-sm">Edit</a><form method="POST" style="display:inline" onsubmit="return confirm('Deactivate this athlete?')"><input type="hidden" name="action" value="delete_member"><input type="hidden" name="id" value="<?= $x['id'] ?>"><button class="btn btn-danger btn-sm">Deactivate</button></form></div></td>
         </tr>
         <?php endforeach; ?>
         </tbody>
     </table>
     </div>
 </div>
-<?php endif; ?>
 
-// ATTENDANCE VIEW
-if($v==='attendance'): ?>
+<?php elseif($v==='attendance'): ?>
 <div class="card">
     <h3 style="margin-bottom:20px"><?= $edit_session ? 'Edit Session' : 'Create Session' ?></h3>
     <form method="POST">
@@ -837,10 +815,8 @@ if($v==='attendance'): ?>
     </table>
     </div>
 </div>
-<?php endif; ?>
 
-// PAYMENTS VIEW - ONLY ATHLETES WHO ATTENDED SESSIONS
-if($v==='payments'): 
+<?php elseif($v==='payments'): 
 $attendedAthletes = athletes_with_attendance($pdo, $p);
 ?>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:32px">
@@ -879,9 +855,7 @@ $attendedAthletes = athletes_with_attendance($pdo, $p);
     <h3 style="margin-bottom:20px">Athletes Who Attended Sessions (<?= count($attendedAthletes) ?>)</h3>
     <div class="table-wrap">
     <table>
-        <thead>
-            <tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Sessions</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Action</th>
-        </thead>
+        <thead><tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Sessions</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Action</th></tr></thead>
         <tbody>
         <?php foreach($attendedAthletes as $att): $stt = bill_status($att['expected_amount'], $att['paid_amount']); ?>
         <tr>
@@ -910,7 +884,6 @@ function selectAthlete(name, id, amount) {
     document.getElementById('pay_member_id').value = id;
     document.getElementById('payAmount').value = amount;
 }
-
 document.getElementById('payAthleteSearch').addEventListener('input', function() {
     var input = this.value;
     var options = document.getElementById('athleteList').options;
@@ -925,10 +898,8 @@ document.getElementById('payAthleteSearch').addEventListener('input', function()
     }
 });
 </script>
-<?php endif; ?>
 
-// STAFF VIEW
-if($v==='staff'): ?>
+<?php elseif($v==='staff'): ?>
 <div class="card">
     <h3 style="margin-bottom:20px"><?= $edit_staff ? 'Edit Staff' : 'Add Staff Member' ?></h3>
     <form method="POST">
@@ -966,10 +937,8 @@ if($v==='staff'): ?>
     </table>
     </div>
 </div>
-<?php endif; ?>
 
-// PAYROLL VIEW
-if($v==='payroll'): ?>
+<?php elseif($v==='payroll'): ?>
 <div class="card">
     <h3 style="margin-bottom:20px">Payroll Entry</h3>
     <form method="POST">
@@ -1013,10 +982,8 @@ if($v==='payroll'): ?>
     </table>
     </div>
 </div>
-<?php endif; ?>
 
-// EXPENSES VIEW
-if($v==='expenses'): ?>
+<?php elseif($v==='expenses'): ?>
 <div class="card">
     <h3 style="margin-bottom:20px">Log Expense</h3>
     <form method="POST">
@@ -1055,10 +1022,8 @@ if($v==='expenses'): ?>
     </table>
     </div>
 </div>
-<?php endif; ?>
 
-// UNIFORMS VIEW
-if($v==='uniforms'): 
+<?php elseif($v==='uniforms'): 
 $uniforms=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
 $totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
 ?>
@@ -1101,10 +1066,8 @@ $totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
     </table>
     </div>
 </div>
-<?php endif; ?>
 
-// REPORTS VIEW
-if($v==='reports'): 
+<?php elseif($v==='reports'): 
 $non_payers = non_payers_with_attendance($pdo, $p);
 $overdue = overdue_payments_report($pdo, $p);
 $att_summary = attendance_summary($pdo, null, $p);
@@ -1189,6 +1152,7 @@ $att_summary = attendance_summary($pdo, null, $p);
     </table>
     </div>
 </div>
+
 <?php endif; ?>
 
 </main>
