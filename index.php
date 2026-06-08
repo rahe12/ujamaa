@@ -175,7 +175,7 @@ function billing_rows($pdo,$period){
     return $stmt->fetchAll();
 }
 
-// NEW: Get non-payers who attended sessions
+// FIXED: Get non-payers who attended sessions - removed ORDER BY inside STRING_AGG
 function non_payers_with_attendance($pdo, $period, $attendance_month = null) {
     $att_month = $attendance_month ?: $period;
     
@@ -183,11 +183,11 @@ function non_payers_with_attendance($pdo, $period, $attendance_month = null) {
         SELECT DISTINCT 
             m.id, m.full_name, m.phone, m.guardian_name, m.guardian_phone,
             z.name as zone_name,
-            b.expected_amount, b.paid_amount, 
-            GREATEST(b.expected_amount - b.paid_amount, 0) as remaining,
+            COALESCE(b.expected_amount, 0) as expected_amount, 
+            COALESCE(b.paid_amount, 0) as paid_amount, 
+            GREATEST(COALESCE(b.expected_amount, 0) - COALESCE(b.paid_amount, 0), 0) as remaining,
             COUNT(DISTINCT s.id) as sessions_attended,
-            STRING_AGG(DISTINCT s.name || ' (' || s.session_date || ')', ', ' ORDER BY s.session_date) as sessions_list,
-            STRING_AGG(DISTINCT a.status || '', ', ') as attendance_statuses
+            STRING_AGG(DISTINCT s.name || ' (' || s.session_date || ')', ', ') as sessions_list
         FROM members m
         LEFT JOIN academy_zones z ON z.id = m.zone_id
         LEFT JOIN monthly_bills b ON b.member_id = m.id AND b.period = ?
@@ -195,7 +195,7 @@ function non_payers_with_attendance($pdo, $period, $attendance_month = null) {
         LEFT JOIN sessions s ON s.id = a.session_id 
             AND TO_CHAR(s.session_date, 'YYYY-MM') = ?
         WHERE m.is_active = TRUE
-            AND (b.paid_amount IS NULL OR b.paid_amount < b.expected_amount OR b.expected_amount = 0)
+            AND (b.paid_amount IS NULL OR b.paid_amount < COALESCE(b.expected_amount, 0))
             AND a.id IS NOT NULL
         GROUP BY m.id, m.full_name, m.phone, m.guardian_name, m.guardian_phone, z.name, b.expected_amount, b.paid_amount
         HAVING COUNT(DISTINCT s.id) > 0
@@ -205,7 +205,34 @@ function non_payers_with_attendance($pdo, $period, $attendance_month = null) {
     return $stmt->fetchAll();
 }
 
-// NEW: Get overdue payments report
+// NEW: Get athletes who attended sessions (for payment marking)
+function athletes_with_attendance($pdo, $period) {
+    $stmt = $pdo->prepare("
+        SELECT DISTINCT 
+            m.id, m.full_name, m.phone, m.guardian_name,
+            z.name as zone_name,
+            COALESCE(b.expected_amount, 0) as expected_amount, 
+            COALESCE(b.paid_amount, 0) as paid_amount,
+            GREATEST(COALESCE(b.expected_amount, 0) - COALESCE(b.paid_amount, 0), 0) as remaining,
+            COUNT(DISTINCT s.id) as sessions_attended,
+            STRING_AGG(DISTINCT s.name, ', ') as session_names
+        FROM members m
+        LEFT JOIN academy_zones z ON z.id = m.zone_id
+        LEFT JOIN monthly_bills b ON b.member_id = m.id AND b.period = ?
+        LEFT JOIN attendance a ON a.member_id = m.id
+        LEFT JOIN sessions s ON s.id = a.session_id 
+            AND TO_CHAR(s.session_date, 'YYYY-MM') = ?
+        WHERE m.is_active = TRUE
+            AND a.id IS NOT NULL
+        GROUP BY m.id, m.full_name, m.phone, m.guardian_name, z.name, b.expected_amount, b.paid_amount
+        HAVING COUNT(DISTINCT s.id) > 0
+        ORDER BY z.name, m.full_name
+    ");
+    $stmt->execute([$period, $period]);
+    return $stmt->fetchAll();
+}
+
+// Get overdue payments report
 function overdue_payments_report($pdo, $period) {
     $stmt = $pdo->prepare("
         SELECT m.*, z.name as zone_name, b.*,
@@ -224,7 +251,7 @@ function overdue_payments_report($pdo, $period) {
     return $stmt->fetchAll();
 }
 
-// NEW: Get attendance summary by member
+// Get attendance summary by member
 function attendance_summary($pdo, $member_id = null, $year_month = null) {
     $sql = "
         SELECT 
@@ -258,7 +285,7 @@ function attendance_summary($pdo, $member_id = null, $year_month = null) {
     return $stmt->fetchAll();
 }
 
-// NEW: Export any report as CSV
+// Export any report as CSV
 function export_csv($data, $filename, $headers) {
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $filename . '_' . date('Ymd_His') . '.csv"');
@@ -458,19 +485,19 @@ body{font-family:Arial,sans-serif;color:#111;margin:0;padding:28px;background:#f
 <?php if(empty($rows)): ?><tr><td colspan="13">No uniform records found.</td></tr><?php endif; ?>
 <?php foreach($rows as $r): ?>
 <tr>
-  <td><?= h($r['jersey_number']) ?></td>
-  <td><?= h($r['full_name']) ?></td>
-  <td><?= h($r['zone_name']) ?></td>
-  <td><?= h($r['jersey_category']) ?></td>
-  <td><?= h($r['jersey_size']) ?></td>
-  <td><?= h($r['jersey_chest']) ?></td>
-  <td><?= h($r['jersey_length']) ?></td>
-  <td><?= h($r['shorts_size']) ?></td>
-  <td><?= h($r['shorts_waist']) ?></td>
-  <td><?= h($r['shorts_inseam']) ?></td>
-  <td><?= h($r['quantity']) ?></td>
-  <td><?= h($r['issued_date']) ?></td>
-  <td><?= h($r['note']) ?></td>
+   <td><?= h($r['jersey_number']) ?></td>
+   <td><?= h($r['full_name']) ?></td>
+   <td><?= h($r['zone_name']) ?></td>
+   <td><?= h($r['jersey_category']) ?></td>
+   <td><?= h($r['jersey_size']) ?></td>
+   <td><?= h($r['jersey_chest']) ?></td>
+   <td><?= h($r['jersey_length']) ?></td>
+   <td><?= h($r['shorts_size']) ?></td>
+   <td><?= h($r['shorts_waist']) ?></td>
+   <td><?= h($r['shorts_inseam']) ?></td>
+   <td><?= h($r['quantity']) ?></td>
+   <td><?= h($r['issued_date']) ?></td>
+   <td><?= h($r['note']) ?></td>
 </tr>
 <?php endforeach; ?>
 </tbody>
@@ -1547,10 +1574,10 @@ if($v==='members'): ?>
           </form>
         </div>
        </td>
-     </tr>
+    </tr>
     <?php endforeach; ?>
     </tbody>
-  </table>
+  追赶
   </div>
 </div>
 
@@ -1668,7 +1695,7 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
           </form>
         </div>
        </td>
-     </tr>
+    </tr>
     <?php endforeach; ?>
     </tbody>
   </table>
@@ -1775,15 +1802,17 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
 <?php endif; ?>
 
 <?php /* ════════════════════════════════════════════════════
-   PAYMENTS / BILLING
+   PAYMENTS / BILLING - UPDATED: Only show athletes who attended sessions
 ════════════════════════════════════════════════════ */
 if($v==='payments'):
-$membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name'],'zone'=>$x['zone_name'],'phone'=>$x['phone'],'fee'=>$x['monthly_fee']],$am));
+// Get only athletes who attended sessions this period
+$attendedAthletes = athletes_with_attendance($pdo, $p);
+$membersJson = json_encode($attendedAthletes);
 ?>
 <div class="page-header">
   <div>
     <div class="page-title">Billing <em>&amp; Payments</em></div>
-    <div class="page-sub">Period: <?= h($p) ?></div>
+    <div class="page-sub">Period: <?= h($p) ?> · Showing athletes who attended sessions</div>
   </div>
   <div class="period-nav">
     <a href="?view=payments&period=<?= $prev ?>">← Prev</a>
@@ -1826,7 +1855,86 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
   </form>
 </div>
 
+<!-- Show list of athletes who attended sessions and their payment status -->
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Attended Athletes Payment Status — <?= h($p) ?></div>
+    <span class="badge b-present"><?= count($attendedAthletes) ?> athletes attended</span>
+  </div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">🔍</span>
+      <input type="text" id="attendedPaySearch" placeholder="Search athlete, zone, status…" oninput="filterTable('attendedPaySearch','attendedPayTbl','attendedPayCnt')">
+    </div>
+    <select id="apStatusF" onchange="filterTable('attendedPaySearch','attendedPayTbl','attendedPayCnt')">
+      <option value="">All Status</option>
+      <option value="PAID">Paid</option>
+      <option value="PARTIAL">Partial</option>
+      <option value="UNPAID">Unpaid</option>
+    </select>
+    <select id="apZoneF" onchange="filterTable('attendedPaySearch','attendedPayTbl','attendedPayCnt')">
+      <option value="">All Zones</option>
+      <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
+    </select>
+  </div>
+  <div class="result-count" id="attendedPayCnt"></div>
+  <div class="table-wrap">
+  <table id="attendedPayTbl">
+    <thead>
+      <tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Sessions</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Status</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+    <?php foreach($attendedAthletes as $att):
+      $stt = bill_status($att['expected_amount'], $att['paid_amount']);
+    ?>
+    <tr>
+      <td><div style="display:flex;align-items:center;gap:10px">
+          <div style="width:32px;height:32px;border-radius:10px;background:var(--lime-dim);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--lime)"><?= mb_substr($att['full_name'],0,1) ?></div>
+          <strong><?= h($att['full_name']) ?></strong>
+        </div></td>
+      <td><span class="badge b-zone"><?= h($att['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono);font-size:12px"><?= h($att['phone']) ?></td>
+      <td><span class="badge b-present"><?= $att['sessions_attended'] ?></span> sessions<br><small><?= h(substr($att['session_names'],0,50)) ?></small></td>
+      <td style="font-family:var(--font-mono);color:var(--text2)"><?= money($att['expected_amount']) ?></td>
+      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($att['paid_amount']) ?></td>
+      <td style="font-family:var(--font-mono);color:<?= $att['remaining']>0?'var(--amber)':'var(--muted)' ?>"><?= money($att['remaining']) ?></td>
+      <td><span class="badge <?= $stt==='PAID'?'b-paid':($stt==='PARTIAL'?'b-partial':'b-unpaid') ?>"><?= $stt ?></span></td>
+      <td>
+        <button class="btn btn-primary btn-sm" onclick="selectAthleteForPayment(<?= htmlspecialchars(json_encode($att)) ?>)">💰 Pay</button>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    <?php if(empty($attendedAthletes)): ?>
+    <tr><td colspan="9" class="no-data">No athletes attended sessions this period. Please mark attendance first.<?php endif; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+
 <script>
+function selectAthleteForPayment(athlete) {
+    document.getElementById('payAthleteSearch').value = athlete.full_name;
+    document.getElementById('pay_member_id').value = athlete.id;
+    document.getElementById('paySelectedInfo').classList.add('visible');
+    const initials = athlete.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+    document.getElementById('paySelAvatar').textContent = initials;
+    document.getElementById('paySelName').textContent = athlete.full_name;
+    document.getElementById('paySelDetail').innerHTML = (athlete.zone_name||'') + ' · Fee: ' + formatMoney(athlete.expected_amount) + '/month';
+    document.getElementById('payAmount').value = athlete.expected_amount;
+    document.getElementById('paySubmitBtn').disabled = false;
+    document.getElementById('payHint').textContent = 'Athlete selected — enter amount and save';
+    document.getElementById('payDropdown').classList.remove('open');
+    document.getElementById('payAthleteSearch').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function formatMoney(amount) {
+    return Number(amount).toLocaleString() + ' RWF';
+}
+
+function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// Autocomplete for payment form
 (function(){
   const members = <?= $membersJson ?>;
   const searchInput = document.getElementById('payAthleteSearch');
@@ -1841,9 +1949,6 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
   const amountInput = document.getElementById('payAmount');
   let focusedIndex = -1;
 
-  function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-  function fmtMoney(v){ return Number(v).toLocaleString()+' RWF'; }
-
   function renderDropdown(items){
     dropdown.innerHTML = '';
     if(items.length === 0){
@@ -1853,16 +1958,28 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
         const div = document.createElement('div');
         div.className = 'ac-item';
         div.dataset.id = m.id;
-        div.dataset.fee = m.fee;
-        const initials = m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+        div.dataset.fee = m.expected_amount;
+        const initials = m.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
         div.innerHTML = `
           <div class="ac-avatar">${initials}</div>
           <div class="ac-info">
-            <div class="ac-name">${escHtml(m.name)}</div>
-            <div class="ac-meta">${escHtml(m.zone||'')}${m.phone?' · '+escHtml(m.phone):''}</div>
+            <div class="ac-name">${escHtml(m.full_name)}</div>
+            <div class="ac-meta">${escHtml(m.zone_name||'')} · ${m.sessions_attended} sessions attended</div>
           </div>
-          <div class="ac-badge">${fmtMoney(m.fee)}/mo</div>`;
-        div.addEventListener('mousedown',()=>selectAthlete(m));
+          <div class="ac-badge">${formatMoney(m.expected_amount)}/mo</div>`;
+        div.addEventListener('mousedown',()=>{
+          memberIdInput.value = m.id;
+          searchInput.value = m.full_name;
+          dropdown.classList.remove('open');
+          selectedInfo.classList.add('visible');
+          const initials2 = m.full_name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
+          selAvatar.textContent = initials2;
+          selName.textContent = m.full_name;
+          selDetail.innerHTML = (m.zone_name||'') + ' · ' + m.sessions_attended + ' sessions · Fee: ' + formatMoney(m.expected_amount) + '/month';
+          if(m.expected_amount > 0) amountInput.value = m.expected_amount;
+          submitBtn.disabled = false;
+          hint.textContent = 'Athlete selected — enter amount and save';
+        });
         dropdown.appendChild(div);
       });
     }
@@ -1870,28 +1987,15 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
     focusedIndex = -1;
   }
 
-  function selectAthlete(m){
-    searchInput.value = m.name;
-    memberIdInput.value = m.id;
-    dropdown.classList.remove('open');
-    selectedInfo.classList.add('visible');
-    const initials = m.name.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase();
-    selAvatar.textContent = initials;
-    selName.textContent = m.name;
-    selDetail.textContent = (m.zone||'') + (m.phone?' · '+m.phone:'') + ' · Fee: '+fmtMoney(m.fee)+'/month';
-    if(m.fee > 0) amountInput.value = m.fee;
-    submitBtn.disabled = false;
-    hint.textContent = 'Athlete selected — enter amount and save';
-  }
-
   searchInput.addEventListener('input',function(){
     const q = this.value.toLowerCase().trim();
-    memberIdInput.value = '';
-    selectedInfo.classList.remove('visible');
-    submitBtn.disabled = true;
-    hint.textContent = 'Search and select an athlete above';
+    if(!memberIdInput.value) {
+        selectedInfo.classList.remove('visible');
+        submitBtn.disabled = true;
+        hint.textContent = 'Search and select an athlete above';
+    }
     if(q.length < 1){ dropdown.classList.remove('open'); return; }
-    const filtered = members.filter(m=>m.name.toLowerCase().includes(q)||(m.phone||'').includes(q)||(m.zone||'').toLowerCase().includes(q));
+    const filtered = members.filter(m=>m.full_name.toLowerCase().includes(q) || (m.phone||'').includes(q) || (m.zone_name||'').toLowerCase().includes(q));
     renderDropdown(filtered);
   });
 
@@ -1899,7 +2003,7 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
     const items = dropdown.querySelectorAll('.ac-item');
     if(e.key==='ArrowDown'){ e.preventDefault(); focusedIndex=Math.min(focusedIndex+1,items.length-1); items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex)); }
     else if(e.key==='ArrowUp'){ e.preventDefault(); focusedIndex=Math.max(focusedIndex-1,0); items.forEach((el,i)=>el.classList.toggle('focused',i===focusedIndex)); }
-    else if(e.key==='Enter'&&focusedIndex>=0){ e.preventDefault(); const id=parseInt(items[focusedIndex].dataset.id); const m=members.find(x=>x.id===id); if(m)selectAthlete(m); }
+    else if(e.key==='Enter'&&focusedIndex>=0){ e.preventDefault(); const clickEvent = new Event('mousedown'); items[focusedIndex].dispatchEvent(clickEvent); }
     else if(e.key==='Escape'){ dropdown.classList.remove('open'); }
   });
 
@@ -1912,50 +2016,6 @@ $membersJson = json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_na
   });
 })();
 </script>
-
-<div class="card">
-  <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Billing Status — <?= h($p) ?></div>
-  </div>
-  <div class="toolbar">
-    <div class="search-box">
-      <span class="search-box-icon">🔍</span>
-      <input type="text" id="billSearch" placeholder="Search by athlete, zone, status…" oninput="filterTable('billSearch','billTbl','billCnt')">
-    </div>
-    <select id="bStatF" onchange="filterTable('billSearch','billTbl','billCnt')">
-      <option value="">All Status</option>
-      <option value="PAID">Paid</option>
-      <option value="PARTIAL">Partial</option>
-      <option value="UNPAID">Unpaid</option>
-      <option value="NO BILL">No Bill</option>
-    </select>
-    <select id="bZoneF" onchange="filterTable('billSearch','billTbl','billCnt')">
-      <option value="">All Zones</option>
-      <?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?>
-    </select>
-  </div>
-  <div class="result-count" id="billCnt"></div>
-  <div class="table-wrap">
-  <table id="billTbl">
-    <thead><tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Remaining</th><th>Due Date</th><th>Status</th><th>Overdue</th></tr></thead>
-    <tbody>
-    <?php foreach(billing_rows($pdo,$p) as $b): $stt=bill_status($b['expected_amount'],$b['paid_amount']); $od=overdue($b['due_date'],$stt); ?>
-    <tr>
-      <td><strong><?= h($b['full_name']) ?></strong></td>
-      <td><span class="badge b-zone"><?= h($b['zone_name']) ?></span></td>
-      <td style="font-family:var(--font-mono);color:var(--text2)"><?= money($b['expected_amount']) ?></td>
-      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($b['paid_amount']) ?></td>
-      <td style="font-family:var(--font-mono);color:<?= $b['remaining']>0?'var(--amber)':'var(--muted)' ?>"><?= money($b['remaining']) ?></td>
-      <td style="font-family:var(--font-mono);font-size:12px;color:var(--muted)"><?= h($b['due_date']) ?></td>
-      <td><span class="badge <?= $stt==='PAID'?'b-paid':($stt==='PARTIAL'?'b-partial':($stt==='UNPAID'?'b-unpaid':'b-nobill')) ?>"><?= $stt ?></span></td>
-      <td><span class="overdue <?= $od>0?'over':'ok' ?>"><?= $od>0?$od.'d':'-' ?></span></td>
-    </tr>
-    <?php endforeach; ?>
-    </tbody>
-  </table>
-  </div>
-</div>
 
 <?php endif; ?>
 
@@ -2139,7 +2199,7 @@ if($v==='payroll'): ?>
       <td>—</td>
     </tr>
     <?php endif; ?>
-    <?php if(empty($pay)): ?><tr><td colspan="8" class="no-data">No payroll records for <?= h($p) ?></td></tr><?php endif; ?>
+    <?php if(empty($pay)): ?><td><td colspan="8" class="no-data">No payroll records for <?= h($p) ?></td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
@@ -2224,7 +2284,7 @@ if($v==='expenses'): ?>
       <td colspan="2">—</td>
     </tr>
     <?php endif; ?>
-    <?php if(empty($expenses)): ?><tr><td colspan="7" class="no-data">No expenses recorded yet</td><?php endif; ?>
+    <?php if(empty($expenses)): ?><tr><td colspan="7" class="no-data">No expenses recorded yet</td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
@@ -2291,7 +2351,7 @@ $totalQty=0; foreach($uniforms as $uu){ $totalQty += (int)$uu['quantity']; }
   <table id="uniformTbl">
     <thead><tr><th>No.</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Category</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Actions</th></tr></thead>
     <tbody>
-    <?php if(!$uniforms): ?><td><td colspan="14" class="no-data">No uniform data inserted yet.<?php endif; ?>
+    <?php if(!$uniforms): ?><tr><td colspan="14" class="no-data">No uniform data inserted yet.<?php endif; ?>
     <?php foreach($uniforms as $u): ?>
       <tr>
         <td><strong style="font-family:var(--font-display);color:var(--lime)"><?= h($u['jersey_number']) ?></strong></td>
@@ -2383,7 +2443,7 @@ $totalExp2 = $totalExp + $totalPay;
   </div>
 </div>
 
-<!-- NEW: Non-Payers Who Attend Sessions -->
+<!-- Non-Payers Who Attend Sessions -->
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header">
@@ -2623,7 +2683,7 @@ function filterAttendanceMonth() {
       <td>—</td>
     </tr>
     <?php endif; ?>
-    <?php if(empty($logs)): ?><tr><td colspan="5" class="no-data">No payment logs yet</td></tr><?php endif; ?>
+    <?php if(empty($logs)): ?><tr><td colspan="5" class="no-data">No payment logs yet</td><?php endif; ?>
     </tbody>
   </table>
   </div>
@@ -2698,7 +2758,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ['attSumSearch','attSumTbl','attSumCnt'],
     ['overdueSearch','overdueTbl','overdueCnt'],
     ['nonPaySearch','nonPayTbl','nonPayCnt'],
-    ['attRepSearch','attRepTbl','attRepCnt'],
+    ['attendedPaySearch','attendedPayTbl','attendedPayCnt'],
   ];
   maps.forEach(([s,t,c]) => {
     if(document.getElementById(t)) filterTable(s,t,c);
