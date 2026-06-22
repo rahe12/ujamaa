@@ -415,30 +415,78 @@ if(($export_type=$_GET['export']??'')){
     switch($export_type){
         case 'non_payers':
             $non_payers=non_payers_with_attendance($pdo,$p,$_GET['att_month']??$p);
-            export_csv(array_map(fn($r)=>[$r['full_name'],$r['zone_name'],$r['phone'],$r['guardian_name'],$r['guardian_phone'],$r['expected_amount'],$r['paid_amount'],$r['remaining'],$r['sessions_attended'],$r['sessions_list']],$non_payers),'non_payers_attendance_report',['Athlete','Zone','Phone','Guardian','Guardian Phone','Expected','Paid','Remaining','Sessions Attended','Sessions List']);
+            export_csv(array_map(fn($r)=>[
+                $r['full_name'],
+                $r['zone_name'],
+                $r['phone'],
+                $r['guardian_name'],
+                $r['guardian_phone'],
+                $r['expected_amount'],
+                $r['paid_amount'],
+                $r['remaining'],
+                $r['sessions_attended'],
+                $r['sessions_list'] ?? ''
+            ],$non_payers),'non_payers_attendance_report',['Athlete','Zone','Phone','Guardian','Guardian Phone','Expected','Paid','Remaining','Sessions Attended','Sessions List']);
+            break;
         case 'overdue':
             $overdue=overdue_payments_report($pdo,$p);
-            export_csv(array_map(fn($r)=>[$r['full_name'],$r['zone_name'],$r['phone'],$r['guardian_name'],$r['expected_amount'],$r['paid_amount'],$r['remaining'],$r['due_date'],$r['days_overdue'],bill_status($r['expected_amount'],$r['paid_amount'])],$overdue),'overdue_payments_report',['Athlete','Zone','Phone','Guardian','Expected','Paid','Remaining','Due Date','Days Overdue','Status']);
+            export_csv(array_map(fn($r)=>[
+                $r['full_name'],
+                $r['zone_name'],
+                $r['phone'],
+                $r['guardian_name'],
+                $r['expected_amount'],
+                $r['paid_amount'],
+                $r['remaining'],
+                $r['due_date'],
+                $r['days_overdue'],
+                bill_status($r['expected_amount'],$r['paid_amount'])
+            ],$overdue),'overdue_payments_report',['Athlete','Zone','Phone','Guardian','Expected','Paid','Remaining','Due Date','Days Overdue','Status']);
+            break;
         case 'attendance_summary':
             $att_summary=attendance_summary($pdo,null,$_GET['att_month']??$p);
-            export_csv(array_map(fn($r)=>[$r['full_name'],$r['zone_name'],$r['total_sessions'],$r['present_count'],$r['absent_count'],$r['late_count'],$r['attendance_rate']],$att_summary),'attendance_summary_report',['Athlete','Zone','Total Sessions','Present','Absent','Late','Attendance Rate %']);
+            export_csv(array_map(fn($r)=>[
+                $r['full_name'],
+                $r['zone_name'],
+                $r['total_sessions'],
+                $r['present_count'],
+                $r['absent_count'],
+                $r['late_count'],
+                $r['attendance_rate']
+            ],$att_summary),'attendance_summary_report',['Athlete','Zone','Total Sessions','Present','Absent','Late','Attendance Rate %']);
+            break;
+        case 'uniform_excel':
+            $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
+            export_csv(array_map(fn($r)=>[
+                $r['jersey_number'],
+                $r['full_name'],
+                $r['zone_name'],
+                $r['jersey_category'],
+                $r['jersey_size'],
+                $r['jersey_chest'],
+                $r['jersey_length'],
+                $r['shorts_category'],
+                $r['shorts_size'],
+                $r['shorts_waist'],
+                $r['shorts_inseam'],
+                $r['quantity'],
+                $r['issued_date'],
+                $r['note']
+            ],$rows),'uniform_report',['Jersey #','Athlete','Zone','Jersey Category','Jersey Size','Chest','Length','Shorts Category','Shorts Size','Waist','Inseam','Qty','Issued Date','Note']);
+            break;
+        case 'uniform_pdf':
+            $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
+            $totalQty=0;foreach($rows as $r){$totalQty+=(int)$r['quantity'];}
+            ?><!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Uniform Report</title><style>body{font-family:Arial,sans-serif;color:#111;margin:0;padding:28px}.btn{background:#111;color:#fff;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;margin-bottom:18px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ccc;padding:7px;text-align:left}th{background:#111;color:#fff}@media print{.no-print{display:none}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body>
+            <div class="no-print"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
+            <h2>Uniform Report — <?=date('Y-m-d H:i')?></h2>
+            <p>Records: <?=count($rows)?> · Total Qty: <?=$totalQty?></p>
+            <table><thead><tr><th>#</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Note</th></tr></thead><tbody>
+            <?php if(empty($rows)): ?><tr><td colspan="13">No records.</td></tr><?php endif; ?>
+            <?php foreach($rows as $r): ?><tr><td><?=h($r['jersey_number'])?></td><td><?=h($r['full_name'])?></td><td><?=h($r['zone_name'])?></td><td><?=h($r['jersey_category'])?></td><td><?=h($r['jersey_size'])?></td><td><?=h($r['jersey_chest'])?></td><td><?=h($r['jersey_length'])?></td><td><?=h($r['shorts_size'])?></td><td><?=h($r['shorts_waist'])?></td><td><?=h($r['shorts_inseam'])?></td><td><?=h($r['quantity'])?></td><td><?=h($r['issued_date'])?></td><td><?=h($r['note'])?></td></tr><?php endforeach; ?>
+            </tbody></table></body></html><?php exit;
+            break;
     }
-}
-if(($_GET['export']??'')==='uniform_excel'){
-    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
-    export_csv(array_map(fn($r)=>[$r['jersey_number'],$r['full_name'],$r['zone_name'],$r['jersey_category'],$r['jersey_size'],$r['jersey_chest'],$r['jersey_length'],$r['shorts_category'],$r['shorts_size'],$r['shorts_waist'],$r['shorts_inseam'],$r['quantity'],$r['issued_date'],$r['note']],$rows),'uniform_report',['Jersey #','Athlete','Zone','Jersey Category','Jersey Size','Chest','Length','Shorts Category','Shorts Size','Waist','Inseam','Qty','Issued Date','Note']);
-}
-if(($_GET['export']??'')==='uniform_pdf'){
-    $rows=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
-    $totalQty=0;foreach($rows as $r){$totalQty+=(int)$r['quantity'];}
-    ?><!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Uniform Report</title><style>body{font-family:Arial,sans-serif;color:#111;margin:0;padding:28px}.btn{background:#111;color:#fff;border:0;border-radius:8px;padding:10px 14px;cursor:pointer;margin-bottom:18px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border:1px solid #ccc;padding:7px;text-align:left}th{background:#111;color:#fff}@media print{.no-print{display:none}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body>
-    <div class="no-print"><button class="btn" onclick="window.print()">Print / Save as PDF</button></div>
-    <h2>Uniform Report — <?=date('Y-m-d H:i')?></h2>
-    <p>Records: <?=count($rows)?> · Total Qty: <?=$totalQty?></p>
-    <table><thead><tr><th>#</th><th>Athlete</th><th>Zone</th><th>Jersey Category</th><th>Jersey Size</th><th>Chest</th><th>Length</th><th>Shorts Size</th><th>Waist</th><th>Inseam</th><th>Qty</th><th>Date</th><th>Note</th></tr></thead><tbody>
-    <?php if(empty($rows)): ?><tr><td colspan="13">No records.</td></tr><?php endif; ?>
-    <?php foreach($rows as $r): ?><tr><td><?=h($r['jersey_number'])?></td><td><?=h($r['full_name'])?></td><td><?=h($r['zone_name'])?></td><td><?=h($r['jersey_category'])?></td><td><?=h($r['jersey_size'])?></td><td><?=h($r['jersey_chest'])?></td><td><?=h($r['jersey_length'])?></td><td><?=h($r['shorts_size'])?></td><td><?=h($r['shorts_waist'])?></td><td><?=h($r['shorts_inseam'])?></td><td><?=h($r['quantity'])?></td><td><?=h($r['issued_date'])?></td><td><?=h($r['note'])?></td></tr><?php endforeach; ?>
-    </tbody></table></body></html><?php exit;
 }
 
 /* ════════════════════════════════════════════════════
