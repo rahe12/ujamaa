@@ -619,6 +619,10 @@ $nav_items=[
 ];
 $prev=date('Y-m',strtotime($p.'-01 -1 month'));
 $next=date('Y-m',strtotime($p.'-01 +1 month'));
+
+/* ── MODAL for Edit Payment ── */
+$editBillData=null;
+if($edit_bill) $editBillData=$edit_bill;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -741,7 +745,6 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 
 .form-grid  {display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
 .form-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;}
-.form-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
 .form-group label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted);font-family:var(--font-mono);margin-bottom:7px;}
 .form-group input,.form-group select,.form-group textarea{width:100%;padding:10px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:13.5px;outline:none;transition:border-color var(--transition),box-shadow var(--transition),background var(--transition);-webkit-appearance:none;}
 .form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--lime);background:var(--surface3);box-shadow:0 0 0 3px var(--lime-glow);}
@@ -859,6 +862,9 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 <div class="flash"><div class="flash-icon">✓</div><?= h($msg) ?></div>
 <?php endif; ?>
 
+<?php /* ════════════════════════════════════
+   DASHBOARD
+════════════════════════════════════ */ ?>
 <?php if($v==='dashboard'): ?>
 <div class="page-header">
   <div>
@@ -934,6 +940,9 @@ $partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AN
 <?php endif; ?>
 
 
+<?php /* ════════════════════════════════════
+   ATHLETES
+════════════════════════════════════ */ ?>
 <?php if($v==='members'): ?>
 <div class="page-header">
   <div>
@@ -1015,9 +1024,11 @@ $partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AN
 <?php endif; ?>
 
 
+<?php /* ════════════════════════════════════
+   ATTENDANCE
+════════════════════════════════════ */ ?>
 <?php if($v==='attendance'): ?>
-$membersJson=json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name'],'zone'=>$x['zone_name'],'phone'=>$x['phone'],'position'=>$x['position']],$am));
-?>
+<?php $membersJson=json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name'],'zone'=>$x['zone_name'],'phone'=>$x['phone'],'position'=>$x['position']],$am)); ?>
 <div class="page-header">
   <div>
     <div class="page-title">Attendance <em>Tracker</em></div>
@@ -1175,12 +1186,11 @@ $membersJson=json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name
 <?php endif; ?>
 
 
+<?php /* ════════════════════════════════════
+   PAYMENTS / BILLING
+════════════════════════════════════ */ ?>
 <?php if($v==='payments'): ?>
-foreach($am as $mbr) ensure_bill($pdo,$mbr['id'],$p);
-
-$attendedAthletes=athletes_with_attendance($pdo,$p);
-$membersJson=json_encode($attendedAthletes);
-?>
+<?php foreach($am as $mbr) ensure_bill($pdo,$mbr['id'],$p); ?>
 <div class="page-header">
   <div>
     <div class="page-title">Billing <em>&amp; Payments</em></div>
@@ -1281,10 +1291,48 @@ $membersJson=json_encode($attendedAthletes);
   </div>
 </div>
 
-<script>
-function escH(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function formatMoney(n){return Number(n).toLocaleString()+' RWF';}
+<!-- Edit Payment Modal -->
+<div class="modal-overlay hidden" id="editPayModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="document.getElementById('editPayModal').classList.add('hidden')">✕</button>
+    <div class="modal-title">✏️ Edit Payment Record</div>
+    <form method="POST">
+      <input type="hidden" name="action" value="edit_payment">
+      <input type="hidden" name="bill_id" id="editBillId">
+      <div class="form-grid-2">
+        <div class="form-group"><label>Athlete</label><input id="editBillAthlete" readonly style="opacity:0.6"></div>
+        <div class="form-group"><label>Period</label><input id="editBillPeriod" readonly style="opacity:0.6"></div>
+        <div class="form-group"><label>Expected Amount (RWF)</label><input id="editBillExpected" readonly style="opacity:0.6"></div>
+        <div class="form-group"><label>Paid Amount (RWF) *</label><input type="number" name="paid_amount" id="editBillPaid" min="0" step="0.01" required></div>
+      </div>
+      <div class="form-group" style="margin-top:14px"><label>Note</label><input name="note" id="editBillNote" placeholder="Optional note"></div>
+      <div class="form-actions">
+        <button class="btn btn-primary" type="submit">💾 Save Changes</button>
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('editPayModal').classList.add('hidden')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
 
+<!-- Clear Payment Modal -->
+<div class="modal-overlay hidden" id="clearPayModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="document.getElementById('clearPayModal').classList.add('hidden')">✕</button>
+    <div class="modal-title" style="color:var(--red)">⚠️ Clear Payment</div>
+    <p style="color:var(--text2);margin-bottom:20px;font-size:14px">This will reset the paid amount to 0 for <strong id="clearBillName"></strong> (period: <span id="clearBillPeriod"></span>). This cannot be undone easily.</p>
+    <form method="POST">
+      <input type="hidden" name="action" value="delete_payment">
+      <input type="hidden" name="bill_id" id="clearBillId">
+      <div class="form-actions">
+        <button class="btn btn-danger" type="submit">🗑 Yes, Clear Payment</button>
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('clearPayModal').classList.add('hidden')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function formatMoney(n){return Number(n).toLocaleString()+' RWF';}
 function openEditModal(billId,name,period,expected,paid,note){
   document.getElementById('editBillId').value=billId;
   document.getElementById('editBillAthlete').value=name;
@@ -1304,6 +1352,9 @@ function openClearModal(billId,name,period){
 <?php endif; ?>
 
 
+<?php /* ════════════════════════════════════
+   STAFF
+════════════════════════════════════ */ ?>
 <?php if($v==='staff'): ?>
 <div class="page-header">
   <div>
@@ -1375,6 +1426,9 @@ function openClearModal(billId,name,period){
 <?php endif; ?>
 
 
+<?php /* ════════════════════════════════════
+   PAYROLL
+════════════════════════════════════ */ ?>
 <?php if($v==='payroll'): ?>
 <div class="page-header">
   <div>
@@ -1448,6 +1502,9 @@ function openClearModal(billId,name,period){
 <?php endif; ?>
 
 
+<?php /* ════════════════════════════════════
+   EXPENSES
+════════════════════════════════════ */ ?>
 <?php if($v==='expenses'): ?>
 <div class="page-header">
   <div>
@@ -1510,10 +1567,12 @@ function openClearModal(billId,name,period){
 <?php endif; ?>
 
 
+<?php /* ════════════════════════════════════
+   UNIFORMS
+════════════════════════════════════ */ ?>
 <?php if($v==='uniforms'): ?>
-$uniforms=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
-$totalQty=0;foreach($uniforms as $uu){$totalQty+=(int)$uu['quantity'];}
-?>
+<?php $uniforms=$pdo->query("SELECT u.*,m.full_name,z.name zone_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id ORDER BY u.jersey_number ASC")->fetchAll();
+$totalQty=0;foreach($uniforms as $uu){$totalQty+=(int)$uu['quantity'];} ?>
 <div class="page-header">
   <div>
     <div class="page-title"><?= $edit_uniform?'Edit <em>Uniform</em>':'Athlete <em>Uniforms</em>' ?></div>
@@ -1612,14 +1671,16 @@ function checkJerseyNumber(input){
 <?php endif; ?>
 
 
+<?php /* ════════════════════════════════════
+   REPORTS
+════════════════════════════════════ */ ?>
 <?php if($v==='reports'): ?>
-$att_month=$_GET['att_month']??$p;
+<?php $att_month=$_GET['att_month']??$p;
 $non_payers=non_payers_with_attendance($pdo,$p,$att_month);
 $overdue=overdue_payments_report($pdo,$p);
 $att_summary=attendance_summary($pdo,null,$p);
 $totalRev=(float)$stats['revenue'];$totalExp=(float)$stats['expenses'];$totalPay=(float)$stats['payroll'];
-$netIncome=$totalRev-$totalExp-$totalPay;
-?>
+$netIncome=$totalRev-$totalExp-$totalPay; ?>
 <div class="page-header">
   <div>
     <div class="page-title">Reports <em>&amp; Analytics</em></div>
