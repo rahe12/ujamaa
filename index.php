@@ -258,51 +258,99 @@ function attendance_summary($pdo,$member_id=null,$year_month=null){
     return $stmt->fetchAll();
 }
 
-/* NEW: Present athletes report */
-function present_athletes_report($pdo,$period){
+/* NEW: Per session attendance report */
+function session_attendance_report($pdo, $session_id){
     $stmt=$pdo->prepare("
-        SELECT DISTINCT
-            m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,
+        SELECT 
+            s.id AS session_id,
+            s.name AS session_name,
+            COALESCE(s.session_date,s.date) AS session_date,
             z.name AS zone_name,
-            COUNT(DISTINCT s.id) AS sessions_present,
-            STRING_AGG(DISTINCT s.name||' ('||COALESCE(s.session_date,s.date)||')',', ') AS sessions_list
-        FROM members m
-        LEFT JOIN academy_zones z ON z.id=m.zone_id
-        LEFT JOIN attendance a ON a.member_id=m.id
-        LEFT JOIN sessions s ON s.id=a.session_id
-            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?
-        WHERE m.is_active=TRUE
-            AND a.status = 'present'
-            AND a.id IS NOT NULL
-        GROUP BY m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,z.name
-        HAVING COUNT(DISTINCT s.id)>0
-        ORDER BY z.name,m.full_name
+            m.id AS member_id,
+            m.full_name,
+            m.phone,
+            m.guardian_name,
+            m.guardian_phone,
+            a.status,
+            CASE 
+                WHEN a.status = 'present' THEN 'Present'
+                WHEN a.status = 'absent' THEN 'Absent'
+                WHEN a.status = 'late' THEN 'Late'
+                ELSE 'Not Recorded'
+            END AS attendance_status
+        FROM sessions s
+        LEFT JOIN academy_zones z ON z.id=s.zone_id
+        LEFT JOIN members m ON m.zone_id=s.zone_id AND m.is_active=TRUE
+        LEFT JOIN attendance a ON a.session_id=s.id AND a.member_id=m.id
+        WHERE s.id = ?
+        ORDER BY m.full_name
     ");
-    $stmt->execute([$period]);
+    $stmt->execute([$session_id]);
     return $stmt->fetchAll();
 }
 
-/* NEW: Absent athletes report (who have been attending but marked absent) */
-function absent_athletes_report($pdo,$period){
+/* NEW: Monthly attendance report with per-session breakdown */
+function monthly_attendance_report($pdo, $year_month){
     $stmt=$pdo->prepare("
-        SELECT DISTINCT
-            m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,
+        SELECT 
+            m.id AS member_id,
+            m.full_name,
             z.name AS zone_name,
-            COUNT(DISTINCT s.id) AS sessions_absent,
-            STRING_AGG(DISTINCT s.name||' ('||COALESCE(s.session_date,s.date)||')',', ') AS sessions_list
+            m.phone,
+            m.guardian_name,
+            COUNT(DISTINCT s.id) AS total_sessions_in_month,
+            SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS present_count,
+            SUM(CASE WHEN a.status = 'absent' THEN 1 ELSE 0 END) AS absent_count,
+            SUM(CASE WHEN a.status = 'late' THEN 1 ELSE 0 END) AS late_count,
+            ROUND(
+                (SUM(CASE WHEN a.status IN ('present','late') THEN 1 ELSE 0 END)::decimal
+                / NULLIF(COUNT(DISTINCT s.id),0) * 100), 1
+            ) AS attendance_rate,
+            STRING_AGG(
+                DISTINCT TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM-DD') || ' (' || s.name || '): ' || 
+                COALESCE(a.status, 'NOT RECORDED'),
+                '; ' ORDER BY COALESCE(s.session_date,s.date)
+            ) AS session_breakdown
         FROM members m
         LEFT JOIN academy_zones z ON z.id=m.zone_id
-        LEFT JOIN attendance a ON a.member_id=m.id
-        LEFT JOIN sessions s ON s.id=a.session_id
-            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?
+        LEFT JOIN sessions s ON s.zone_id=m.zone_id 
+            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM') = ?
+        LEFT JOIN attendance a ON a.session_id=s.id AND a.member_id=m.id
         WHERE m.is_active=TRUE
-            AND a.status = 'absent'
-            AND a.id IS NOT NULL
-        GROUP BY m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,z.name
-        HAVING COUNT(DISTINCT s.id)>0
-        ORDER BY z.name,m.full_name
+        GROUP BY m.id, m.full_name, z.name, m.phone, m.guardian_name
+        HAVING COUNT(DISTINCT s.id) > 0
+        ORDER BY z.name, m.full_name
     ");
-    $stmt->execute([$period]);
+    $stmt->execute([$year_month]);
+    return $stmt->fetchAll();
+}
+
+/* NEW: Session summary with attendance counts */
+function session_summary_report($pdo, $year_month){
+    $stmt=$pdo->prepare("
+        SELECT 
+            s.id AS session_id,
+            s.name AS session_name,
+            COALESCE(s.session_date,s.date) AS session_date,
+            z.name AS zone_name,
+            COUNT(DISTINCT m.id) AS total_athletes,
+            COUNT(DISTINCT CASE WHEN a.status = 'present' THEN m.id END) AS present_count,
+            COUNT(DISTINCT CASE WHEN a.status = 'absent' THEN m.id END) AS absent_count,
+            COUNT(DISTINCT CASE WHEN a.status = 'late' THEN m.id END) AS late_count,
+            COUNT(DISTINCT CASE WHEN a.id IS NULL THEN m.id END) AS not_recorded_count,
+            ROUND(
+                (COUNT(DISTINCT CASE WHEN a.status IN ('present','late') THEN m.id END)::decimal
+                / NULLIF(COUNT(DISTINCT m.id),0) * 100), 1
+            ) AS attendance_rate
+        FROM sessions s
+        LEFT JOIN academy_zones z ON z.id=s.zone_id
+        LEFT JOIN members m ON m.zone_id=s.zone_id AND m.is_active=TRUE
+        LEFT JOIN attendance a ON a.session_id=s.id AND a.member_id=m.id
+        WHERE TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM') = ?
+        GROUP BY s.id, s.name, COALESCE(s.session_date,s.date), z.name
+        ORDER BY COALESCE(s.session_date,s.date) DESC
+    ");
+    $stmt->execute([$year_month]);
     return $stmt->fetchAll();
 }
 
@@ -472,6 +520,47 @@ if(($export_type=$_GET['export']??'')){
             ],$att_summary),'attendance_summary_report',['Athlete','Zone','Total Sessions','Present','Absent','Late','Attendance Rate %']);
             break;
             
+        /* ── NEW: PER SESSION ATTENDANCE REPORT ── */
+        case 'session_attendance':
+            $session_id=(int)($_GET['session_id']??0);
+            if($session_id<=0){
+                header('Location: index.php?view=attendance&period='.h($p).'&msg='.urlencode('Please select a session'));
+                exit;
+            }
+            $session_data=session_attendance_report($pdo,$session_id);
+            if(empty($session_data)){
+                header('Location: index.php?view=attendance&period='.h($p).'&msg='.urlencode('No data found for this session'));
+                exit;
+            }
+            $session_name = $session_data[0]['session_name'] ?? 'Session';
+            $session_date = $session_data[0]['session_date'] ?? date('Y-m-d');
+            export_csv(array_map(fn($r)=>[
+                $r['full_name'],$r['zone_name'],$r['phone'],$r['guardian_name'],$r['guardian_phone'],$r['attendance_status']
+            ],$session_data),'session_attendance_'.$session_id,['Athlete','Zone','Phone','Guardian','Guardian Phone','Attendance Status']);
+            break;
+            
+        /* ── NEW: MONTHLY ATTENDANCE REPORT ── */
+        case 'monthly_attendance':
+            $month=$_GET['att_month']??$p;
+            $monthly_data=monthly_attendance_report($pdo,$month);
+            export_csv(array_map(fn($r)=>[
+                $r['full_name'],$r['zone_name'],$r['phone'],$r['guardian_name'],
+                $r['total_sessions_in_month'],$r['present_count'],$r['absent_count'],$r['late_count'],
+                $r['attendance_rate'],$r['session_breakdown'] ?? ''
+            ],$monthly_data),'monthly_attendance_'.$month,['Athlete','Zone','Phone','Guardian','Total Sessions','Present','Absent','Late','Attendance Rate %','Session Breakdown']);
+            break;
+            
+        /* ── NEW: SESSION SUMMARY REPORT ── */
+        case 'session_summary':
+            $month=$_GET['att_month']??$p;
+            $session_summary=session_summary_report($pdo,$month);
+            export_csv(array_map(fn($r)=>[
+                $r['session_date'],$r['session_name'],$r['zone_name'],
+                $r['total_athletes'],$r['present_count'],$r['absent_count'],$r['late_count'],
+                $r['not_recorded_count'],$r['attendance_rate']
+            ],$session_summary),'session_summary_'.$month,['Date','Session Name','Zone','Total Athletes','Present','Absent','Late','Not Recorded','Attendance Rate %']);
+            break;
+            
         /* ── ATTENDANCE TAB ── */
         case 'present_athletes':
             $present=present_athletes_report($pdo,$_GET['att_month']??$p);
@@ -623,6 +712,56 @@ $next=date('Y-m',strtotime($p.'-01 +1 month'));
 /* ── MODAL for Edit Payment ── */
 $editBillData=null;
 if($edit_bill) $editBillData=$edit_bill;
+
+/* ── SESSION DATA FOR DROPDOWN ── */
+$session_options = $pdo->query("SELECT id, name, session_date FROM sessions ORDER BY session_date DESC")->fetchAll();
+
+/* ── NEW: Present and Absent athletes functions ── */
+function present_athletes_report($pdo,$period){
+    $stmt=$pdo->prepare("
+        SELECT DISTINCT
+            m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,
+            z.name AS zone_name,
+            COUNT(DISTINCT s.id) AS sessions_present,
+            STRING_AGG(DISTINCT s.name||' ('||COALESCE(s.session_date,s.date)||')',', ') AS sessions_list
+        FROM members m
+        LEFT JOIN academy_zones z ON z.id=m.zone_id
+        LEFT JOIN attendance a ON a.member_id=m.id
+        LEFT JOIN sessions s ON s.id=a.session_id
+            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?
+        WHERE m.is_active=TRUE
+            AND a.status = 'present'
+            AND a.id IS NOT NULL
+        GROUP BY m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,z.name
+        HAVING COUNT(DISTINCT s.id)>0
+        ORDER BY z.name,m.full_name
+    ");
+    $stmt->execute([$period]);
+    return $stmt->fetchAll();
+}
+
+function absent_athletes_report($pdo,$period){
+    $stmt=$pdo->prepare("
+        SELECT DISTINCT
+            m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,
+            z.name AS zone_name,
+            COUNT(DISTINCT s.id) AS sessions_absent,
+            STRING_AGG(DISTINCT s.name||' ('||COALESCE(s.session_date,s.date)||')',', ') AS sessions_list
+        FROM members m
+        LEFT JOIN academy_zones z ON z.id=m.zone_id
+        LEFT JOIN attendance a ON a.member_id=m.id
+        LEFT JOIN sessions s ON s.id=a.session_id
+            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?
+        WHERE m.is_active=TRUE
+            AND a.status = 'absent'
+            AND a.id IS NOT NULL
+        GROUP BY m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,z.name
+        HAVING COUNT(DISTINCT s.id)>0
+        ORDER BY z.name,m.full_name
+    ");
+    $stmt->execute([$period]);
+    return $stmt->fetchAll();
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1102,7 +1241,12 @@ $partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AN
 
 <div class="card">
   <div class="card-corner"></div>
-  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Sessions</div></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>Sessions</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a class="btn btn-ghost btn-sm" href="?view=attendance&period=<?= h($p) ?>&export=session_summary&att_month=<?= h($p) ?>">📊 Session Summary</a>
+    </div>
+  </div>
   <div class="toolbar">
     <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="sessionSearch" placeholder="Search sessions…" oninput="filterTable('sessionSearch','sessionTbl','sessionCnt')"></div>
   </div>
@@ -1119,6 +1263,7 @@ $partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AN
       <td>
         <div class="actions-cell">
           <a class="btn btn-ghost btn-sm" href="?view=attendance&period=<?= h($p) ?>&edit_session=<?= $ss['id'] ?>">Edit</a>
+          <a class="btn btn-primary btn-sm" href="?view=attendance&period=<?= h($p) ?>&export=session_attendance&session_id=<?= $ss['id'] ?>">📊 Export</a>
           <form method="POST" style="display:inline" onsubmit="return confirm('Delete this session?')">
             <input type="hidden" name="action" value="delete_session">
             <input type="hidden" name="id" value="<?= $ss['id'] ?>">
@@ -1679,6 +1824,8 @@ function checkJerseyNumber(input){
 $non_payers=non_payers_with_attendance($pdo,$p,$att_month);
 $overdue=overdue_payments_report($pdo,$p);
 $att_summary=attendance_summary($pdo,null,$p);
+$monthly_attendance = monthly_attendance_report($pdo, $p);
+$session_summary = session_summary_report($pdo, $p);
 $totalRev=(float)$stats['revenue'];$totalExp=(float)$stats['expenses'];$totalPay=(float)$stats['payroll'];
 $netIncome=$totalRev-$totalExp-$totalPay; ?>
 <div class="page-header">
@@ -1699,6 +1846,7 @@ $netIncome=$totalRev-$totalExp-$totalPay; ?>
   <div class="stat-card" data-color="<?= $netIncome>=0?'lime':'red' ?>"><div class="stat-icon"><?= $netIncome>=0?'📈':'📉' ?></div><div class="stat-label">Net Income</div><div class="stat-value" style="font-size:20px"><?= money($netIncome) ?></div></div>
 </div>
 
+<!-- Non-Payers -->
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header">
@@ -1727,6 +1875,7 @@ $netIncome=$totalRev-$totalExp-$totalPay; ?>
   </div>
 </div>
 
+<!-- Overdue -->
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header">
@@ -1755,6 +1904,7 @@ $netIncome=$totalRev-$totalExp-$totalPay; ?>
   </div>
 </div>
 
+<!-- Attendance Summary -->
 <div class="card">
   <div class="card-corner"></div>
   <div class="card-header">
@@ -1784,6 +1934,86 @@ $netIncome=$totalRev-$totalExp-$totalPay; ?>
     </tr>
     <?php endforeach; ?>
     <?php if(empty($att_summary)): ?><tr><td colspan="7" class="no-data">No attendance records.</td></tr><?php endif; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<!-- Monthly Attendance Report - Per Athlete Breakdown -->
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>📊 Monthly Attendance Per Athlete — <?= h($p) ?></div>
+    <a class="btn btn-ghost btn-sm" href="?view=reports&period=<?= h($p) ?>&export=monthly_attendance&att_month=<?= h($p) ?>">📊 Export CSV</a>
+  </div>
+  <div class="toolbar">
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="monthlyAttSearch" placeholder="Search athlete, zone…" oninput="filterTable('monthlyAttSearch','monthlyAttTbl','monthlyAttCnt')"></div>
+  </div>
+  <div class="result-count" id="monthlyAttCnt"></div>
+  <div class="table-wrap">
+  <table id="monthlyAttTbl">
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Total Sessions</th><th>Present</th><th>Absent</th><th>Late</th><th>Attendance Rate</th></tr></thead>
+    <tbody>
+    <?php foreach($monthly_attendance as $ma): ?>
+    <tr>
+      <td><strong><?= h($ma['full_name']) ?></strong></td>
+      <td><span class="badge b-zone"><?= h($ma['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono)"><?= $ma['total_sessions_in_month'] ?></td>
+      <td><span class="badge b-present"><?= $ma['present_count'] ?></span></td>
+      <td><span class="badge b-absent"><?= $ma['absent_count'] ?></span></td>
+      <td><span class="badge b-late"><?= $ma['late_count'] ?></span></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;min-width:60px">
+            <div style="width:<?= min(100,$ma['attendance_rate']??0) ?>%;height:100%;background:<?= ($ma['attendance_rate']??0)>=80?'var(--lime)':(($ma['attendance_rate']??0)>=50?'var(--amber)':'var(--red)') ?>;border-radius:3px"></div>
+          </div>
+          <span style="font-family:var(--font-mono);font-size:11px;color:<?= ($ma['attendance_rate']??0)>=80?'var(--lime)':(($ma['attendance_rate']??0)>=50?'var(--amber)':'var(--red)') ?>"><?= $ma['attendance_rate']??0 ?>%</span>
+        </div>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    <?php if(empty($monthly_attendance)): ?><tr><td colspan="7" class="no-data">No attendance records for this month.</td></tr><?php endif; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<!-- Session Summary Report -->
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span>📊 Session Summary — <?= h($p) ?></div>
+    <a class="btn btn-ghost btn-sm" href="?view=reports&period=<?= h($p) ?>&export=session_summary&att_month=<?= h($p) ?>">📊 Export CSV</a>
+  </div>
+  <div class="toolbar">
+    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="sessionSumSearch" placeholder="Search session, zone…" oninput="filterTable('sessionSumSearch','sessionSumTbl','sessionSumCnt')"></div>
+  </div>
+  <div class="result-count" id="sessionSumCnt"></div>
+  <div class="table-wrap">
+  <table id="sessionSumTbl">
+    <thead><tr><th>Date</th><th>Session Name</th><th>Zone</th><th>Total Athletes</th><th>Present</th><th>Absent</th><th>Late</th><th>Not Recorded</th><th>Attendance Rate</th></tr></thead>
+    <tbody>
+    <?php foreach($session_summary as $ss): ?>
+    <tr>
+      <td style="font-family:var(--font-mono);font-size:12px"><?= h($ss['session_date']) ?></td>
+      <td><strong><?= h($ss['session_name']) ?></strong></td>
+      <td><span class="badge b-zone"><?= h($ss['zone_name']) ?></span></td>
+      <td style="font-family:var(--font-mono)"><?= $ss['total_athletes'] ?></td>
+      <td><span class="badge b-present"><?= $ss['present_count'] ?></span></td>
+      <td><span class="badge b-absent"><?= $ss['absent_count'] ?></span></td>
+      <td><span class="badge b-late"><?= $ss['late_count'] ?></span></td>
+      <td style="color:var(--muted)"><?= $ss['not_recorded_count'] ?></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;min-width:60px">
+            <div style="width:<?= min(100,$ss['attendance_rate']??0) ?>%;height:100%;background:<?= ($ss['attendance_rate']??0)>=80?'var(--lime)':(($ss['attendance_rate']??0)>=50?'var(--amber)':'var(--red)') ?>;border-radius:3px"></div>
+          </div>
+          <span style="font-family:var(--font-mono);font-size:11px;color:<?= ($ss['attendance_rate']??0)>=80?'var(--lime)':(($ss['attendance_rate']??0)>=50?'var(--amber)':'var(--red)') ?>"><?= $ss['attendance_rate']??0 ?>%</span>
+        </div>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    <?php if(empty($session_summary)): ?><tr><td colspan="9" class="no-data">No sessions recorded for this month.</td></tr><?php endif; ?>
     </tbody>
   </table>
   </div>
@@ -1821,7 +2051,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   [['memberSearch','memberTbl','memberCnt'],['sessionSearch','sessionTbl','sessionCnt'],['billSearch','billTbl','billCnt'],
    ['staffSearch','staffTbl','staffCnt'],['payrollSearch','payrollTbl','payrollCnt'],['expenseSearch','expenseTbl','expenseCnt'],
    ['attSumSearch','attSumTbl','attSumCnt'],['overdueSearch','overdueTbl','overdueCnt'],
-   ['nonPaySearch','nonPayTbl','nonPayCnt'],['uniformSearch','uniformTbl','uniformCnt']
+   ['nonPaySearch','nonPayTbl','nonPayCnt'],['uniformSearch','uniformTbl','uniformCnt'],
+   ['monthlyAttSearch','monthlyAttTbl','monthlyAttCnt'],['sessionSumSearch','sessionSumTbl','sessionSumCnt']
   ].forEach(([s,t,c])=>{if(document.getElementById(t)) filterTable(s,t,c);});
 });
 </script>
