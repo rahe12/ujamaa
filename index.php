@@ -64,6 +64,8 @@ ALTER TABLE members ADD COLUMN IF NOT EXISTS guardian_phone VARCHAR(50);
 ALTER TABLE members ADD COLUMN IF NOT EXISTS position VARCHAR(50);
 ALTER TABLE members ADD COLUMN IF NOT EXISTS school_name VARCHAR(255);
 ALTER TABLE members ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE members ADD COLUMN IF NOT EXISTS admission_number VARCHAR(50);
+ALTER TABLE members ADD COLUMN IF NOT EXISTS class_name VARCHAR(100);
 UPDATE members SET zone_id=(SELECT id FROM academy_zones WHERE name='Gisenyi' LIMIT 1) WHERE zone_id IS NULL;
 CREATE TABLE IF NOT EXISTS sessions(
  id SERIAL PRIMARY KEY,name VARCHAR(255) NOT NULL,session_date DATE NOT NULL DEFAULT CURRENT_DATE,
@@ -259,6 +261,97 @@ function attendance_summary($pdo,$member_id=null,$year_month=null){
 }
 
 /* ────────────────────────────────
+   ATTENDANCE MATRIX (date-range) REPORT
+   Builds a per-child, per-day attendance grid for a custom
+   start/end date range. Includes ALL active children, and
+   marks days with no session/attendance as "no_record".
+──────────────────────────────── */
+function attendance_matrix($pdo,$start,$end){
+    // Build the list of calendar days in the range (inclusive)
+    $days=[];
+    $cur=new DateTime($start);
+    $endD=new DateTime($end);
+    if($endD<$cur){ $tmp=$cur; $cur=$endD; $endD=$tmp; }
+    // Safety cap to avoid runaway ranges
+    $maxDays=370;
+    $count=0;
+    while($cur<=$endD && $count<$maxDays){
+        $days[]=$cur->format('Y-m-d');
+        $cur->modify('+1 day');
+        $count++;
+    }
+
+    // All active children, regardless of whether they have attendance records
+    $members=$pdo->query("
+        SELECT m.*, z.name AS zone_name
+        FROM members m
+        LEFT JOIN academy_zones z ON z.id=m.zone_id
+        WHERE m.is_active=TRUE
+        ORDER BY z.id, m.full_name
+    ")->fetchAll();
+
+    // All attendance records within the range, keyed by member+date.
+    // If a child has more than one session on the same day, the
+    // best status wins (present > late > excused > absent).
+    $stmt=$pdo->prepare("
+        SELECT a.member_id, COALESCE(s.session_date,s.date) AS sdate, a.status
+        FROM attendance a
+        JOIN sessions s ON s.id=a.session_id
+        WHERE COALESCE(s.session_date,s.date) BETWEEN ? AND ?
+    ");
+    $stmt->execute([$days[0]??$start,$days[count($days)-1]??$end]);
+    $rank=['present'=>4,'late'=>3,'excused'=>2,'absent'=>1];
+    $map=[];
+    foreach($stmt->fetchAll() as $r){
+        $key=$r['member_id'].'|'.$r['sdate'];
+        $st=strtolower(trim($r['status']));
+        if(!isset($map[$key]) || ($rank[$st]??0) > ($rank[$map[$key]]??0)){
+            $map[$key]=$st;
+        }
+    }
+
+    $rows=[];
+    $tot_present=0;$tot_absent=0;$tot_late=0;$tot_excused=0;$tot_recorded=0;
+    foreach($members as $m){
+        $row=['member'=>$m,'days'=>[],'present'=>0,'absent'=>0,'late'=>0,'excused'=>0];
+        foreach($days as $d){
+            $status=$map[$m['id'].'|'.$d]??'no_record';
+            $row['days'][$d]=$status;
+            if($status==='present')$row['present']++;
+            elseif($status==='absent')$row['absent']++;
+            elseif($status==='late')$row['late']++;
+            elseif($status==='excused')$row['excused']++;
+        }
+        $recorded=$row['present']+$row['absent']+$row['late']+$row['excused'];
+        $row['recorded']=$recorded;
+        $row['rate']=$recorded>0?round((($row['present']+$row['late'])/$recorded)*100,1):0;
+        $rows[]=$row;
+        $tot_present+=$row['present'];$tot_absent+=$row['absent'];$tot_late+=$row['late'];$tot_excused+=$row['excused'];$tot_recorded+=$recorded;
+    }
+
+    $overall_rate=$tot_recorded>0?round((($tot_present+$tot_late)/$tot_recorded)*100,1):0;
+
+    return [
+        'days'=>$days,
+        'rows'=>$rows,
+        'totals'=>[
+            'present'=>$tot_present,'absent'=>$tot_absent,'late'=>$tot_late,'excused'=>$tot_excused,
+            'recorded'=>$tot_recorded,'rate'=>$overall_rate,'children'=>count($members)
+        ]
+    ];
+}
+
+function attendance_status_label($status){
+    switch($status){
+        case 'present': return 'Present';
+        case 'absent':  return 'Absent';
+        case 'late':    return 'Late';
+        case 'excused': return 'Excused';
+        default:        return 'No Record';
+    }
+}
+
+/* ────────────────────────────────
    EXPORT HELPERS
 ──────────────────────────────── */
 function export_csv($data,$filename,$headers){
@@ -307,6 +400,8 @@ function print_report_page($title,$subtitle,$table_html,$summary_html=''){
   .b-present{background:#d4edda;color:#155724;}
   .b-absent{background:#f8d7da;color:#721c24;}
   .b-late{background:#fff3cd;color:#856404;}
+  .b-excused{background:#e0d4fd;color:#4b2e83;}
+  .b-norecord{background:#e9ecef;color:#868e96;}
   .b-zone{background:#cce5ff;color:#004085;}
   .no-print{margin-bottom:18px;}
   @media print{
@@ -365,12 +460,13 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         $id=$_POST['id']??'';
         $data=[$_POST['full_name'],$_POST['phone']?:null,$_POST['gender']?:null,$_POST['date_of_birth']?:null,
             $_POST['zone_id']?:default_zone($pdo),$_POST['guardian_name']?:null,$_POST['guardian_phone']?:null,
-            $_POST['position']?:null,$_POST['school_name']?:null,(float)($_POST['monthly_fee']??0),(int)($_POST['due_day']??5),$_POST['notes']?:null];
+            $_POST['position']?:null,$_POST['school_name']?:null,(float)($_POST['monthly_fee']??0),(int)($_POST['due_day']??5),$_POST['notes']?:null,
+            $_POST['admission_number']?:null,$_POST['class_name']?:null];
         if($id){
-            $pdo->prepare("UPDATE members SET full_name=?,phone=?,gender=?,date_of_birth=?,zone_id=?,guardian_name=?,guardian_phone=?,position=?,school_name=?,monthly_fee=?,due_day=?,notes=? WHERE id=?")->execute([...$data,$id]);
+            $pdo->prepare("UPDATE members SET full_name=?,phone=?,gender=?,date_of_birth=?,zone_id=?,guardian_name=?,guardian_phone=?,position=?,school_name=?,monthly_fee=?,due_day=?,notes=?,admission_number=?,class_name=? WHERE id=?")->execute([...$data,$id]);
             go('members','Athlete updated');
         }else{
-            $pdo->prepare("INSERT INTO members(full_name,phone,gender,date_of_birth,zone_id,guardian_name,guardian_phone,position,school_name,monthly_fee,due_day,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(full_name) DO NOTHING")->execute($data);
+            $pdo->prepare("INSERT INTO members(full_name,phone,gender,date_of_birth,zone_id,guardian_name,guardian_phone,position,school_name,monthly_fee,due_day,notes,admission_number,class_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(full_name) DO NOTHING")->execute($data);
             go('members','Athlete added');
         }
     }
@@ -536,6 +632,38 @@ if($export_type==='session_attendance_csv'){
     $rows=$pdo->prepare("SELECT m.full_name,z.name zone_name,m.phone,m.position,COALESCE(a.status,'absent') status FROM members m LEFT JOIN academy_zones z ON z.id=m.zone_id LEFT JOIN attendance a ON a.member_id=m.id AND a.session_id=? WHERE m.zone_id=? AND m.is_active=TRUE ORDER BY m.full_name");
     $rows->execute([$sid,$sess['zone_id']]);$rows=$rows->fetchAll();
     export_csv(array_map(fn($r)=>[$r['full_name'],$r['zone_name'],$r['phone'],$r['position'],strtoupper($r['status'])],$rows),'session_attendance_'.($sess['sdate']??'na').'_'.($sess['name']??'session'),['Athlete','Zone','Phone','Position','Status']);
+}
+
+/* ── ATTENDANCE MATRIX (date-range) — CSV / Excel ── */
+if($export_type==='attendance_matrix_csv'){
+    $start=preg_match('/^\d{4}-\d{2}-\d{2}$/',$_GET['start_date']??'')?$_GET['start_date']:$p.'-01';
+    $end  =preg_match('/^\d{4}-\d{2}-\d{2}$/',$_GET['end_date']??'')?$_GET['end_date']:date('Y-m-t',strtotime($start));
+    $mx=attendance_matrix($pdo,$start,$end);
+
+    $headers=['Full Name','Admission Number','Class','Parent/Guardian','Zone'];
+    foreach($mx['days'] as $d){ $headers[]=date('d M',strtotime($d)); }
+    $headers=array_merge($headers,['Total Present','Total Absent','Total Late','Total Excused','Attendance %']);
+
+    $rows=[];
+    foreach($mx['rows'] as $row){
+        $m=$row['member'];
+        $line=[$m['full_name'],$m['admission_number'],$m['class_name'],$m['guardian_name'],$m['zone_name']];
+        foreach($mx['days'] as $d){ $line[]=attendance_status_label($row['days'][$d]); }
+        $line[]=$row['present'];$line[]=$row['absent'];$line[]=$row['late'];$line[]=$row['excused'];$line[]=$row['rate'].'%';
+        $rows[]=$line;
+    }
+    // Overall academy stats as a trailing summary row
+    $summaryLine=array_fill(0,5,'');
+    $summaryLine[0]='TOTAL / ACADEMY AVERAGE';
+    foreach($mx['days'] as $d){ $summaryLine[]=''; }
+    $summaryLine[]=$mx['totals']['present'];
+    $summaryLine[]=$mx['totals']['absent'];
+    $summaryLine[]=$mx['totals']['late'];
+    $summaryLine[]=$mx['totals']['excused'];
+    $summaryLine[]=$mx['totals']['rate'].'%';
+    $rows[]=$summaryLine;
+
+    export_csv($rows,'attendance_report_'.$start.'_to_'.$end,$headers);
 }
 
 /* ════════════════════════════════════════════════════
@@ -896,6 +1024,63 @@ if($export_type==='session_attendance_pdf'){
     print_report_page('Session Attendance Report',h($sess['name']).' — '.h($sess['zone_name']).' — '.h($sess['sdate']),$tbl,$sum);
 }
 
+/* ── ATTENDANCE MATRIX (date-range) — PDF ── */
+if($export_type==='attendance_matrix_pdf'){
+    $start=preg_match('/^\d{4}-\d{2}-\d{2}$/',$_GET['start_date']??'')?$_GET['start_date']:$p.'-01';
+    $end  =preg_match('/^\d{4}-\d{2}-\d{2}$/',$_GET['end_date']??'')?$_GET['end_date']:date('Y-m-t',strtotime($start));
+    $mx=attendance_matrix($pdo,$start,$end);
+    $tot=$mx['totals'];
+
+    ob_start();
+    echo '<div class="summary-boxes">';
+    echo '<div class="sbox"><div class="sbox-label">Children</div><div class="sbox-val">'.$tot['children'].'</div></div>';
+    echo '<div class="sbox"><div class="sbox-label">Days in Period</div><div class="sbox-val">'.count($mx['days']).'</div></div>';
+    echo '<div class="sbox"><div class="sbox-label">Total Present</div><div class="sbox-val" style="color:#155724">'.$tot['present'].'</div></div>';
+    echo '<div class="sbox"><div class="sbox-label">Total Absent</div><div class="sbox-val" style="color:#721c24">'.$tot['absent'].'</div></div>';
+    echo '<div class="sbox"><div class="sbox-label">Total Late</div><div class="sbox-val" style="color:#856404">'.$tot['late'].'</div></div>';
+    echo '<div class="sbox"><div class="sbox-label">Total Excused</div><div class="sbox-val" style="color:#4b2e83">'.$tot['excused'].'</div></div>';
+    echo '<div class="sbox"><div class="sbox-label">Academy Attendance</div><div class="sbox-val">'.$tot['rate'].'%</div></div>';
+    echo '</div>';
+    $sum=ob_get_clean();
+
+    ob_start();
+    echo '<table><thead><tr><th>Full Name</th><th>Admission #</th><th>Class</th><th>Guardian</th><th>Zone</th>';
+    foreach($mx['days'] as $d){ echo '<th>'.h(date('d M',strtotime($d))).'</th>'; }
+    echo '<th>Present</th><th>Absent</th><th>Late</th><th>Excused</th><th>Attendance %</th></tr></thead><tbody>';
+    if(empty($mx['rows'])) echo '<tr><td colspan="'.(10+count($mx['days'])).'" style="text-align:center;padding:20px;color:#888">No registered children found</td></tr>';
+    foreach($mx['rows'] as $row){
+        $m=$row['member'];
+        echo '<tr>';
+        echo '<td><strong>'.h($m['full_name']).'</strong></td>';
+        echo '<td>'.h($m['admission_number']).'</td>';
+        echo '<td>'.h($m['class_name']).'</td>';
+        echo '<td>'.h($m['guardian_name']).'</td>';
+        echo '<td><span class="badge b-zone">'.h($m['zone_name']).'</span></td>';
+        foreach($mx['days'] as $d){
+            $st=$row['days'][$d];
+            $lbl=attendance_status_label($st);
+            $cls=$st==='present'?'b-present':($st==='absent'?'b-absent':($st==='late'?'b-late':($st==='excused'?'b-excused':'b-norecord')));
+            $short=$st==='no_record'?'—':strtoupper(substr($lbl,0,1));
+            echo '<td style="text-align:center"><span class="badge '.$cls.'" title="'.h($lbl).'">'.$short.'</span></td>';
+        }
+        echo '<td>'.$row['present'].'</td>';
+        echo '<td>'.$row['absent'].'</td>';
+        echo '<td>'.$row['late'].'</td>';
+        echo '<td>'.$row['excused'].'</td>';
+        echo '<td><strong>'.$row['rate'].'%</strong></td>';
+        echo '</tr>';
+    }
+    if(!empty($mx['rows'])){
+        echo '<tr class="total-row"><td colspan="5">ACADEMY TOTALS</td>';
+        foreach($mx['days'] as $d){ echo '<td>—</td>'; }
+        echo '<td>'.$tot['present'].'</td><td>'.$tot['absent'].'</td><td>'.$tot['late'].'</td><td>'.$tot['excused'].'</td><td>'.$tot['rate'].'%</td></tr>';
+    }
+    echo '</tbody></table>';
+    echo '<p style="font-size:10px;color:#888;margin-top:-10px">Legend: P = Present · A = Absent · L = Late · E = Excused · — = No Record (no session recorded that day)</p>';
+    $tbl=ob_get_clean();
+    print_report_page('Attendance Report',date('d M Y',strtotime($start)).' – '.date('d M Y',strtotime($end)),$tbl,$sum);
+}
+
 /* ── Non-Payers PDF ── */
 if($export_type==='non_payers_pdf'){
     $att_month=$_GET['att_month']??$p;
@@ -1173,6 +1358,8 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 .b-present{background:var(--lime-dim);color:var(--lime);}
 .b-absent {background:var(--red-dim);color:var(--red);}
 .b-late   {background:var(--amber-dim);color:var(--amber);}
+.b-excused{background:rgba(167,139,250,0.12);color:var(--purple);border:1px solid rgba(167,139,250,0.25);}
+.b-norecord{background:rgba(77,106,138,0.12);color:var(--muted);border:1px solid rgba(77,106,138,0.2);}
 
 /* FORMS */
 .form-grid  {display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
@@ -1413,6 +1600,8 @@ if($v==='members'): ?>
       <div class="form-group"><label>Gender</label><select name="gender"><option value="">— Select —</option><option <?= (($edit_member['gender']??'')==='Male')?'selected':'' ?>>Male</option><option <?= (($edit_member['gender']??'')==='Female')?'selected':'' ?>>Female</option></select></div>
       <div class="form-group"><label>Date of Birth</label><input type="date" name="date_of_birth" value="<?= h($edit_member['date_of_birth']??'') ?>"></div>
       <div class="form-group"><label>Position</label><input name="position" value="<?= h($edit_member['position']??'') ?>" placeholder="e.g. Forward, Goalkeeper"></div>
+      <div class="form-group"><label>Admission Number</label><input name="admission_number" value="<?= h($edit_member['admission_number']??'') ?>" placeholder="e.g. ADM-0231"></div>
+      <div class="form-group"><label>Class</label><input name="class_name" value="<?= h($edit_member['class_name']??'') ?>" placeholder="e.g. P4, Grade 6"></div>
       <div class="form-group"><label>Guardian Name</label><input name="guardian_name" value="<?= h($edit_member['guardian_name']??'') ?>" placeholder="Parent / Guardian"></div>
       <div class="form-group"><label>Guardian Phone</label><input name="guardian_phone" value="<?= h($edit_member['guardian_phone']??'') ?>"></div>
       <div class="form-group"><label>School</label><input name="school_name" value="<?= h($edit_member['school_name']??'') ?>" placeholder="School name"></div>
@@ -1477,6 +1666,8 @@ if($v==='members'): ?>
 ════════════════════════════════════ */
 if($v==='attendance'):
 $membersJson=json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name'],'zone'=>$x['zone_name'],'phone'=>$x['phone'],'position'=>$x['position']],$am));
+$mx_default_start=$p.'-01';
+$mx_default_end=date('Y-m-t',strtotime($mx_default_start));
 ?>
 <div class="page-header">
   <div>
@@ -1535,6 +1726,7 @@ $membersJson=json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name
           <option value="present">✓ Present</option>
           <option value="absent">✗ Absent</option>
           <option value="late">◷ Late</option>
+          <option value="excused">✎ Excused</option>
         </select>
       </div>
     </div>
@@ -1556,6 +1748,41 @@ $membersJson=json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name
       <a class="btn btn-teal btn-sm" href="?view=attendance&period=<?= h($p) ?>&export=attendance_summary_pdf&att_month=<?= h($p) ?>" target="_blank">📄 PDF — This Period</a>
     </div>
   </div>
+
+  <!-- ── Full attendance matrix report: date range, all children, per-day columns ── -->
+  <div class="report-panel" style="margin-top:14px">
+    <div class="report-panel-title">📅 Complete Attendance Report — Custom Date Range</div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.5">
+      Includes every registered child (even those with no attendance yet), one column per day in the
+      range you choose, and totals + attendance % per child. Days without a recorded session show as
+      <strong>No Record</strong>.
+    </p>
+    <form id="matrixForm" class="form-grid" onsubmit="return false;">
+      <div class="form-group">
+        <label>Start Date</label>
+        <input type="date" id="mxStart" value="<?= h($mx_default_start) ?>">
+      </div>
+      <div class="form-group">
+        <label>End Date</label>
+        <input type="date" id="mxEnd" value="<?= h($mx_default_end) ?>">
+      </div>
+      <div class="form-group">
+        <label>Quick Range</label>
+        <select id="mxQuick" onchange="applyQuickRange(this.value)">
+          <option value="">Custom (use dates above)</option>
+          <option value="this_month">This Month (<?= h($p) ?>)</option>
+          <option value="last_7">Last 7 Days</option>
+          <option value="last_30">Last 30 Days</option>
+        </select>
+      </div>
+    </form>
+    <div class="form-actions" style="margin-top:14px">
+      <button type="button" class="btn btn-ghost btn-sm" onclick="downloadMatrix('attendance_matrix_csv')">📊 Download Excel/CSV</button>
+      <button type="button" class="btn btn-teal btn-sm" onclick="downloadMatrix('attendance_matrix_pdf')">📄 Download PDF</button>
+      <span style="font-size:11px;color:var(--muted);font-family:var(--font-mono)">Opens PDF in a new tab — use "Print / Save as PDF" there to save.</span>
+    </div>
+  </div>
+
   <div style="margin-top:14px">
     <div class="report-panel-title" style="font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px">Download Per-Session Attendance Report</div>
     <div id="sessionReportList" style="display:flex;flex-direction:column;gap:8px;">
@@ -1613,6 +1840,32 @@ $membersJson=json_encode(array_map(fn($x)=>['id'=>$x['id'],'name'=>$x['full_name
 </div>
 
 <script>
+function pad2(n){return String(n).padStart(2,'0');}
+function toISO(d){return d.getFullYear()+'-'+pad2(d.getMonth()+1)+'-'+pad2(d.getDate());}
+function applyQuickRange(val){
+  const today=new Date();
+  if(val==='this_month'){
+    document.getElementById('mxStart').value='<?= h($mx_default_start) ?>';
+    document.getElementById('mxEnd').value='<?= h($mx_default_end) ?>';
+  }else if(val==='last_7'){
+    const start=new Date();start.setDate(today.getDate()-6);
+    document.getElementById('mxStart').value=toISO(start);
+    document.getElementById('mxEnd').value=toISO(today);
+  }else if(val==='last_30'){
+    const start=new Date();start.setDate(today.getDate()-29);
+    document.getElementById('mxStart').value=toISO(start);
+    document.getElementById('mxEnd').value=toISO(today);
+  }
+}
+function downloadMatrix(exportType){
+  const start=document.getElementById('mxStart').value;
+  const end=document.getElementById('mxEnd').value;
+  if(!start||!end){alert('Please choose both a start and end date.');return;}
+  if(start>end){alert('Start date must be before end date.');return;}
+  const url='?view=attendance&period=<?= h($p) ?>&export='+exportType+'&start_date='+start+'&end_date='+end;
+  if(exportType==='attendance_matrix_pdf'){window.open(url,'_blank');}
+  else{window.location.href=url;}
+}
 (function(){
   const members=<?= $membersJson ?>;
   const searchInput=document.getElementById('attAthleteSearch');
@@ -2316,6 +2569,8 @@ $overdue=overdue_payments_report($pdo,$p);
 $att_summary=attendance_summary($pdo,null,$p);
 $totalRev=(float)$stats['revenue'];$totalExp=(float)$stats['expenses'];$totalPay=(float)$stats['payroll'];
 $netIncome=$totalRev-$totalExp-$totalPay;
+$mx_default_start=$p.'-01';
+$mx_default_end=date('Y-m-t',strtotime($mx_default_start));
 ?>
 <div class="page-header">
   <div>
@@ -2380,6 +2635,15 @@ $netIncome=$totalRev-$totalExp-$totalPay;
       <div class="report-btns">
         <a class="btn btn-ghost btn-sm" href="?view=reports&period=<?= h($p) ?>&export=attendance_summary_csv&att_month=<?= h($p) ?>">📊 CSV</a>
         <a class="btn btn-teal btn-sm" href="?view=reports&period=<?= h($p) ?>&export=attendance_summary_pdf&att_month=<?= h($p) ?>" target="_blank">📄 PDF</a>
+      </div>
+    </div>
+
+    <div class="report-panel">
+      <div class="report-panel-title">📅 Complete Attendance Report (Date Range)</div>
+      <div class="report-btns">
+        <a class="btn btn-ghost btn-sm" href="?view=reports&period=<?= h($p) ?>&export=attendance_matrix_csv&start_date=<?= h($mx_default_start) ?>&end_date=<?= h($mx_default_end) ?>">📊 CSV — <?= h($p) ?></a>
+        <a class="btn btn-teal btn-sm" href="?view=reports&period=<?= h($p) ?>&export=attendance_matrix_pdf&start_date=<?= h($mx_default_start) ?>&end_date=<?= h($mx_default_end) ?>" target="_blank">📄 PDF — <?= h($p) ?></a>
+        <a class="btn btn-ghost btn-sm" href="?view=attendance&period=<?= h($p) ?>">⚙ Pick a Custom Range →</a>
       </div>
     </div>
 
