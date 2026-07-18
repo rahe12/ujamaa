@@ -263,12 +263,12 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
         $attMatrix[$rec['member_id']][$day] = strtolower($rec['status']);
     }
     
-    $sessionDayList = array_keys($sessionDays);
-    sort($sessionDayList);
-    
-    if (empty($sessionDayList)) {
-        $sessionDayList = range(1, $daysInMonth);
-    }
+    // Continuous report: always walk every day of the month in order,
+    // so the report reads like a real register instead of only listing
+    // the sparse days a session happened to be logged.
+    $sessionDayList = range(1, $daysInMonth);
+    $daysWithSession = array_keys($sessionDays);
+    sort($daysWithSession);
     
     // Build report data
     $reportData = [];
@@ -301,6 +301,12 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
         $hasAnyRecord = false;
         
         foreach ($sessionDayList as $day) {
+            $sessionHeldThisDay = in_array($day, $daysWithSession, true);
+            if (!$sessionHeldThisDay) {
+                // No training session that calendar day at all — distinct from a missed check-in.
+                $row['daily_status'][$day] = 'no_session';
+                continue;
+            }
             $status = isset($attMatrix[$childId][$day]) ? $attMatrix[$childId][$day] : 'no_record';
             $row['daily_status'][$day] = $status;
             
@@ -315,7 +321,7 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
             }
         }
         
-        $totalSessions = count($sessionDayList);
+        $totalSessions = count($daysWithSession);
         $row['totals']['total_sessions'] = $totalSessions;
         $row['totals']['attended'] = $row['totals']['present'] + $row['totals']['late'];
         $row['totals']['attendance_percentage'] = $totalSessions > 0 
@@ -339,13 +345,13 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
         : 0;
     
     if ($format === 'excel') {
-        exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $academyTotals);
+        exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $academyTotals, $daysWithSession);
     } else {
-        exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $academyTotals);
+        exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $academyTotals, $daysWithSession);
     }
 }
 
-function exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $totals) {
+function exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $totals, $daysWithSession = []) {
     $dateObj = DateTime::createFromFormat('Y-m', $period);
     $monthName = $dateObj ? $dateObj->format('F Y') : $period;
     
@@ -356,12 +362,14 @@ function exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $tot
     
     fputcsv($out, ['ACADEMY ATTENDANCE REPORT']);
     fputcsv($out, ['Period:', $monthName]);
+    fputcsv($out, ['Sessions Held:', count($daysWithSession) . ' of ' . count($sessionDayList) . ' calendar days']);
     fputcsv($out, ['Generated:', date('Y-m-d H:i:s')]);
     fputcsv($out, []);
     
     $headers = ['#', 'Full Name', 'Admission No.', 'Class', 'Guardian', 'Guardian Phone'];
     foreach ($sessionDayList as $day) {
-        $headers[] = 'Day ' . $day;
+        $wd = date('D', mktime(0,0,0,(int)substr($period,5,2),$day,(int)substr($period,0,4)));
+        $headers[] = 'Day ' . $day . ' (' . $wd . ')';
     }
     $headers = array_merge($headers, ['Present', 'Absent', 'Late', 'Excused', 'No Record', 'Total Sessions', 'Attendance %']);
     fputcsv($out, $headers);
@@ -399,6 +407,7 @@ function exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $tot
     fputcsv($out, []);
     fputcsv($out, ['--- ACADEMY SUMMARY ---']);
     fputcsv($out, ['Total Children', $totals['total_children']]);
+    fputcsv($out, ['Sessions Held', count($daysWithSession)]);
     fputcsv($out, ['Total Present', $totals['total_present']]);
     fputcsv($out, ['Total Absent', $totals['total_absent']]);
     fputcsv($out, ['Total Late', $totals['total_late']]);
@@ -409,15 +418,20 @@ function exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $tot
     exit;
 }
 
-function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $totals) {
+function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $totals, $daysWithSession = []) {
     $dateObj = DateTime::createFromFormat('Y-m', $period);
     $monthName = $dateObj ? $dateObj->format('F Y') : $period;
     $ts = date('Y-m-d H:i');
+    $year = (int)substr($period,0,4);
+    $month = (int)substr($period,5,2);
     
-    // Build headers for each day
+    // Build headers for each day — continuous calendar with weekday initial
     $headers = '';
     foreach ($sessionDayList as $day) {
-        $headers .= '<th style="padding:4px 6px;text-align:center;font-size:8px;min-width:32px;">' . $day . '</th>';
+        $wd = date('D', mktime(0,0,0,$month,$day,$year));
+        $isWeekend = in_array($wd, ['Sat','Sun']);
+        $hstyle = 'padding:4px 3px;text-align:center;font-size:7.5px;min-width:26px;line-height:1.3;' . ($isWeekend ? 'background:#0f2846;' : '');
+        $headers .= '<th style="' . $hstyle . '">' . $day . '<br><span style="font-weight:400;opacity:0.75;">' . $wd . '</span></th>';
     }
     
     // Build rows
@@ -429,11 +443,13 @@ function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $total
             $status = isset($row['daily_status'][$day]) ? $row['daily_status'][$day] : 'no_record';
             $class = '';
             $display = 'NR';
+            $style = 'text-align:center;font-size:8px;padding:2px 3px;';
             if ($status === 'present') { $class = 'bg-present'; $display = 'P'; }
             elseif ($status === 'absent') { $class = 'bg-absent'; $display = 'A'; }
             elseif ($status === 'late') { $class = 'bg-late'; $display = 'L'; }
             elseif ($status === 'excused') { $class = 'bg-excused'; $display = 'E'; }
-            $cells .= '<td class="' . $class . '" style="text-align:center;font-size:8px;padding:2px 3px;">' . $display . '</td>';
+            elseif ($status === 'no_session') { $display = '–'; $style .= 'color:#c3c9d1;background:#fafbfc;'; }
+            $cells .= '<td class="' . $class . '" style="' . $style . '">' . $display . '</td>';
         }
         
         $percent = $row['totals']['attendance_percentage'];
@@ -518,15 +534,16 @@ function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $total
 </div>
 
 <div class="sub-title">
-  <strong>Period:</strong> <?php echo $monthName; ?> &nbsp;|&nbsp; 
+  <strong>Period:</strong> <?php echo $monthName; ?> (continuous, day 1–<?php echo count($sessionDayList); ?>) &nbsp;|&nbsp; 
   <strong>Total Children:</strong> <?php echo $totals['total_children']; ?> &nbsp;|&nbsp;
-  <strong>Report Days:</strong> <?php echo count($sessionDayList); ?> sessions
+  <strong>Sessions Held:</strong> <?php echo count($daysWithSession); ?>
   <div style="margin-top:4px;font-size:9px;color:#666;">
     <span class="badge badge-present">P = Present</span>
     <span class="badge badge-absent">A = Absent</span>
     <span class="badge badge-late">L = Late</span>
     <span class="badge badge-excused">E = Excused</span>
     <span class="badge badge-nr">NR = No Record</span>
+    <span style="color:#999;">– = No session that day</span>
   </div>
 </div>
 
@@ -1259,8 +1276,15 @@ if($take_id):
 <div class="card" id="take">
   <div class="card-corner"></div>
   <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Mark Attendance — <?= h($take_session['name']) ?> (<?= h($take_session['session_date']) ?>, <?= h($take_session['zone_name']) ?>)</div></div>
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-box-icon">⌕</span>
+      <input id="takeAttendanceSearch" autocomplete="off" autofocus placeholder="Search athlete name to mark attendance..." oninput="filterTable('takeAttendanceSearch','takeAttendanceTbl','takeAttendanceCnt')">
+    </div>
+  </div>
+  <div class="result-count" id="takeAttendanceCnt"><?= count($take_members) ?> athletes</div>
   <div class="table-wrap">
-  <table>
+  <table id="takeAttendanceTbl">
     <thead><tr><th>Athlete</th><th>Status</th><th></th></tr></thead>
     <tbody>
     <?php if(!$take_members): ?><tr><td colspan="3" class="no-data">No active athletes in this zone</td></tr><?php endif; ?>
@@ -1288,6 +1312,15 @@ if($take_id):
   </table>
   </div>
 </div>
+<script>
+document.addEventListener('DOMContentLoaded', function(){
+  if(document.getElementById('takeAttendanceTbl')){
+    filterTable('takeAttendanceSearch','takeAttendanceTbl','takeAttendanceCnt');
+    var sb = document.getElementById('takeAttendanceSearch');
+    if(sb) sb.focus();
+  }
+});
+</script>
 <?php endif; endif; ?>
 <?php endif; ?>
 
