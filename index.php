@@ -221,104 +221,8 @@ function ensure_bill($pdo,$member_id,$period){
     $stmt->execute([$member_id,$period,$m['monthly_fee']??0,0,$due]);
 }
 
-function athletes_with_attendance($pdo,$period){
-    $stmt=$pdo->prepare("
-        SELECT DISTINCT
-            m.id, m.full_name, m.phone, m.guardian_name,
-            z.name AS zone_name,
-            COALESCE(b.expected_amount,0) AS expected_amount,
-            COALESCE(b.paid_amount,0) AS paid_amount,
-            GREATEST(COALESCE(b.expected_amount,0)-COALESCE(b.paid_amount,0),0) AS remaining,
-            COUNT(DISTINCT s.id) AS sessions_attended
-        FROM members m
-        LEFT JOIN academy_zones z ON z.id=m.zone_id
-        LEFT JOIN monthly_bills b ON b.member_id=m.id AND b.period=?
-        LEFT JOIN attendance a ON a.member_id=m.id
-        LEFT JOIN sessions s ON s.id=a.session_id
-            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?
-        WHERE m.is_active=TRUE AND a.id IS NOT NULL
-        GROUP BY m.id,m.full_name,m.phone,m.guardian_name,z.name,b.expected_amount,b.paid_amount
-        HAVING COUNT(DISTINCT s.id)>0
-        ORDER BY z.name,m.full_name
-    ");
-    $stmt->execute([$period,$period]);
-    return $stmt->fetchAll();
-}
-
-function non_payers_with_attendance($pdo,$period,$attendance_month=null){
-    $att_month=$attendance_month?:$period;
-    $stmt=$pdo->prepare("
-        SELECT DISTINCT
-            m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,
-            z.name AS zone_name,
-            COALESCE(b.expected_amount,0) AS expected_amount,
-            COALESCE(b.paid_amount,0) AS paid_amount,
-            GREATEST(COALESCE(b.expected_amount,0)-COALESCE(b.paid_amount,0),0) AS remaining,
-            COUNT(DISTINCT s.id) AS sessions_attended,
-            STRING_AGG(DISTINCT s.name||' ('||COALESCE(s.session_date,s.date)||')',', ') AS sessions_list
-        FROM members m
-        LEFT JOIN academy_zones z ON z.id=m.zone_id
-        LEFT JOIN monthly_bills b ON b.member_id=m.id AND b.period=?
-        LEFT JOIN attendance a ON a.member_id=m.id
-        LEFT JOIN sessions s ON s.id=a.session_id
-            AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?
-        WHERE m.is_active=TRUE
-            AND (b.paid_amount IS NULL OR b.paid_amount<COALESCE(b.expected_amount,0))
-            AND a.id IS NOT NULL
-        GROUP BY m.id,m.full_name,m.phone,m.guardian_name,m.guardian_phone,z.name,b.expected_amount,b.paid_amount
-        HAVING COUNT(DISTINCT s.id)>0
-        ORDER BY z.name,m.full_name
-    ");
-    $stmt->execute([$period,$att_month]);
-    return $stmt->fetchAll();
-}
-
-function overdue_payments_report($pdo,$period){
-    $stmt=$pdo->prepare("
-        SELECT m.id AS member_id, m.full_name, m.phone, m.guardian_name,
-               z.name AS zone_name, b.*,
-               GREATEST(b.expected_amount-b.paid_amount,0) AS remaining,
-               GREATEST(DATE_PART('day',(CURRENT_DATE::timestamp - b.due_date::timestamp))::int, 0) AS days_overdue
-        FROM monthly_bills b
-        JOIN members m ON m.id=b.member_id
-        LEFT JOIN academy_zones z ON z.id=m.zone_id
-        WHERE b.period=?
-          AND b.paid_amount < b.expected_amount
-          AND b.due_date < CURRENT_DATE
-          AND m.is_active=TRUE
-        ORDER BY b.due_date ASC
-    ");
-    $stmt->execute([$period]);
-    return $stmt->fetchAll();
-}
-
-function attendance_summary($pdo,$member_id=null,$year_month=null){
-    $sql="
-        SELECT m.id,m.full_name,z.name AS zone_name,
-            COUNT(DISTINCT s.id) AS total_sessions,
-            SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END) AS present_count,
-            SUM(CASE WHEN a.status='absent'  THEN 1 ELSE 0 END) AS absent_count,
-            SUM(CASE WHEN a.status='late'    THEN 1 ELSE 0 END) AS late_count,
-            ROUND(
-              (SUM(CASE WHEN a.status IN ('present','late') THEN 1 ELSE 0 END)::decimal
-               / NULLIF(COUNT(DISTINCT s.id),0)*100),1
-            ) AS attendance_rate
-        FROM members m
-        LEFT JOIN academy_zones z ON z.id=m.zone_id
-        LEFT JOIN attendance a ON a.member_id=m.id
-        LEFT JOIN sessions s ON s.id=a.session_id
-        WHERE m.is_active=TRUE
-    ";
-    $params=[];
-    if($member_id){$sql.=" AND m.id=?";$params[]=$member_id;}
-    if($year_month){$sql.=" AND TO_CHAR(COALESCE(s.session_date,s.date),'YYYY-MM')=?";$params[]=$year_month;}
-    $sql.=" GROUP BY m.id,m.full_name,z.name ORDER BY m.full_name";
-    $stmt=$pdo->prepare($sql);$stmt->execute($params);
-    return $stmt->fetchAll();
-}
-
 /* ════════════════════════════════════════════════════
-   ATTENDANCE REPORT GENERATOR
+   ATTENDANCE REPORT GENERATOR - FIXED VERSION
 ════════════════════════════════════════════════════ */
 function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
     $period = $yearMonth;
@@ -397,7 +301,7 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
         $hasAnyRecord = false;
         
         foreach ($sessionDayList as $day) {
-            $status = $attMatrix[$childId][$day] ?? 'no_record';
+            $status = isset($attMatrix[$childId][$day]) ? $attMatrix[$childId][$day] : 'no_record';
             $row['daily_status'][$day] = $status;
             
             if ($status !== 'no_record') {
@@ -435,13 +339,13 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
         : 0;
     
     if ($format === 'excel') {
-        exportAttendanceExcel($reportData, $sessionDayList, $period, $academyTotals);
+        exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $academyTotals);
     } else {
-        exportAttendancePDF($reportData, $sessionDayList, $period, $academyTotals);
+        exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $academyTotals);
     }
 }
 
-function exportAttendanceExcel($reportData, $sessionDayList, $period, $totals) {
+function exportAttendanceExcel($pdo, $reportData, $sessionDayList, $period, $totals) {
     $dateObj = DateTime::createFromFormat('Y-m', $period);
     $monthName = $dateObj ? $dateObj->format('F Y') : $period;
     
@@ -474,7 +378,7 @@ function exportAttendanceExcel($reportData, $sessionDayList, $period, $totals) {
         ];
         
         foreach ($sessionDayList as $day) {
-            $status = $row['daily_status'][$day] ?? 'no_record';
+            $status = isset($row['daily_status'][$day]) ? $row['daily_status'][$day] : 'no_record';
             $display = ucfirst(str_replace('_', ' ', $status));
             $csvRow[] = $display;
         }
@@ -505,7 +409,7 @@ function exportAttendanceExcel($reportData, $sessionDayList, $period, $totals) {
     exit;
 }
 
-function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
+function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $totals) {
     $dateObj = DateTime::createFromFormat('Y-m', $period);
     $monthName = $dateObj ? $dateObj->format('F Y') : $period;
     $ts = date('Y-m-d H:i');
@@ -522,7 +426,7 @@ function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
     foreach ($reportData as $row) {
         $cells = '';
         foreach ($sessionDayList as $day) {
-            $status = $row['daily_status'][$day] ?? 'no_record';
+            $status = isset($row['daily_status'][$day]) ? $row['daily_status'][$day] : 'no_record';
             $class = '';
             $display = 'NR';
             if ($status === 'present') { $class = 'bg-present'; $display = 'P'; }
@@ -551,7 +455,6 @@ function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
         $rows .= '</tr>';
     }
     
-    // Output complete HTML
     ?>
 <!DOCTYPE html>
 <html>
@@ -745,7 +648,7 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if(!$check->fetchColumn()) go('attendance','Wrong zone: athlete does not belong to that session zone');
         $pdo->prepare("INSERT INTO attendance(session_id,member_id,status) VALUES(?,?,?) ON CONFLICT(session_id,member_id) DO UPDATE SET status=EXCLUDED.status")->execute([$sid,$mid,$status]);
         $pdo->prepare("INSERT INTO attendance(session_id,member_id,status) SELECT s.id,m.id,'absent' FROM sessions s JOIN members m ON m.zone_id=s.zone_id WHERE s.id=? AND m.is_active=TRUE AND NOT EXISTS(SELECT 1 FROM attendance a WHERE a.session_id=s.id AND a.member_id=m.id)")->execute([$sid]);
-        go('attendance','Attendance saved. Unmarked same-zone athletes became absent.');
+        go('attendance','Attendance saved.');
     }
 
     if($a==='payment'){
@@ -809,13 +712,13 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         if($member_id<=0||$jersey_number<=0) go('uniforms','Please select athlete and provide jersey number');
         $check=$pdo->prepare("SELECT id FROM athlete_uniforms WHERE jersey_number=?".($id?" AND id!=?":''));
         $id?$check->execute([$jersey_number,$id]):$check->execute([$jersey_number]);
-        if($check->fetch()) go('uniforms','Jersey number '.$jersey_number.' is already assigned to another athlete.');
+        if($check->fetch()) go('uniforms','Jersey number '.$jersey_number.' is already assigned.');
         $data=[$member_id,$jersey_number,$_POST['jersey_category']??'Adult Unisex V-Neck',$_POST['jersey_size']??'',$_POST['jersey_chest']?:null,$_POST['jersey_length']?:null,$_POST['shorts_category']??'Adult Unisex Shorts',$_POST['shorts_size']??'',$_POST['shorts_waist']?:null,$_POST['shorts_inseam']?:null,(int)($_POST['quantity']??1),$_POST['issued_date']?:date('Y-m-d'),$_POST['note']?:null];
         try{
             if($id){$pdo->prepare("UPDATE athlete_uniforms SET member_id=?,jersey_number=?,jersey_category=?,jersey_size=?,jersey_chest=?,jersey_length=?,shorts_category=?,shorts_size=?,shorts_waist=?,shorts_inseam=?,quantity=?,issued_date=?,note=? WHERE id=?")->execute([...$data,$id]);go('uniforms','Uniform updated');}
             else{$pdo->prepare("INSERT INTO athlete_uniforms(member_id,jersey_number,jersey_category,jersey_size,jersey_chest,jersey_length,shorts_category,shorts_size,shorts_waist,shorts_inseam,quantity,issued_date,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")->execute($data);go('uniforms','Uniform saved');}
         }catch(PDOException $e){
-            if(strpos($e->getMessage(),'unique')!==false) go('uniforms','Jersey number already assigned. Use another number.');
+            if(strpos($e->getMessage(),'unique')!==false) go('uniforms','Jersey number already assigned.');
             throw $e;
         }
     }
@@ -887,7 +790,6 @@ html{scroll-behavior:smooth;}
 body{background:var(--bg);color:var(--text);font-family:var(--font-body);font-size:14px;min-height:100vh;display:flex;overflow-x:hidden;}
 body::before{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E");pointer-events:none;z-index:0;}
 
-/* SIDEBAR */
 .sidebar{position:fixed;top:0;left:0;width:var(--sidebar-w);height:100vh;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;z-index:100;box-shadow:4px 0 40px rgba(0,0,0,0.4);}
 .sidebar-top{padding:28px 20px 24px;border-bottom:1px solid var(--border);}
 .logo{display:flex;align-items:center;gap:12px;}
@@ -909,27 +811,22 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 .period-widget-label{font-size:10px;color:var(--muted);font-family:var(--font-mono);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:4px;}
 .period-widget-val{font-family:var(--font-display);font-size:18px;font-weight:700;color:var(--lime);letter-spacing:-0.01em;}
 
-/* MAIN */
 .main{margin-left:var(--sidebar-w);flex:1;padding:36px 40px;max-width:calc(100vw - var(--sidebar-w));position:relative;z-index:1;}
 
-/* PAGE HEADER */
 .page-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:30px;flex-wrap:wrap;gap:14px;}
 .page-title{font-family:var(--font-display);font-size:32px;font-weight:700;letter-spacing:-0.03em;line-height:1;color:var(--text);}
 .page-title em{font-style:normal;color:var(--lime);}
 .page-sub{font-size:12px;color:var(--muted);font-family:var(--font-mono);margin-top:6px;letter-spacing:0.05em;}
 
-/* PERIOD NAV */
 .period-nav{display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:5px;}
 .period-nav a{display:inline-flex;align-items:center;justify-content:center;color:var(--text2);text-decoration:none;background:transparent;border:1px solid transparent;border-radius:var(--radius-xs);padding:6px 12px;font-size:12px;font-family:var(--font-mono);transition:all var(--transition);}
 .period-nav a:hover{border-color:var(--border2);color:var(--text);background:var(--surface2);}
 .period-nav .cur{font-family:var(--font-mono);color:var(--lime);font-size:13px;font-weight:500;padding:6px 14px;background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-xs);cursor:default;letter-spacing:0.04em;}
 
-/* FLASH */
 .flash{display:flex;align-items:center;gap:12px;background:linear-gradient(90deg,rgba(198,241,53,0.08),rgba(0,217,192,0.05));border:1px solid rgba(198,241,53,0.2);border-left:3px solid var(--lime);color:var(--lime);padding:13px 18px;border-radius:var(--radius-sm);margin-bottom:24px;font-size:13px;font-weight:500;animation:slideDown 0.3s ease;}
 .flash-icon{width:22px;height:22px;background:var(--lime);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#000;font-size:12px;font-weight:900;flex-shrink:0;}
 @keyframes slideDown{from{opacity:0;transform:translateY(-8px);}to{opacity:1;transform:translateY(0);}}
 
-/* CARDS */
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:26px;margin-bottom:20px;position:relative;overflow:hidden;transition:border-color var(--transition);}
 .card:hover{border-color:var(--border2);}
 .card-corner{position:absolute;top:0;right:0;width:100px;height:100px;background:radial-gradient(circle at top right,rgba(198,241,53,0.04),transparent 70%);pointer-events:none;}
@@ -937,7 +834,6 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 .card-title{font-family:var(--font-display);font-size:15px;font-weight:600;display:flex;align-items:center;gap:10px;letter-spacing:-0.01em;}
 .card-title-bar{width:4px;height:18px;background:linear-gradient(180deg,var(--lime),var(--teal));border-radius:2px;flex-shrink:0;}
 
-/* STAT GRID */
 .stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:20px;}
 .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px 24px;position:relative;overflow:hidden;transition:all var(--transition);cursor:default;}
 .stat-card:hover{border-color:var(--border3);transform:translateY(-1px);box-shadow:0 8px 30px rgba(0,0,0,0.3);}
@@ -964,7 +860,6 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 .stat-card[data-color="blue"]  .stat-value{color:var(--blue);}
 .stat-card[data-color="purple"].stat-value{color:var(--purple);}
 
-/* TABLES */
 .table-wrap{overflow-x:auto;border-radius:var(--radius-sm);}
 table{width:100%;border-collapse:collapse;}
 thead th{color:var(--muted);font-size:10.5px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:0.12em;padding:11px 14px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;background:var(--surface2);}
@@ -973,23 +868,20 @@ tbody tr:last-child td{border-bottom:none;}
 tbody tr:hover td{background:rgba(255,255,255,0.018);}
 .no-data{text-align:center;color:var(--muted);padding:50px 0;font-size:13px;font-family:var(--font-mono);letter-spacing:0.05em;}
 
-/* BADGES */
 .badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:600;font-family:var(--font-mono);white-space:nowrap;letter-spacing:0.04em;}
-.b-zone   {background:var(--blue-dim);color:#82b4ff;border:1px solid rgba(77,159,255,0.2);}
-.b-paid   {background:var(--lime-dim);color:var(--lime);border:1px solid rgba(198,241,53,0.2);}
+.b-zone{background:var(--blue-dim);color:#82b4ff;border:1px solid rgba(77,159,255,0.2);}
+.b-paid{background:var(--lime-dim);color:var(--lime);border:1px solid rgba(198,241,53,0.2);}
 .b-partial{background:var(--amber-dim);color:var(--amber);border:1px solid rgba(255,183,64,0.2);}
-.b-unpaid {background:var(--red-dim);color:var(--red);border:1px solid rgba(255,79,107,0.2);}
-.b-nobill {background:rgba(77,106,138,0.1);color:var(--muted);border:1px solid rgba(77,106,138,0.2);}
-.b-active {background:var(--lime-dim);color:var(--lime);}
+.b-unpaid{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,79,107,0.2);}
+.b-nobill{background:rgba(77,106,138,0.1);color:var(--muted);border:1px solid rgba(77,106,138,0.2);}
+.b-active{background:var(--lime-dim);color:var(--lime);}
 .b-inactive{background:var(--red-dim);color:var(--red);}
 .b-present{background:var(--lime-dim);color:var(--lime);}
-.b-absent {background:var(--red-dim);color:var(--red);}
-.b-late   {background:var(--amber-dim);color:var(--amber);}
+.b-absent{background:var(--red-dim);color:var(--red);}
+.b-late{background:var(--amber-dim);color:var(--amber);}
 
-/* FORMS */
-.form-grid  {display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+.form-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
 .form-grid-2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;}
-.form-grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
 .form-group label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted);font-family:var(--font-mono);margin-bottom:7px;}
 .form-group input,.form-group select,.form-group textarea{width:100%;padding:10px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-family:var(--font-body);font-size:13.5px;outline:none;transition:border-color var(--transition),box-shadow var(--transition),background var(--transition);-webkit-appearance:none;}
 .form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--lime);background:var(--surface3);box-shadow:0 0 0 3px var(--lime-glow);}
@@ -998,7 +890,6 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 .form-group select option{background:var(--surface2);}
 .form-actions{display:flex;gap:10px;align-items:center;margin-top:20px;padding-top:18px;border-top:1px solid var(--border);flex-wrap:wrap;}
 
-/* BUTTONS */
 .btn{display:inline-flex;align-items:center;gap:7px;padding:10px 20px;border-radius:var(--radius-sm);font-family:var(--font-display);font-size:13px;font-weight:600;cursor:pointer;border:none;text-decoration:none;transition:all var(--transition);white-space:nowrap;letter-spacing:0.01em;position:relative;overflow:hidden;}
 .btn::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,0.08),transparent);opacity:0;transition:opacity var(--transition);}
 .btn:hover::after{opacity:1;}
@@ -1008,20 +899,9 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 .btn-ghost:hover{border-color:var(--border3);color:var(--text);background:var(--surface3);}
 .btn-danger{background:var(--red-dim);color:var(--red);border:1px solid rgba(255,79,107,0.2);}
 .btn-danger:hover{background:rgba(255,79,107,0.2);}
-.btn-warning{background:var(--amber-dim);color:var(--amber);border:1px solid rgba(255,183,64,0.2);}
-.btn-warning:hover{background:rgba(255,183,64,0.2);}
-.btn-teal{background:var(--teal-dim);color:var(--teal);border:1px solid rgba(0,217,192,0.2);}
-.btn-teal:hover{background:rgba(0,217,192,0.2);}
 .btn-sm{padding:6px 13px;font-size:12px;}
-.btn-xs{padding:4px 10px;font-size:11px;}
 .actions-cell{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
 
-/* REPORT DOWNLOAD PANEL */
-.report-panel{background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:16px 18px;margin-bottom:6px;}
-.report-panel-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-family:var(--font-mono);margin-bottom:10px;}
-.report-btns{display:flex;gap:8px;flex-wrap:wrap;}
-
-/* TOOLBAR / SEARCH */
 .toolbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center;}
 .search-box{position:relative;flex:1;min-width:200px;}
 .search-box-icon{position:absolute;left:13px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:14px;pointer-events:none;}
@@ -1030,40 +910,10 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 .search-box input::placeholder{color:var(--muted2);}
 .toolbar select{padding:10px 14px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);font-size:13px;outline:none;cursor:pointer;transition:all var(--transition);font-family:var(--font-body);-webkit-appearance:none;}
 .toolbar select:focus{border-color:var(--lime);box-shadow:0 0 0 3px var(--lime-glow);}
-.toolbar select option{background:var(--surface2);}
 .result-count{font-size:11px;color:var(--muted);font-family:var(--font-mono);margin-bottom:12px;letter-spacing:0.04em;}
 
-/* AUTOCOMPLETE */
-.autocomplete-wrap{position:relative;}
-.autocomplete-dropdown{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);box-shadow:0 16px 48px rgba(0,0,0,0.5);z-index:999;max-height:320px;overflow-y:auto;display:none;}
-.autocomplete-dropdown.open{display:block;}
-.ac-item{display:flex;align-items:center;gap:12px;padding:11px 14px;cursor:pointer;transition:background var(--transition);border-bottom:1px solid var(--border);}
-.ac-item:last-child{border-bottom:none;}
-.ac-item:hover,.ac-item.focused{background:var(--surface3);}
-.ac-avatar{width:32px;height:32px;border-radius:10px;background:var(--lime-dim);border:1px solid rgba(198,241,53,0.15);display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-size:13px;font-weight:700;color:var(--lime);flex-shrink:0;text-transform:uppercase;}
-.ac-info{flex:1;min-width:0;}
-.ac-name{font-size:13.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.ac-meta{font-size:11px;color:var(--muted);font-family:var(--font-mono);margin-top:1px;}
-.ac-badge{font-size:11px;color:var(--teal);font-family:var(--font-mono);white-space:nowrap;}
-.ac-empty{padding:20px;text-align:center;color:var(--muted);font-size:12px;font-family:var(--font-mono);}
-.selected-athlete-info{display:none;align-items:center;gap:14px;background:var(--surface2);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-sm);padding:12px 16px;margin-top:10px;}
-.selected-athlete-info.visible{display:flex;}
-.sa-avatar{width:40px;height:40px;border-radius:12px;background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);display:flex;align-items:center;justify-content:center;font-family:var(--font-display);font-size:16px;font-weight:700;color:var(--lime);flex-shrink:0;text-transform:uppercase;}
-.sa-name{font-size:14px;font-weight:600;color:var(--text);}
-.sa-detail{font-size:11px;color:var(--muted);font-family:var(--font-mono);margin-top:2px;}
-
-/* MODAL */
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:500;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);}
-.modal-overlay.hidden{display:none;}
-.modal-box{background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius);padding:28px;width:90%;max-width:520px;position:relative;box-shadow:0 24px 80px rgba(0,0,0,0.6);}
-.modal-title{font-family:var(--font-display);font-size:18px;font-weight:700;margin-bottom:20px;color:var(--lime);}
-.modal-close{position:absolute;top:16px;right:16px;background:var(--surface2);border:1px solid var(--border2);color:var(--text2);width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;}
-.modal-close:hover{color:var(--red);border-color:var(--red);}
-
-/* SUMMARY ROW */
 .summary-row td{font-weight:700;background:var(--surface2)!important;color:var(--lime);font-family:var(--font-mono);border-top:2px solid var(--border2);}
 
-/* SCROLLBAR */
 ::-webkit-scrollbar{width:6px;height:6px;}
 ::-webkit-scrollbar-track{background:var(--bg);}
 ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
@@ -1072,12 +922,12 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 @media(max-width:960px){
   :root{--sidebar-w:220px;}
   .main{padding:20px;}
-  .stat-grid,.form-grid,.form-grid-4{grid-template-columns:repeat(2,1fr);}
+  .stat-grid,.form-grid{grid-template-columns:repeat(2,1fr);}
 }
 @media(max-width:680px){
   :root{--sidebar-w:0px;}
   .sidebar{transform:translateX(-100%);}
-  .stat-grid,.form-grid,.form-grid-2,.form-grid-4{grid-template-columns:1fr;}
+  .stat-grid,.form-grid,.form-grid-2{grid-template-columns:1fr;}
 }
 </style>
 </head>
@@ -1177,114 +1027,6 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
   </table>
   </div>
 </div>
-
-<?php
-$unpaid=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AND paid_amount=0 AND expected_amount>0")->fetchColumn();
-$partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AND paid_amount>0 AND paid_amount<expected_amount")->fetchColumn();
-?>
-<div class="card">
-  <div class="card-corner"></div>
-  <div class="card-header">
-    <div class="card-title"><span class="card-title-bar"></span>Billing Snapshot — <?= h($p) ?></div>
-    <a href="?view=payments&period=<?= h($p) ?>" class="btn btn-ghost btn-sm">View Billing →</a>
-  </div>
-  <div style="display:flex;gap:14px;flex-wrap:wrap">
-    <div style="background:var(--red-dim);border:1px solid rgba(255,79,107,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px"><div class="stat-label">Unpaid</div><div style="font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--red)"><?= $unpaid ?></div></div>
-    <div style="background:var(--amber-dim);border:1px solid rgba(255,183,64,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px"><div class="stat-label">Partial</div><div style="font-family:var(--font-display);font-size:28px;font-weight:700;color:var(--amber)"><?= $partial ?></div></div>
-    <div style="background:var(--lime-dim);border:1px solid rgba(198,241,53,0.2);border-radius:var(--radius-sm);padding:16px 22px;flex:1;min-width:140px"><div class="stat-label">Net Income</div><div style="font-family:var(--font-display);font-size:20px;font-weight:700;color:var(--lime)"><?= money((float)$stats['revenue']-(float)$stats['expenses']-(float)$stats['payroll']) ?></div></div>
-  </div>
-</div>
-<?php endif; ?>
-
-<?php /* ════════════════════════════════════
-   ATHLETES
-════════════════════════════════════ */ ?>
-<?php if($v==='members'): ?>
-<div class="page-header">
-  <div>
-    <div class="page-title"><?= $edit_member?'Edit <em>Athlete</em>':'Athletes <em>Registry</em>' ?></div>
-    <div class="page-sub"><?= count($m) ?> total · <?= count($am) ?> active</div>
-  </div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap">
-    <a class="btn btn-ghost btn-sm" href="?view=members&period=<?= h($p) ?>&export=athletes_csv">📊 CSV</a>
-    <a class="btn btn-teal btn-sm" href="?view=members&period=<?= h($p) ?>&export=athletes_pdf" target="_blank">📄 PDF Report</a>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-corner"></div>
-  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_member?'Edit Athlete':'Register New Athlete' ?></div></div>
-  <form method="POST">
-    <input type="hidden" name="action" value="save_member">
-    <input type="hidden" name="id" value="<?= h($edit_member['id']??'') ?>">
-    <div class="form-grid">
-      <div class="form-group"><label>Full Name *</label><input name="full_name" required value="<?= h($edit_member['full_name']??'') ?>" placeholder="e.g. Jean Paul Mugisha"></div>
-      <div class="form-group"><label>Phone</label><input name="phone" value="<?= h($edit_member['phone']??'') ?>" placeholder="+250 7xx xxx xxx"></div>
-      <div class="form-group"><label>Zone</label><select name="zone_id"><?php foreach($z as $zone): ?><option value="<?= $zone['id'] ?>" <?= (($edit_member['zone_id']??'')==$zone['id'])?'selected':'' ?>><?= h($zone['name']) ?></option><?php endforeach; ?></select></div>
-      <div class="form-group"><label>Gender</label><select name="gender"><option value="">— Select —</option><option <?= (($edit_member['gender']??'')==='Male')?'selected':'' ?>>Male</option><option <?= (($edit_member['gender']??'')==='Female')?'selected':'' ?>>Female</option></select></div>
-      <div class="form-group"><label>Date of Birth</label><input type="date" name="date_of_birth" value="<?= h($edit_member['date_of_birth']??'') ?>"></div>
-      <div class="form-group"><label>Position</label><input name="position" value="<?= h($edit_member['position']??'') ?>" placeholder="e.g. Forward, Goalkeeper"></div>
-      <div class="form-group"><label>Guardian Name</label><input name="guardian_name" value="<?= h($edit_member['guardian_name']??'') ?>" placeholder="Parent / Guardian"></div>
-      <div class="form-group"><label>Guardian Phone</label><input name="guardian_phone" value="<?= h($edit_member['guardian_phone']??'') ?>"></div>
-      <div class="form-group"><label>School</label><input name="school_name" value="<?= h($edit_member['school_name']??'') ?>" placeholder="School name"></div>
-      <div class="form-group"><label>Monthly Fee (RWF)</label><input type="number" name="monthly_fee" value="<?= h($edit_member['monthly_fee']??0) ?>" placeholder="0"></div>
-      <div class="form-group"><label>Due Day</label><input type="number" name="due_day" min="1" max="31" value="<?= h($edit_member['due_day']??5) ?>"></div>
-      <div class="form-group"><label>Admission Number</label><input name="admission_number" value="<?= h($edit_member['admission_number']??'') ?>" placeholder="e.g. A-2024-001"></div>
-      <div class="form-group"><label>Class</label><input name="class_name" value="<?= h($edit_member['class_name']??'') ?>" placeholder="e.g. Grade 5"></div>
-      <div class="form-group"><label>Parent Email</label><input name="parent_email" value="<?= h($edit_member['parent_email']??'') ?>" placeholder="parent@email.com"></div>
-      <div class="form-group"><label>Notes</label><input name="notes" value="<?= h($edit_member['notes']??'') ?>" placeholder="Optional notes"></div>
-    </div>
-    <div class="form-actions">
-      <button class="btn btn-primary" type="submit">💾 <?= $edit_member?'Update Athlete':'Save Athlete' ?></button>
-      <?php if($edit_member): ?><a class="btn btn-ghost" href="?view=members&period=<?= h($p) ?>">✕ Cancel</a><?php endif; ?>
-    </div>
-  </form>
-</div>
-
-<div class="card">
-  <div class="card-corner"></div>
-  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>All Athletes</div></div>
-  <div class="toolbar">
-    <div class="search-box"><span class="search-box-icon">🔍</span><input type="text" id="memberSearch" placeholder="Search name, phone, zone, position…" oninput="filterTable('memberSearch','memberTbl','memberCnt')"></div>
-    <select id="mZoneF" onchange="filterTable('memberSearch','memberTbl','memberCnt')"><option value="">All Zones</option><?php foreach($z as $zone): ?><option value="<?= h($zone['name']) ?>"><?= h($zone['name']) ?></option><?php endforeach; ?></select>
-    <select id="mStatF" onchange="filterTable('memberSearch','memberTbl','memberCnt')"><option value="">All Status</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select>
-  </div>
-  <div class="result-count" id="memberCnt"></div>
-  <div class="table-wrap">
-  <table id="memberTbl">
-    <thead><tr><th>Athlete</th><th>Zone</th><th>Phone</th><th>Position</th><th>Admission</th><th>Class</th><th>Monthly Fee</th><th>Status</th><th>Actions</th></tr></thead>
-    <tbody>
-    <?php foreach($m as $x): ?>
-    <tr>
-      <td>
-        <div style="display:flex;align-items:center;gap:10px">
-          <div style="width:32px;height:32px;border-radius:10px;background:var(--lime-dim);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--lime);font-size:12px"><?= mb_substr($x['full_name'],0,1) ?></div>
-          <strong><?= h($x['full_name']) ?></strong>
-        </div>
-      </td>
-      <td><span class="badge b-zone"><?= h($x['zone_name']) ?></span></td>
-      <td style="font-family:var(--font-mono);font-size:12px;color:var(--text2)"><?= h($x['phone']) ?></td>
-      <td style="color:var(--text2)"><?= h($x['position']) ?></td>
-      <td style="font-family:var(--font-mono);font-size:11px;color:var(--text2)"><?= h($x['admission_number']??'N/A') ?></td>
-      <td style="color:var(--text2)"><?= h($x['class_name']??'N/A') ?></td>
-      <td style="font-family:var(--font-mono);color:var(--lime)"><?= money($x['monthly_fee']) ?></td>
-      <td><span class="badge <?= $x['is_active']?'b-active':'b-inactive' ?>"><?= $x['is_active']?'Active':'Inactive' ?></span></td>
-      <td>
-        <div class="actions-cell">
-          <a class="btn btn-ghost btn-sm" href="?view=members&period=<?= h($p) ?>&edit_member=<?= $x['id'] ?>">Edit</a>
-          <form method="POST" style="display:inline" onsubmit="return confirm('Deactivate <?= h(addslashes($x['full_name'])) ?>?')">
-            <input type="hidden" name="action" value="delete_member">
-            <input type="hidden" name="id" value="<?= $x['id'] ?>">
-            <button class="btn btn-danger btn-sm" type="submit">Deactivate</button>
-          </form>
-        </div>
-      </td>
-    </tr>
-    <?php endforeach; ?>
-    </tbody>
-  </table>
-  </div>
-</div>
 <?php endif; ?>
 
 <?php /* ════════════════════════════════════
@@ -1346,61 +1088,41 @@ function downloadAttendanceReport() {
 }
 </script>
 
-<?php
-// Keep your existing reports content here
-// (Non-Payers, Overdue, Attendance Summary, Zone Financial, Payment Logs, etc.)
-// If you have other reports, include them here
-?>
-
 <?php endif; ?>
 
 </main>
 
 <script>
-/* ── Universal table filter ── */
 function filterTable(searchId, tableId, countId){
   const searchInput = document.getElementById(searchId);
-  const table       = document.getElementById(tableId);
-  const countEl     = document.getElementById(countId);
+  const table = document.getElementById(tableId);
+  const countEl = document.getElementById(countId);
   if(!table) return;
   const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
-  const card  = table.closest('.card');
-  const filterSelects = card ? card.querySelectorAll('select[id$="F"]') : [];
-  const rows  = table.querySelectorAll('tbody tr:not(.summary-row):not(.no-results-dyn)');
+  const rows = table.querySelectorAll('tbody tr:not(.summary-row)');
   let visible = 0;
   rows.forEach(row => {
     const text = row.textContent.toLowerCase();
     let show = true;
     if(query && !text.includes(query)) show = false;
-    filterSelects.forEach(sel => {
-      const val = sel.value.toLowerCase();
-      if(val && !text.includes(val)) show = false;
-    });
     row.style.display = show ? '' : 'none';
     if(show) visible++;
   });
   if(countEl){
-    const total = rows.length;
-    countEl.textContent = (query || [...filterSelects].some(s=>s.value))
-      ? `Showing ${visible} of ${total} records`
-      : `${total} record${total!==1?'s':''}`;
+    countEl.textContent = visible + ' record' + (visible!==1?'s':'');
   }
-  let noRes = table.querySelector('.no-results-dyn');
-  if(visible === 0 && rows.length > 0){
-    if(!noRes){
-      const colspan = table.querySelector('thead tr')?.children.length || 6;
-      const tr = document.createElement('tr');
-      tr.className = 'no-results-dyn';
-      tr.innerHTML = `<td colspan="${colspan}" class="no-data">No results match your search</td>`;
-      table.querySelector('tbody').appendChild(tr);
-    }
-  } else { noRes?.remove(); }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  [
-    ['memberSearch','memberTbl','memberCnt']
-  ].forEach(([s,t,c]) => { if(document.getElementById(t)) filterTable(s,t,c); });
+document.addEventListener('DOMContentLoaded', function() {
+  // Initialize any table filters
+  const filterMaps = [
+    ['memberSearch', 'memberTbl', 'memberCnt']
+  ];
+  filterMaps.forEach(function(item) {
+    if(document.getElementById(item[1])) {
+      filterTable(item[0], item[1], item[2]);
+    }
+  });
 });
 </script>
 </body>
