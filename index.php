@@ -331,8 +331,7 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
         SELECT m.id, m.full_name, m.phone, m.guardian_name, m.guardian_phone,
                m.position, m.school_name, z.name as zone_name,
                COALESCE(m.admission_number, 'N/A') as admission_number,
-               COALESCE(m.class_name, 'N/A') as class_name,
-               COALESCE(m.parent_email, '') as parent_email
+               COALESCE(m.class_name, 'N/A') as class_name
         FROM members m
         LEFT JOIN academy_zones z ON z.id = m.zone_id
         WHERE m.is_active = TRUE
@@ -386,7 +385,6 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
             'class_name' => $child['class_name'],
             'guardian_name' => $child['guardian_name'],
             'guardian_phone' => $child['guardian_phone'],
-            'parent_email' => $child['parent_email'],
             'zone_name' => $child['zone_name'],
             'position' => $child['position'],
             'school_name' => $child['school_name'],
@@ -512,11 +510,13 @@ function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
     $monthName = $dateObj ? $dateObj->format('F Y') : $period;
     $ts = date('Y-m-d H:i');
     
+    // Build headers for each day
     $headers = '';
     foreach ($sessionDayList as $day) {
         $headers .= '<th style="padding:4px 6px;text-align:center;font-size:8px;min-width:32px;">' . $day . '</th>';
     }
     
+    // Build rows
     $rows = '';
     $index = 1;
     foreach ($reportData as $row) {
@@ -551,15 +551,16 @@ function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
         $rows .= '</tr>';
     }
     
-    $html = <<<HTML
+    // Output complete HTML
+    ?>
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Attendance Report - $period</title>
+<title>Attendance Report - <?php echo $period; ?></title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
-  body{font-family:'Segoe UI',Arial,sans-serif;background:#fff;color:#222;padding:20px;font-size:10px;}
+  body{font-family:"Segoe UI",Arial,sans-serif;background:#fff;color:#222;padding:20px;font-size:10px;}
   .header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1a3a5c;padding-bottom:10px;margin-bottom:15px;}
   .header h1{font-size:20px;color:#1a3a5c;}
   .header .meta{text-align:right;font-size:10px;color:#666;}
@@ -608,15 +609,15 @@ function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
     <div style="font-size:10px;color:#666;margin-top:2px;">Academy Management System</div>
   </div>
   <div class="meta">
-    <div><strong>$monthName</strong></div>
-    <div>Generated: $ts</div>
+    <div><strong><?php echo $monthName; ?></strong></div>
+    <div>Generated: <?php echo $ts; ?></div>
   </div>
 </div>
 
 <div class="sub-title">
-  <strong>Period:</strong> $monthName &nbsp;|&nbsp; 
-  <strong>Total Children:</strong> {$totals['total_children']} &nbsp;|&nbsp;
-  <strong>Report Days:</strong> ${count($sessionDayList)} sessions
+  <strong>Period:</strong> <?php echo $monthName; ?> &nbsp;|&nbsp; 
+  <strong>Total Children:</strong> <?php echo $totals['total_children']; ?> &nbsp;|&nbsp;
+  <strong>Report Days:</strong> <?php echo count($sessionDayList); ?> sessions
   <div style="margin-top:4px;font-size:9px;color:#666;">
     <span class="badge badge-present">P = Present</span>
     <span class="badge badge-absent">A = Absent</span>
@@ -629,27 +630,27 @@ function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
 <div class="summary-box">
   <div class="summary-item">
     <div class="label">Total Children</div>
-    <div class="value">{$totals['total_children']}</div>
+    <div class="value"><?php echo $totals['total_children']; ?></div>
   </div>
   <div class="summary-item">
     <div class="label">Present</div>
-    <div class="value green">{$totals['total_present']}</div>
+    <div class="value green"><?php echo $totals['total_present']; ?></div>
   </div>
   <div class="summary-item">
     <div class="label">Absent</div>
-    <div class="value red">{$totals['total_absent']}</div>
+    <div class="value red"><?php echo $totals['total_absent']; ?></div>
   </div>
   <div class="summary-item">
     <div class="label">Late</div>
-    <div class="value amber">{$totals['total_late']}</div>
+    <div class="value amber"><?php echo $totals['total_late']; ?></div>
   </div>
   <div class="summary-item">
     <div class="label">Excused</div>
-    <div class="value" style="color:#0c5460;">{$totals['total_excused']}</div>
+    <div class="value" style="color:#0c5460;"><?php echo $totals['total_excused']; ?></div>
   </div>
   <div class="summary-item">
     <div class="label">Attendance Rate</div>
-    <div class="value" style="color:" . ($totals['attendance_percentage'] >= 80 ? '#155724' : '#856404') . ">{$totals['attendance_percentage']}%</div>
+    <div class="value" style="color:<?php echo ($totals['attendance_percentage'] >= 80) ? '#155724' : '#856404'; ?>"><?php echo $totals['attendance_percentage']; ?>%</div>
   </div>
 </div>
 
@@ -662,7 +663,7 @@ function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
       <th style="min-width:60px;">Class</th>
       <th style="min-width:80px;">Guardian</th>
       <th style="min-width:70px;">Guardian Phone</th>
-      $headers
+      <?php echo $headers; ?>
       <th style="min-width:30px;">P</th>
       <th style="min-width:30px;">A</th>
       <th style="min-width:30px;">L</th>
@@ -671,24 +672,22 @@ function exportAttendancePDF($reportData, $sessionDayList, $period, $totals) {
     </tr>
   </thead>
   <tbody>
-    $rows
+    <?php echo $rows; ?>
   </tbody>
 </table>
 
 <div class="footer">
   <span>Academy AMS — Confidential Report</span>
-  <span>Printed: $ts</span>
+  <span>Printed: <?php echo $ts; ?></span>
 </div>
 </body>
 </html>
-HTML;
-
-    echo $html;
+    <?php
     exit;
 }
 
 /* ════════════════════════════════════════════════════
-   EXPORT HANDLERS - Add this after your existing exports
+   EXPORT HANDLERS
 ════════════════════════════════════════════════════ */
 $p=period();
 
@@ -699,14 +698,7 @@ if (isset($_GET['export_attendance_report'])) {
     generateAttendanceReport($pdo, $period, $format);
 }
 
-/* ── Existing CSV exports (keep your existing code) ── */
-$export_type=$_GET['export']??'';
-
-// ... (your existing export handlers here) ...
-
-/* ════════════════════════════════════════════════════
-   JERSEY CHECK AJAX
-════════════════════════════════════════════════════ */
+/* ── JERSEY CHECK AJAX ── */
 if(isset($_GET['check_jersey'])){
     $jnum=(int)$_GET['check_jersey'];
     $cid=(int)($_GET['current_id']??0);
@@ -718,9 +710,117 @@ if(isset($_GET['check_jersey'])){
 }
 
 /* ════════════════════════════════════════════════════
-   POST HANDLERS (keep your existing code)
+   POST HANDLERS
 ════════════════════════════════════════════════════ */
-// ... (your existing POST handlers) ...
+if($_SERVER['REQUEST_METHOD']==='POST'){
+    $a=$_POST['action']??'';
+
+    if($a==='save_member'){
+        $id=$_POST['id']??'';
+        $data=[$_POST['full_name'],$_POST['phone']?:null,$_POST['gender']?:null,$_POST['date_of_birth']?:null,
+            $_POST['zone_id']?:default_zone($pdo),$_POST['guardian_name']?:null,$_POST['guardian_phone']?:null,
+            $_POST['position']?:null,$_POST['school_name']?:null,(float)($_POST['monthly_fee']??0),(int)($_POST['due_day']??5),
+            $_POST['admission_number']?:null,$_POST['class_name']?:null,$_POST['parent_email']?:null,$_POST['notes']?:null];
+        if($id){
+            $pdo->prepare("UPDATE members SET full_name=?,phone=?,gender=?,date_of_birth=?,zone_id=?,guardian_name=?,guardian_phone=?,position=?,school_name=?,monthly_fee=?,due_day=?,admission_number=?,class_name=?,parent_email=?,notes=? WHERE id=?")->execute([...$data,$id]);
+            go('members','Athlete updated');
+        }else{
+            $pdo->prepare("INSERT INTO members(full_name,phone,gender,date_of_birth,zone_id,guardian_name,guardian_phone,position,school_name,monthly_fee,due_day,admission_number,class_name,parent_email,notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(full_name) DO NOTHING")->execute($data);
+            go('members','Athlete added');
+        }
+    }
+    if($a==='delete_member'){$pdo->prepare("UPDATE members SET is_active=FALSE WHERE id=?")->execute([$_POST['id']]);go('members','Athlete deactivated');}
+
+    if($a==='save_session'){
+        $id=$_POST['id']??'';
+        if($id){$pdo->prepare("UPDATE sessions SET name=?,session_date=?,zone_id=? WHERE id=?")->execute([$_POST['name'],$_POST['session_date'],$_POST['zone_id'],$id]);go('attendance','Session updated');}
+        else{$pdo->prepare("INSERT INTO sessions(name,session_date,zone_id) VALUES(?,?,?)")->execute([$_POST['name'],$_POST['session_date'],$_POST['zone_id']?:default_zone($pdo)]);go('attendance','Session created');}
+    }
+    if($a==='delete_session'){$pdo->prepare("DELETE FROM sessions WHERE id=?")->execute([$_POST['id']]);go('attendance','Session deleted');}
+
+    if($a==='attendance'){
+        $sid=$_POST['session_id'];$mid=$_POST['member_id'];$status=$_POST['status'];
+        $check=$pdo->prepare("SELECT COUNT(*) FROM sessions s JOIN members m ON m.zone_id=s.zone_id WHERE s.id=? AND m.id=?");
+        $check->execute([$sid,$mid]);
+        if(!$check->fetchColumn()) go('attendance','Wrong zone: athlete does not belong to that session zone');
+        $pdo->prepare("INSERT INTO attendance(session_id,member_id,status) VALUES(?,?,?) ON CONFLICT(session_id,member_id) DO UPDATE SET status=EXCLUDED.status")->execute([$sid,$mid,$status]);
+        $pdo->prepare("INSERT INTO attendance(session_id,member_id,status) SELECT s.id,m.id,'absent' FROM sessions s JOIN members m ON m.zone_id=s.zone_id WHERE s.id=? AND m.is_active=TRUE AND NOT EXISTS(SELECT 1 FROM attendance a WHERE a.session_id=s.id AND a.member_id=m.id)")->execute([$sid]);
+        go('attendance','Attendance saved. Unmarked same-zone athletes became absent.');
+    }
+
+    if($a==='payment'){
+        $mid=(int)$_POST['member_id'];$amount=(float)$_POST['amount'];$per=trim($_POST['period']);
+        if($mid<=0||$amount<=0) go('payments','Invalid payment data');
+        ensure_bill($pdo,$mid,$per);
+        $pdo->prepare("UPDATE monthly_bills SET paid_amount=paid_amount+?,paid_at=NOW(),updated_at=NOW(),note=? WHERE member_id=? AND period=?")->execute([$amount,$_POST['note']?:null,$mid,$per]);
+        $pdo->prepare("INSERT INTO payment_logs(member_id,amount_paid,period,note,payment_date) VALUES(?,?,?,?,CURRENT_DATE)")->execute([$mid,$amount,$per,$_POST['note']?:null]);
+        go('payments','Payment recorded');
+    }
+
+    if($a==='edit_payment'){
+        $bill_id=(int)$_POST['bill_id'];
+        $new_paid=(float)$_POST['paid_amount'];
+        $note=trim($_POST['note']??'');
+        if($bill_id<=0) go('payments','Invalid bill');
+        $pdo->prepare("UPDATE monthly_bills SET paid_amount=?,note=?,updated_at=NOW(),paid_at=CASE WHEN ?::numeric>0 THEN NOW() ELSE paid_at END WHERE id=?")->execute([$new_paid,$note,$new_paid,$bill_id]);
+        go('payments','Payment record updated');
+    }
+
+    if($a==='delete_payment'){
+        $bill_id=(int)$_POST['bill_id'];
+        if($bill_id<=0) go('payments','Invalid bill');
+        $pdo->prepare("UPDATE monthly_bills SET paid_amount=0,paid_at=NULL,note=NULL,updated_at=NOW() WHERE id=?")->execute([$bill_id]);
+        go('payments','Payment cleared');
+    }
+
+    if($a==='save_staff'){
+        $id=$_POST['id']??'';
+        if($id){$pdo->prepare("UPDATE staff SET full_name=?,phone=?,role=?,zone_id=?,monthly_salary=? WHERE id=?")->execute([$_POST['full_name'],$_POST['phone']?:null,$_POST['role'],$_POST['zone_id'],(float)($_POST['monthly_salary']??0),$id]);go('staff','Staff updated');}
+        else{$pdo->prepare("INSERT INTO staff(full_name,phone,role,zone_id,monthly_salary) VALUES(?,?,?,?,?)")->execute([$_POST['full_name'],$_POST['phone']?:null,$_POST['role'],$_POST['zone_id']?:default_zone($pdo),(float)($_POST['monthly_salary']??0)]);go('staff','Staff added');}
+    }
+    if($a==='delete_staff'){$pdo->prepare("UPDATE staff SET is_active=FALSE WHERE id=?")->execute([$_POST['id']]);go('staff','Staff deactivated');}
+
+    if($a==='payroll'){
+        $base=(float)$_POST['base_salary'];$bonus=(float)$_POST['bonus'];$ded=(float)$_POST['deductions'];
+        $net=$base+$bonus-$ded;
+        $paid=(float)$_POST['amount_paid'];
+        $status=($paid<=0)?'UNPAID':(($paid<$net)?'PARTIAL':'PAID');
+        $pdo->prepare("
+            INSERT INTO coach_payroll(staff_id,period,base_salary,bonus,deductions,net_salary,amount_paid,payment_status,paid_at,note)
+            VALUES(?,?,?,?,?,?,?,?,NOW(),?)
+            ON CONFLICT(staff_id,period) DO UPDATE SET
+              base_salary=EXCLUDED.base_salary,bonus=EXCLUDED.bonus,deductions=EXCLUDED.deductions,
+              net_salary=EXCLUDED.net_salary,amount_paid=EXCLUDED.amount_paid,
+              payment_status=EXCLUDED.payment_status,paid_at=NOW(),note=EXCLUDED.note
+        ")->execute([$_POST['staff_id'],$_POST['period'],$base,$bonus,$ded,$net,$paid,$status,$_POST['note']?:null]);
+        go('payroll','Payroll saved');
+    }
+
+    if($a==='expense'){
+        $pdo->prepare("INSERT INTO expenses(expense_date,category,description,amount,paid_to,approved_by,zone_id) VALUES(?,?,?,?,?,?,?)")
+            ->execute([$_POST['expense_date'],$_POST['category'],$_POST['description'],(float)$_POST['amount'],$_POST['paid_to'],$_POST['approved_by'],$_POST['zone_id']?:default_zone($pdo)]);
+        go('expenses','Expense saved');
+    }
+
+    if($a==='save_uniform'){
+        $id=$_POST['id']??'';
+        $member_id=(int)($_POST['member_id']??0);
+        $jersey_number=(int)($_POST['jersey_number']??0);
+        if($member_id<=0||$jersey_number<=0) go('uniforms','Please select athlete and provide jersey number');
+        $check=$pdo->prepare("SELECT id FROM athlete_uniforms WHERE jersey_number=?".($id?" AND id!=?":''));
+        $id?$check->execute([$jersey_number,$id]):$check->execute([$jersey_number]);
+        if($check->fetch()) go('uniforms','Jersey number '.$jersey_number.' is already assigned to another athlete.');
+        $data=[$member_id,$jersey_number,$_POST['jersey_category']??'Adult Unisex V-Neck',$_POST['jersey_size']??'',$_POST['jersey_chest']?:null,$_POST['jersey_length']?:null,$_POST['shorts_category']??'Adult Unisex Shorts',$_POST['shorts_size']??'',$_POST['shorts_waist']?:null,$_POST['shorts_inseam']?:null,(int)($_POST['quantity']??1),$_POST['issued_date']?:date('Y-m-d'),$_POST['note']?:null];
+        try{
+            if($id){$pdo->prepare("UPDATE athlete_uniforms SET member_id=?,jersey_number=?,jersey_category=?,jersey_size=?,jersey_chest=?,jersey_length=?,shorts_category=?,shorts_size=?,shorts_waist=?,shorts_inseam=?,quantity=?,issued_date=?,note=? WHERE id=?")->execute([...$data,$id]);go('uniforms','Uniform updated');}
+            else{$pdo->prepare("INSERT INTO athlete_uniforms(member_id,jersey_number,jersey_category,jersey_size,jersey_chest,jersey_length,shorts_category,shorts_size,shorts_waist,shorts_inseam,quantity,issued_date,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")->execute($data);go('uniforms','Uniform saved');}
+        }catch(PDOException $e){
+            if(strpos($e->getMessage(),'unique')!==false) go('uniforms','Jersey number already assigned. Use another number.');
+            throw $e;
+        }
+    }
+    if($a==='delete_uniform'){$pdo->prepare("DELETE FROM athlete_uniforms WHERE id=?")->execute([$_POST['id']]);go('uniforms','Uniform record deleted');}
+}
 
 /* ════════════════════════════════════════════════════
    PAGE DATA
@@ -768,7 +868,6 @@ $next=date('Y-m',strtotime($p.'-01 +1 month'));
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Clash+Display:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
-/* ... (your existing CSS) ... */
 :root{
   --bg:#040810;--bg2:#060c18;--surface:#0a1628;--surface2:#0f1e38;--surface3:#142440;
   --border:#1c2e4a;--border2:#243a5e;--border3:#2e4870;
@@ -934,7 +1033,7 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 .toolbar select option{background:var(--surface2);}
 .result-count{font-size:11px;color:var(--muted);font-family:var(--font-mono);margin-bottom:12px;letter-spacing:0.04em;}
 
-/* AUT COMPLETE */
+/* AUTOCOMPLETE */
 .autocomplete-wrap{position:relative;}
 .autocomplete-dropdown{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-sm);box-shadow:0 16px 48px rgba(0,0,0,0.5);z-index:999;max-height:320px;overflow-y:auto;display:none;}
 .autocomplete-dropdown.open{display:block;}
@@ -1023,8 +1122,8 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
 
 <?php /* ════════════════════════════════════
    DASHBOARD
-════════════════════════════════════ */
-if($v==='dashboard'): ?>
+════════════════════════════════════ */ ?>
+<?php if($v==='dashboard'): ?>
 <div class="page-header">
   <div>
     <div class="page-title">Good day, <em>Coach</em></div>
@@ -1099,8 +1198,8 @@ $partial=$pdo->query("SELECT COUNT(*) FROM monthly_bills WHERE period=$safe_p AN
 
 <?php /* ════════════════════════════════════
    ATHLETES
-════════════════════════════════════ */
-if($v==='members'): ?>
+════════════════════════════════════ */ ?>
+<?php if($v==='members'): ?>
 <div class="page-header">
   <div>
     <div class="page-title"><?= $edit_member?'Edit <em>Athlete</em>':'Athletes <em>Registry</em>' ?></div>
@@ -1190,8 +1289,8 @@ if($v==='members'): ?>
 
 <?php /* ════════════════════════════════════
    REPORTS (Includes Attendance Report)
-════════════════════════════════════ */
-if($v==='reports'): ?>
+════════════════════════════════════ */ ?>
+<?php if($v==='reports'): ?>
 <div class="page-header">
   <div>
     <div class="page-title">Reports <em>&amp; Analytics</em></div>
@@ -1243,13 +1342,14 @@ function downloadAttendanceReport() {
   const period = document.getElementById('reportMonth').value;
   const format = document.getElementById('reportFormat').value;
   const currentView = '<?= $v ?>';
-  window.location.href = `?view=${currentView}&export_attendance_report=1&period=${period}&format=${format}`;
+  window.location.href = '?view=' + currentView + '&export_attendance_report=1&period=' + period + '&format=' + format;
 }
 </script>
 
 <?php
-// ... rest of your existing reports code here ...
-// (Keep your existing reports: Non-Payers, Overdue, Attendance Summary, etc.)
+// Keep your existing reports content here
+// (Non-Payers, Overdue, Attendance Summary, Zone Financial, Payment Logs, etc.)
+// If you have other reports, include them here
 ?>
 
 <?php endif; ?>
@@ -1299,8 +1399,7 @@ function filterTable(searchId, tableId, countId){
 
 document.addEventListener('DOMContentLoaded', () => {
   [
-    ['memberSearch','memberTbl','memberCnt'],
-    // ... (add your other table filters here)
+    ['memberSearch','memberTbl','memberCnt']
   ].forEach(([s,t,c]) => { if(document.getElementById(t)) filterTable(s,t,c); });
 });
 </script>
