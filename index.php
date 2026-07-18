@@ -211,7 +211,7 @@ function staff($pdo){
     return $pdo->query("SELECT s.*,z.name zone_name FROM staff s LEFT JOIN academy_zones z ON z.id=s.zone_id ORDER BY z.id,s.full_name")->fetchAll();
 }
 function sessions($pdo){
-    return $pdo->query("SELECT s.*,COALESCE(s.session_date,s.date) AS session_date,z.name zone_name FROM sessions s LEFT JOIN academy_zones z ON z.id=s.zone_id ORDER BY COALESCE(s.session_date,s.date) DESC,s.id DESC")->fetchAll();
+    return $pdo->query("SELECT s.*,z.name zone_name FROM sessions s LEFT JOIN academy_zones z ON z.id=s.zone_id ORDER BY s.session_date DESC,s.id DESC")->fetchAll();
 }
 function ensure_bill($pdo,$member_id,$period){
     $m=$pdo->prepare("SELECT * FROM members WHERE id=?");$m->execute([$member_id]);$m=$m->fetch();
@@ -245,10 +245,10 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
     // Get attendance records for the period
     $attendance = $pdo->prepare("
         SELECT a.member_id, a.status, 
-               EXTRACT(DAY FROM COALESCE(s.session_date, s.date)) as day_num
+               EXTRACT(DAY FROM s.session_date) as day_num
         FROM attendance a
         JOIN sessions s ON s.id = a.session_id
-        WHERE TO_CHAR(COALESCE(s.session_date, s.date), 'YYYY-MM') = ?
+        WHERE TO_CHAR(s.session_date, 'YYYY-MM') = ?
         ORDER BY s.session_date, a.member_id
     ");
     $attendance->execute([$period]);
@@ -1090,6 +1090,628 @@ function downloadAttendanceReport() {
 
 <?php endif; ?>
 
+<?php /* ════════════════════════════════════
+   ATHLETES / MEMBERS
+════════════════════════════════════ */ ?>
+<?php if($v==='members'): ?>
+<div class="page-header">
+  <div>
+    <div class="page-title">Athletes <em>Directory</em></div>
+    <div class="page-sub">Manage member registrations &amp; billing profiles</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header">
+    <div class="card-title"><span class="card-title-bar"></span><?= $edit_member?'Edit Athlete':'Add New Athlete' ?></div>
+  </div>
+  <form method="post">
+    <input type="hidden" name="action" value="save_member">
+    <?php if($edit_member): ?><input type="hidden" name="id" value="<?= h($edit_member['id']) ?>"><?php endif; ?>
+    <div class="form-grid">
+      <div class="form-group"><label>Full Name</label><input name="full_name" required value="<?= h($edit_member['full_name']??'') ?>"></div>
+      <div class="form-group"><label>Phone</label><input name="phone" value="<?= h($edit_member['phone']??'') ?>"></div>
+      <div class="form-group"><label>Gender</label>
+        <select name="gender">
+          <option value="">--</option>
+          <option value="Male" <?= ($edit_member['gender']??'')==='Male'?'selected':'' ?>>Male</option>
+          <option value="Female" <?= ($edit_member['gender']??'')==='Female'?'selected':'' ?>>Female</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Date of Birth</label><input type="date" name="date_of_birth" value="<?= h($edit_member['date_of_birth']??'') ?>"></div>
+      <div class="form-group"><label>Zone</label>
+        <select name="zone_id">
+          <?php foreach($z as $zone): ?>
+          <option value="<?= $zone['id'] ?>" <?= (string)($edit_member['zone_id']??'')===(string)$zone['id']?'selected':'' ?>><?= h($zone['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="form-group"><label>Guardian Name</label><input name="guardian_name" value="<?= h($edit_member['guardian_name']??'') ?>"></div>
+      <div class="form-group"><label>Guardian Phone</label><input name="guardian_phone" value="<?= h($edit_member['guardian_phone']??'') ?>"></div>
+      <div class="form-group"><label>Position</label><input name="position" value="<?= h($edit_member['position']??'') ?>"></div>
+      <div class="form-group"><label>School Name</label><input name="school_name" value="<?= h($edit_member['school_name']??'') ?>"></div>
+      <div class="form-group"><label>Admission Number</label><input name="admission_number" value="<?= h($edit_member['admission_number']??'') ?>"></div>
+      <div class="form-group"><label>Class</label><input name="class_name" value="<?= h($edit_member['class_name']??'') ?>"></div>
+      <div class="form-group"><label>Parent Email</label><input type="email" name="parent_email" value="<?= h($edit_member['parent_email']??'') ?>"></div>
+      <div class="form-group"><label>Monthly Fee (RWF)</label><input type="number" step="0.01" min="0" name="monthly_fee" value="<?= h($edit_member['monthly_fee']??0) ?>"></div>
+      <div class="form-group"><label>Due Day (1-31)</label><input type="number" min="1" max="31" name="due_day" value="<?= h($edit_member['due_day']??5) ?>"></div>
+    </div>
+    <div class="form-group" style="margin-top:14px;"><label>Notes</label><textarea name="notes" rows="2"><?= h($edit_member['notes']??'') ?></textarea></div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">✓ <?= $edit_member?'Update':'Add' ?> Athlete</button>
+      <?php if($edit_member): ?><a href="?view=members&period=<?= h($p) ?>" class="btn btn-ghost">Cancel</a><?php endif; ?>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>All Athletes</div></div>
+  <div class="toolbar">
+    <div class="search-box"><span class="search-box-icon">⌕</span><input id="memberSearch" placeholder="Search by name, zone, guardian..." oninput="filterTable('memberSearch','memberTbl','memberCnt')"></div>
+  </div>
+  <div class="result-count" id="memberCnt"><?= count($m) ?> records</div>
+  <div class="table-wrap">
+  <table id="memberTbl">
+    <thead><tr><th>Name</th><th>Zone</th><th>Phone</th><th>Guardian</th><th>Monthly Fee</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+    <?php if(!$m): ?><tr><td colspan="7" class="no-data">No athletes registered yet</td></tr><?php endif; ?>
+    <?php foreach($m as $row): ?>
+    <tr>
+      <td><strong><?= h($row['full_name']) ?></strong></td>
+      <td><span class="badge b-zone"><?= h($row['zone_name']) ?></span></td>
+      <td><?= h($row['phone']?:'—') ?></td>
+      <td><?= h($row['guardian_name']?:'—') ?></td>
+      <td><?= money($row['monthly_fee']) ?></td>
+      <td><span class="badge <?= $row['is_active']?'b-active':'b-inactive' ?>"><?= $row['is_active']?'Active':'Inactive' ?></span></td>
+      <td class="actions-cell">
+        <a class="btn btn-ghost btn-sm" href="?view=members&period=<?= h($p) ?>&edit_member=<?= $row['id'] ?>">Edit</a>
+        <?php if($row['is_active']): ?>
+        <form method="post" style="display:inline" onsubmit="return confirm('Deactivate this athlete?')">
+          <input type="hidden" name="action" value="delete_member">
+          <input type="hidden" name="id" value="<?= $row['id'] ?>">
+          <button type="submit" class="btn btn-danger btn-sm">Deactivate</button>
+        </form>
+        <?php endif; ?>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php /* ════════════════════════════════════
+   ATTENDANCE
+════════════════════════════════════ */ ?>
+<?php if($v==='attendance'): ?>
+<div class="page-header">
+  <div>
+    <div class="page-title">Attendance <em>Tracking</em></div>
+    <div class="page-sub">Create sessions and mark daily attendance by zone</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_session?'Edit Session':'Create Session' ?></div></div>
+  <form method="post">
+    <input type="hidden" name="action" value="save_session">
+    <?php if($edit_session): ?><input type="hidden" name="id" value="<?= h($edit_session['id']) ?>"><?php endif; ?>
+    <div class="form-grid">
+      <div class="form-group"><label>Session Name</label><input name="name" required value="<?= h($edit_session['name']??'') ?>" placeholder="e.g. Tuesday Training"></div>
+      <div class="form-group"><label>Date</label><input type="date" name="session_date" required value="<?= h($edit_session['session_date']??date('Y-m-d')) ?>"></div>
+      <div class="form-group"><label>Zone</label>
+        <select name="zone_id">
+          <?php foreach($z as $zone): ?>
+          <option value="<?= $zone['id'] ?>" <?= (string)($edit_session['zone_id']??'')===(string)$zone['id']?'selected':'' ?>><?= h($zone['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">✓ <?= $edit_session?'Update':'Create' ?> Session</button>
+      <?php if($edit_session): ?><a href="?view=attendance&period=<?= h($p) ?>" class="btn btn-ghost">Cancel</a><?php endif; ?>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Sessions</div></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Session</th><th>Date</th><th>Zone</th><th>Actions</th></tr></thead>
+    <tbody>
+    <?php if(!$s): ?><tr><td colspan="4" class="no-data">No sessions created yet</td></tr><?php endif; ?>
+    <?php foreach($s as $row): ?>
+    <tr>
+      <td><strong><?= h($row['name']) ?></strong></td>
+      <td><span style="font-family:var(--font-mono)"><?= h($row['session_date']) ?></span></td>
+      <td><span class="badge b-zone"><?= h($row['zone_name']) ?></span></td>
+      <td class="actions-cell">
+        <a class="btn btn-ghost btn-sm" href="?view=attendance&period=<?= h($p) ?>&edit_session=<?= $row['id'] ?>&take=<?= $row['id'] ?>#take">Take Attendance</a>
+        <a class="btn btn-ghost btn-sm" href="?view=attendance&period=<?= h($p) ?>&edit_session=<?= $row['id'] ?>">Edit</a>
+        <form method="post" style="display:inline" onsubmit="return confirm('Delete this session and its attendance records?')">
+          <input type="hidden" name="action" value="delete_session">
+          <input type="hidden" name="id" value="<?= $row['id'] ?>">
+          <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+        </form>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<?php
+$take_id = (int)($_GET['take'] ?? 0);
+if($take_id):
+  $ts=$pdo->prepare("SELECT s.*,z.name zone_name FROM sessions s LEFT JOIN academy_zones z ON z.id=s.zone_id WHERE s.id=?");
+  $ts->execute([$take_id]);$take_session=$ts->fetch();
+  if($take_session):
+    $tm=$pdo->prepare("SELECT m.id,m.full_name,COALESCE(a.status,'absent') status FROM members m LEFT JOIN attendance a ON a.member_id=m.id AND a.session_id=? WHERE m.zone_id=? AND m.is_active=TRUE ORDER BY m.full_name");
+    $tm->execute([$take_id,$take_session['zone_id']]);$take_members=$tm->fetchAll();
+?>
+<div class="card" id="take">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Mark Attendance — <?= h($take_session['name']) ?> (<?= h($take_session['session_date']) ?>, <?= h($take_session['zone_name']) ?>)</div></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Athlete</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    <?php if(!$take_members): ?><tr><td colspan="3" class="no-data">No active athletes in this zone</td></tr><?php endif; ?>
+    <?php foreach($take_members as $tmem): ?>
+    <tr>
+      <td><strong><?= h($tmem['full_name']) ?></strong></td>
+      <td>
+        <form method="post" style="display:flex;gap:8px;align-items:center;">
+          <input type="hidden" name="action" value="attendance">
+          <input type="hidden" name="session_id" value="<?= $take_id ?>">
+          <input type="hidden" name="member_id" value="<?= $tmem['id'] ?>">
+          <select name="status" style="padding:7px 10px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-xs);color:var(--text);">
+            <option value="present" <?= $tmem['status']==='present'?'selected':'' ?>>Present</option>
+            <option value="absent" <?= $tmem['status']==='absent'?'selected':'' ?>>Absent</option>
+            <option value="late" <?= $tmem['status']==='late'?'selected':'' ?>>Late</option>
+            <option value="excused" <?= $tmem['status']==='excused'?'selected':'' ?>>Excused</option>
+          </select>
+          <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        </form>
+      </td>
+      <td><span class="badge b-<?= $tmem['status'] ?>"><?= ucfirst($tmem['status']) ?></span></td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; endif; ?>
+<?php endif; ?>
+
+<?php /* ════════════════════════════════════
+   BILLING / PAYMENTS
+════════════════════════════════════ */ ?>
+<?php if($v==='payments'): ?>
+<?php
+foreach($am as $mem){ ensure_bill($pdo,$mem['id'],$p); }
+$bills=$pdo->prepare("SELECT b.*,m.full_name,z.name zone_name FROM monthly_bills b JOIN members m ON m.id=b.member_id LEFT JOIN academy_zones z ON z.id=m.zone_id WHERE b.period=? ORDER BY z.id,m.full_name");
+$bills->execute([$p]);$bills=$bills->fetchAll();
+?>
+<div class="page-header">
+  <div>
+    <div class="page-title">Billing <em>&amp; Payments</em></div>
+    <div class="page-sub">Period: <?= h($p) ?> · Bills auto-generated for all active athletes</div>
+  </div>
+  <div class="period-nav">
+    <a href="?view=payments&period=<?= $prev ?>">← Prev</a>
+    <span class="cur"><?= h($p) ?></span>
+    <a href="?view=payments&period=<?= $next ?>">Next →</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_bill?'Edit Payment':'Record Payment' ?></div></div>
+  <?php if($edit_bill): ?>
+  <form method="post">
+    <input type="hidden" name="action" value="edit_payment">
+    <input type="hidden" name="bill_id" value="<?= h($edit_bill['id']) ?>">
+    <div class="form-grid-2">
+      <div class="form-group"><label>Athlete</label><input value="<?= h($edit_bill['full_name']) ?>" disabled></div>
+      <div class="form-group"><label>Paid Amount (RWF)</label><input type="number" step="0.01" min="0" name="paid_amount" value="<?= h($edit_bill['paid_amount']) ?>"></div>
+    </div>
+    <div class="form-group" style="margin-top:14px;"><label>Note</label><input name="note" value="<?= h($edit_bill['note']??'') ?>"></div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">✓ Update Payment</button>
+      <a href="?view=payments&period=<?= h($p) ?>" class="btn btn-ghost">Cancel</a>
+    </div>
+  </form>
+  <?php else: ?>
+  <form method="post">
+    <input type="hidden" name="action" value="payment">
+    <input type="hidden" name="period" value="<?= h($p) ?>">
+    <div class="form-grid">
+      <div class="form-group"><label>Athlete</label>
+        <select name="member_id" required>
+          <option value="">-- select --</option>
+          <?php foreach($am as $mem): ?>
+          <option value="<?= $mem['id'] ?>"><?= h($mem['full_name']) ?> (<?= h($mem['zone_name']) ?>)</option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="form-group"><label>Amount (RWF)</label><input type="number" step="0.01" min="0" name="amount" required></div>
+      <div class="form-group"><label>Note</label><input name="note" placeholder="optional"></div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">✓ Record Payment</button>
+    </div>
+  </form>
+  <?php endif; ?>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Bills — <?= h($p) ?></div></div>
+  <div class="toolbar">
+    <div class="search-box"><span class="search-box-icon">⌕</span><input id="billSearch" placeholder="Search athletes..." oninput="filterTable('billSearch','billTbl','billCnt')"></div>
+  </div>
+  <div class="result-count" id="billCnt"><?= count($bills) ?> records</div>
+  <div class="table-wrap">
+  <table id="billTbl">
+    <thead><tr><th>Athlete</th><th>Zone</th><th>Expected</th><th>Paid</th><th>Due Date</th><th>Status</th><th>Overdue</th><th>Actions</th></tr></thead>
+    <tbody>
+    <?php if(!$bills): ?><tr><td colspan="8" class="no-data">No bills for this period</td></tr><?php endif; ?>
+    <?php foreach($bills as $row):
+      $status=bill_status($row['expected_amount'],$row['paid_amount']);
+      $badgeClass=['PAID'=>'b-paid','PARTIAL'=>'b-partial','UNPAID'=>'b-unpaid','NO BILL'=>'b-nobill'][$status];
+      $od=overdue_days($row['due_date'],$status);
+    ?>
+    <tr>
+      <td><strong><?= h($row['full_name']) ?></strong></td>
+      <td><span class="badge b-zone"><?= h($row['zone_name']) ?></span></td>
+      <td><?= money($row['expected_amount']) ?></td>
+      <td><?= money($row['paid_amount']) ?></td>
+      <td><span style="font-family:var(--font-mono)"><?= h($row['due_date']) ?></span></td>
+      <td><span class="badge <?= $badgeClass ?>"><?= $status ?></span></td>
+      <td><?= $od>0?'<span style="color:var(--red)">'.$od.'d</span>':'—' ?></td>
+      <td class="actions-cell">
+        <a class="btn btn-ghost btn-sm" href="?view=payments&period=<?= h($p) ?>&edit_bill=<?= $row['id'] ?>">Edit</a>
+        <form method="post" style="display:inline" onsubmit="return confirm('Clear this payment record?')">
+          <input type="hidden" name="action" value="delete_payment">
+          <input type="hidden" name="bill_id" value="<?= $row['id'] ?>">
+          <button type="submit" class="btn btn-danger btn-sm">Clear</button>
+        </form>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php /* ════════════════════════════════════
+   STAFF
+════════════════════════════════════ */ ?>
+<?php if($v==='staff'): ?>
+<div class="page-header">
+  <div>
+    <div class="page-title">Staff <em>Directory</em></div>
+    <div class="page-sub">Coaches and support staff by zone</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_staff?'Edit Staff':'Add Staff' ?></div></div>
+  <form method="post">
+    <input type="hidden" name="action" value="save_staff">
+    <?php if($edit_staff): ?><input type="hidden" name="id" value="<?= h($edit_staff['id']) ?>"><?php endif; ?>
+    <div class="form-grid">
+      <div class="form-group"><label>Full Name</label><input name="full_name" required value="<?= h($edit_staff['full_name']??'') ?>"></div>
+      <div class="form-group"><label>Phone</label><input name="phone" value="<?= h($edit_staff['phone']??'') ?>"></div>
+      <div class="form-group"><label>Role</label><input name="role" required value="<?= h($edit_staff['role']??'') ?>" placeholder="e.g. Head Coach"></div>
+      <div class="form-group"><label>Zone</label>
+        <select name="zone_id">
+          <?php foreach($z as $zone): ?>
+          <option value="<?= $zone['id'] ?>" <?= (string)($edit_staff['zone_id']??'')===(string)$zone['id']?'selected':'' ?>><?= h($zone['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="form-group"><label>Monthly Salary (RWF)</label><input type="number" step="0.01" min="0" name="monthly_salary" value="<?= h($edit_staff['monthly_salary']??0) ?>"></div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">✓ <?= $edit_staff?'Update':'Add' ?> Staff</button>
+      <?php if($edit_staff): ?><a href="?view=staff&period=<?= h($p) ?>" class="btn btn-ghost">Cancel</a><?php endif; ?>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>All Staff</div></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Name</th><th>Role</th><th>Zone</th><th>Phone</th><th>Salary</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+    <?php if(!$st): ?><tr><td colspan="7" class="no-data">No staff registered yet</td></tr><?php endif; ?>
+    <?php foreach($st as $row): ?>
+    <tr>
+      <td><strong><?= h($row['full_name']) ?></strong></td>
+      <td><?= h($row['role']) ?></td>
+      <td><span class="badge b-zone"><?= h($row['zone_name']) ?></span></td>
+      <td><?= h($row['phone']?:'—') ?></td>
+      <td><?= money($row['monthly_salary']) ?></td>
+      <td><span class="badge <?= $row['is_active']?'b-active':'b-inactive' ?>"><?= $row['is_active']?'Active':'Inactive' ?></span></td>
+      <td class="actions-cell">
+        <a class="btn btn-ghost btn-sm" href="?view=staff&period=<?= h($p) ?>&edit_staff=<?= $row['id'] ?>">Edit</a>
+        <?php if($row['is_active']): ?>
+        <form method="post" style="display:inline" onsubmit="return confirm('Deactivate this staff member?')">
+          <input type="hidden" name="action" value="delete_staff">
+          <input type="hidden" name="id" value="<?= $row['id'] ?>">
+          <button type="submit" class="btn btn-danger btn-sm">Deactivate</button>
+        </form>
+        <?php endif; ?>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php /* ════════════════════════════════════
+   PAYROLL
+════════════════════════════════════ */ ?>
+<?php if($v==='payroll'): ?>
+<?php
+$pr=$pdo->prepare("SELECT s.id staff_id,s.full_name,s.role,z.name zone_name,
+  cp.id cp_id,COALESCE(cp.base_salary,s.monthly_salary) base_salary,COALESCE(cp.bonus,0) bonus,COALESCE(cp.deductions,0) deductions,
+  COALESCE(cp.amount_paid,0) amount_paid,COALESCE(cp.note,'') note,COALESCE(cp.payment_status,'UNPAID') payment_status
+  FROM staff s LEFT JOIN academy_zones z ON z.id=s.zone_id
+  LEFT JOIN coach_payroll cp ON cp.staff_id=s.id AND cp.period=?
+  WHERE s.is_active=TRUE ORDER BY z.id,s.full_name");
+$pr->execute([$p]);$payroll_rows=$pr->fetchAll();
+?>
+<div class="page-header">
+  <div>
+    <div class="page-title">Payroll <em>Management</em></div>
+    <div class="page-sub">Period: <?= h($p) ?></div>
+  </div>
+  <div class="period-nav">
+    <a href="?view=payroll&period=<?= $prev ?>">← Prev</a>
+    <span class="cur"><?= h($p) ?></span>
+    <a href="?view=payroll&period=<?= $next ?>">Next →</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Staff Payroll — <?= h($p) ?></div></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Staff</th><th>Zone</th><th>Base</th><th>Bonus</th><th>Deductions</th><th>Paid</th><th>Note</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    <?php if(!$payroll_rows): ?><tr><td colspan="9" class="no-data">No active staff</td></tr><?php endif; ?>
+    <?php foreach($payroll_rows as $row):
+      $badgeClass=['PAID'=>'b-paid','PARTIAL'=>'b-partial','UNPAID'=>'b-unpaid'][$row['payment_status']]??'b-unpaid';
+      $fid='payroll_form_'.$row['staff_id'];
+    ?>
+    <tr>
+      <td>
+        <form id="<?= $fid ?>" method="post" style="display:none;">
+          <input type="hidden" name="action" value="payroll">
+          <input type="hidden" name="staff_id" value="<?= $row['staff_id'] ?>">
+          <input type="hidden" name="period" value="<?= h($p) ?>">
+        </form>
+        <strong><?= h($row['full_name']) ?></strong><br><span style="color:var(--muted);font-size:11.5px;"><?= h($row['role']) ?></span>
+      </td>
+      <td><span class="badge b-zone"><?= h($row['zone_name']) ?></span></td>
+      <td><input form="<?= $fid ?>" type="number" step="0.01" name="base_salary" value="<?= h($row['base_salary']) ?>" style="width:100px;padding:6px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-xs);color:var(--text);"></td>
+      <td><input form="<?= $fid ?>" type="number" step="0.01" name="bonus" value="<?= h($row['bonus']) ?>" style="width:90px;padding:6px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-xs);color:var(--text);"></td>
+      <td><input form="<?= $fid ?>" type="number" step="0.01" name="deductions" value="<?= h($row['deductions']) ?>" style="width:90px;padding:6px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-xs);color:var(--text);"></td>
+      <td><input form="<?= $fid ?>" type="number" step="0.01" name="amount_paid" value="<?= h($row['amount_paid']) ?>" style="width:100px;padding:6px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-xs);color:var(--text);"></td>
+      <td><input form="<?= $fid ?>" name="note" value="<?= h($row['note']) ?>" style="width:110px;padding:6px 8px;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius-xs);color:var(--text);"></td>
+      <td><span class="badge <?= $badgeClass ?>"><?= h($row['payment_status']) ?></span></td>
+      <td><button form="<?= $fid ?>" type="submit" class="btn btn-primary btn-sm">Save</button></td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php /* ════════════════════════════════════
+   EXPENSES
+════════════════════════════════════ */ ?>
+<?php if($v==='expenses'): ?>
+<?php
+$exp=$pdo->prepare("SELECT e.*,z.name zone_name FROM expenses e LEFT JOIN academy_zones z ON z.id=e.zone_id WHERE TO_CHAR(e.expense_date,'YYYY-MM')=? ORDER BY e.expense_date DESC,e.id DESC");
+$exp->execute([$p]);$expense_rows=$exp->fetchAll();
+$exp_total=array_sum(array_column($expense_rows,'amount'));
+?>
+<div class="page-header">
+  <div>
+    <div class="page-title">Expense <em>Tracking</em></div>
+    <div class="page-sub">Period: <?= h($p) ?></div>
+  </div>
+  <div class="period-nav">
+    <a href="?view=expenses&period=<?= $prev ?>">← Prev</a>
+    <span class="cur"><?= h($p) ?></span>
+    <a href="?view=expenses&period=<?= $next ?>">Next →</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Record Expense</div></div>
+  <form method="post">
+    <input type="hidden" name="action" value="expense">
+    <div class="form-grid">
+      <div class="form-group"><label>Date</label><input type="date" name="expense_date" required value="<?= date('Y-m-d') ?>"></div>
+      <div class="form-group"><label>Category</label><input name="category" required placeholder="e.g. Equipment"></div>
+      <div class="form-group"><label>Amount (RWF)</label><input type="number" step="0.01" min="0" name="amount" required></div>
+      <div class="form-group"><label>Paid To</label><input name="paid_to"></div>
+      <div class="form-group"><label>Approved By</label><input name="approved_by"></div>
+      <div class="form-group"><label>Zone</label>
+        <select name="zone_id">
+          <?php foreach($z as $zone): ?>
+          <option value="<?= $zone['id'] ?>"><?= h($zone['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+    </div>
+    <div class="form-group" style="margin-top:14px;"><label>Description</label><textarea name="description" rows="2" required></textarea></div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">✓ Save Expense</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>Expenses — <?= h($p) ?> (Total: <?= money($exp_total) ?>)</div></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Paid To</th><th>Zone</th></tr></thead>
+    <tbody>
+    <?php if(!$expense_rows): ?><tr><td colspan="6" class="no-data">No expenses recorded for this period</td></tr><?php endif; ?>
+    <?php foreach($expense_rows as $row): ?>
+    <tr>
+      <td><span style="font-family:var(--font-mono)"><?= h($row['expense_date']) ?></span></td>
+      <td><?= h($row['category']) ?></td>
+      <td><?= h($row['description']) ?></td>
+      <td><span style="color:var(--red)"><?= money($row['amount']) ?></span></td>
+      <td><?= h($row['paid_to']?:'—') ?></td>
+      <td><span class="badge b-zone"><?= h($row['zone_name']) ?></span></td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+<?php endif; ?>
+
+<?php /* ════════════════════════════════════
+   UNIFORMS
+════════════════════════════════════ */ ?>
+<?php if($v==='uniforms'): ?>
+<?php
+$uni=$pdo->query("SELECT u.*,m.full_name FROM athlete_uniforms u JOIN members m ON m.id=u.member_id ORDER BY u.jersey_number")->fetchAll();
+?>
+<div class="page-header">
+  <div>
+    <div class="page-title">Uniform <em>Inventory</em></div>
+    <div class="page-sub">Jersey &amp; kit assignments</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span><?= $edit_uniform?'Edit Uniform Record':'Assign Uniform' ?></div></div>
+  <form method="post">
+    <input type="hidden" name="action" value="save_uniform">
+    <?php if($edit_uniform): ?><input type="hidden" name="id" value="<?= h($edit_uniform['id']) ?>"><?php endif; ?>
+    <div class="form-grid">
+      <div class="form-group"><label>Athlete</label>
+        <select name="member_id" required>
+          <option value="">-- select --</option>
+          <?php foreach($am as $mem): ?>
+          <option value="<?= $mem['id'] ?>" <?= (string)($edit_uniform['member_id']??'')===(string)$mem['id']?'selected':'' ?>><?= h($mem['full_name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="form-group"><label>Jersey Number</label>
+        <input type="number" min="1" name="jersey_number" id="jerseyNum" required value="<?= h($edit_uniform['jersey_number']??'') ?>" data-current-id="<?= h($edit_uniform['id']??0) ?>">
+        <div id="jerseyCheckMsg" style="font-size:11px;margin-top:5px;"></div>
+      </div>
+      <div class="form-group"><label>Quantity</label><input type="number" min="1" name="quantity" value="<?= h($edit_uniform['quantity']??1) ?>"></div>
+      <div class="form-group"><label>Jersey Category</label><input name="jersey_category" value="<?= h($edit_uniform['jersey_category']??'Adult Unisex V-Neck') ?>"></div>
+      <div class="form-group"><label>Jersey Size</label><input name="jersey_size" required value="<?= h($edit_uniform['jersey_size']??'') ?>" placeholder="e.g. M"></div>
+      <div class="form-group"><label>Jersey Chest (cm)</label><input type="number" step="0.1" name="jersey_chest" value="<?= h($edit_uniform['jersey_chest']??'') ?>"></div>
+      <div class="form-group"><label>Jersey Length (cm)</label><input type="number" step="0.1" name="jersey_length" value="<?= h($edit_uniform['jersey_length']??'') ?>"></div>
+      <div class="form-group"><label>Shorts Category</label><input name="shorts_category" value="<?= h($edit_uniform['shorts_category']??'Adult Unisex Shorts') ?>"></div>
+      <div class="form-group"><label>Shorts Size</label><input name="shorts_size" required value="<?= h($edit_uniform['shorts_size']??'') ?>" placeholder="e.g. M"></div>
+      <div class="form-group"><label>Shorts Waist (cm)</label><input type="number" step="0.1" name="shorts_waist" value="<?= h($edit_uniform['shorts_waist']??'') ?>"></div>
+      <div class="form-group"><label>Shorts Inseam (cm)</label><input type="number" step="0.1" name="shorts_inseam" value="<?= h($edit_uniform['shorts_inseam']??'') ?>"></div>
+      <div class="form-group"><label>Issued Date</label><input type="date" name="issued_date" value="<?= h($edit_uniform['issued_date']??date('Y-m-d')) ?>"></div>
+    </div>
+    <div class="form-group" style="margin-top:14px;"><label>Note</label><input name="note" value="<?= h($edit_uniform['note']??'') ?>"></div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary" id="uniformSubmitBtn">✓ <?= $edit_uniform?'Update':'Save' ?> Uniform</button>
+      <?php if($edit_uniform): ?><a href="?view=uniforms&period=<?= h($p) ?>" class="btn btn-ghost">Cancel</a><?php endif; ?>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div class="card-corner"></div>
+  <div class="card-header"><div class="card-title"><span class="card-title-bar"></span>All Uniforms</div></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Athlete</th><th>Jersey Size</th><th>Shorts Size</th><th>Qty</th><th>Issued</th><th>Actions</th></tr></thead>
+    <tbody>
+    <?php if(!$uni): ?><tr><td colspan="7" class="no-data">No uniforms assigned yet</td></tr><?php endif; ?>
+    <?php foreach($uni as $row): ?>
+    <tr>
+      <td><span class="badge b-zone">#<?= h($row['jersey_number']) ?></span></td>
+      <td><strong><?= h($row['full_name']) ?></strong></td>
+      <td><?= h($row['jersey_size']) ?></td>
+      <td><?= h($row['shorts_size']) ?></td>
+      <td><?= h($row['quantity']) ?></td>
+      <td><span style="font-family:var(--font-mono)"><?= h($row['issued_date']) ?></span></td>
+      <td class="actions-cell">
+        <a class="btn btn-ghost btn-sm" href="?view=uniforms&period=<?= h($p) ?>&edit_uniform=<?= $row['id'] ?>">Edit</a>
+        <form method="post" style="display:inline" onsubmit="return confirm('Delete this uniform record?')">
+          <input type="hidden" name="action" value="delete_uniform">
+          <input type="hidden" name="id" value="<?= $row['id'] ?>">
+          <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+        </form>
+      </td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<script>
+(function(){
+  const input = document.getElementById('jerseyNum');
+  const msg = document.getElementById('jerseyCheckMsg');
+  const btn = document.getElementById('uniformSubmitBtn');
+  if(!input) return;
+  let t;
+  input.addEventListener('input', function(){
+    clearTimeout(t);
+    const val = this.value;
+    const currentId = this.dataset.currentId || 0;
+    if(!val){ msg.textContent=''; return; }
+    t = setTimeout(function(){
+      fetch('?check_jersey=' + encodeURIComponent(val) + '&current_id=' + encodeURIComponent(currentId))
+        .then(r => r.json())
+        .then(data => {
+          if(data.exists){
+            msg.textContent = '⚠ Jersey number already assigned to another athlete';
+            msg.style.color = 'var(--red)';
+            btn.disabled = true;
+          } else {
+            msg.textContent = '✓ Jersey number available';
+            msg.style.color = 'var(--lime)';
+            btn.disabled = false;
+          }
+        }).catch(()=>{ msg.textContent=''; });
+    }, 350);
+  });
+})();
+</script>
+<?php endif; ?>
+
 </main>
 
 <script>
@@ -1116,7 +1738,8 @@ function filterTable(searchId, tableId, countId){
 document.addEventListener('DOMContentLoaded', function() {
   // Initialize any table filters
   const filterMaps = [
-    ['memberSearch', 'memberTbl', 'memberCnt']
+    ['memberSearch', 'memberTbl', 'memberCnt'],
+    ['billSearch', 'billTbl', 'billCnt']
   ];
   filterMaps.forEach(function(item) {
     if(document.getElementById(item[1])) {
