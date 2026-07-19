@@ -228,7 +228,7 @@ function generateAttendanceReport($pdo, $yearMonth, $format = 'pdf') {
     $period = $yearMonth;
     $year = (int)substr($period, 0, 4);
     $month = (int)substr($period, 5, 2);
-    $daysInMonth = cal_days_in_month(CAL_GREGORIAN, $month, $year);
+    $daysInMonth = (int)date('t', mktime(0, 0, 0, $month, 1, $year));
     
     // Get all active children
     $children = $pdo->query("
@@ -954,14 +954,31 @@ tbody tr:hover td{background:rgba(255,255,255,0.018);}
   .main{padding:20px;}
   .stat-grid,.form-grid{grid-template-columns:repeat(2,1fr);}
 }
+
+.menu-toggle{display:none;position:fixed;top:16px;left:16px;z-index:210;width:42px;height:42px;border-radius:10px;background:var(--surface);border:1px solid var(--border2);color:var(--text);align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,0.4);}
+.menu-toggle span,.menu-toggle span::before,.menu-toggle span::after{content:'';display:block;width:18px;height:2px;background:var(--lime);border-radius:2px;position:relative;transition:transform var(--transition),opacity var(--transition);}
+.menu-toggle span::before{position:absolute;top:-6px;}
+.menu-toggle span::after{position:absolute;top:6px;}
+.sidebar-backdrop{display:none;position:fixed;inset:0;background:rgba(2,6,14,0.6);z-index:99;}
+
 @media(max-width:680px){
   :root{--sidebar-w:0px;}
-  .sidebar{transform:translateX(-100%);}
+  .main{margin-left:0;max-width:100vw;padding-top:76px;}
+  .menu-toggle{display:flex;}
+  .sidebar{width:270px;transform:translateX(-100%);transition:transform var(--transition);}
+  body.sidebar-open .sidebar{transform:translateX(0);}
+  body.sidebar-open .sidebar-backdrop{display:block;}
+  body.sidebar-open .menu-toggle span{background:transparent;}
+  body.sidebar-open .menu-toggle span::before{top:0;transform:rotate(45deg);}
+  body.sidebar-open .menu-toggle span::after{top:0;transform:rotate(-45deg);}
   .stat-grid,.form-grid,.form-grid-2{grid-template-columns:1fr;}
+  .page-header{padding-right:0;}
 }
 </style>
 </head>
 <body>
+<button class="menu-toggle" id="menuToggle" aria-label="Toggle menu"><span></span></button>
+<div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
 <!-- ── SIDEBAR ── -->
 <aside class="sidebar">
@@ -1791,6 +1808,20 @@ document.addEventListener('DOMContentLoaded', function() {
     if(document.getElementById(item[1])) {
       filterTable(item[0], item[1], item[2]);
     }
+  });
+
+  // Mobile sidebar toggle
+  const menuToggle = document.getElementById('menuToggle');
+  const backdrop = document.getElementById('sidebarBackdrop');
+  function closeSidebar(){ document.body.classList.remove('sidebar-open'); }
+  function toggleSidebar(){ document.body.classList.toggle('sidebar-open'); }
+  if(menuToggle) menuToggle.addEventListener('click', toggleSidebar);
+  if(backdrop) backdrop.addEventListener('click', closeSidebar);
+  document.querySelectorAll('.nav a').forEach(function(link){
+    link.addEventListener('click', closeSidebar);
+  });
+  window.addEventListener('resize', function(){
+    if(window.innerWidth > 680) closeSidebar();
   });
 });
 </script>
