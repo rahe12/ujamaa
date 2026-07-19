@@ -457,11 +457,11 @@ function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $total
         
         $rows .= '<tr>';
         $rows .= '<td style="padding:3px 5px;font-size:9px;text-align:center;">' . $index++ . '</td>';
-        $rows .= '<td style="padding:3px 5px;font-size:9px;font-weight:600;white-space:nowrap;">' . htmlspecialchars($row['full_name']) . '</td>';
-        $rows .= '<td style="padding:3px 5px;font-size:8px;">' . htmlspecialchars($row['admission_number']) . '</td>';
-        $rows .= '<td style="padding:3px 5px;font-size:8px;">' . htmlspecialchars($row['class_name']) . '</td>';
-        $rows .= '<td style="padding:3px 5px;font-size:8px;">' . htmlspecialchars($row['guardian_name']) . '</td>';
-        $rows .= '<td style="padding:3px 5px;font-size:8px;">' . htmlspecialchars($row['guardian_phone']) . '</td>';
+        $rows .= '<td style="padding:3px 5px;font-size:9px;font-weight:600;white-space:nowrap;">' . htmlspecialchars((string)$row['full_name']) . '</td>';
+        $rows .= '<td style="padding:3px 5px;font-size:8px;">' . htmlspecialchars((string)$row['admission_number']) . '</td>';
+        $rows .= '<td style="padding:3px 5px;font-size:8px;">' . htmlspecialchars((string)$row['class_name']) . '</td>';
+        $rows .= '<td style="padding:3px 5px;font-size:8px;">' . htmlspecialchars((string)$row['guardian_name']) . '</td>';
+        $rows .= '<td style="padding:3px 5px;font-size:8px;">' . htmlspecialchars((string)$row['guardian_phone']) . '</td>';
         $rows .= $cells;
         $rows .= '<td style="text-align:center;font-size:9px;padding:2px 4px;font-weight:600;">' . $row['totals']['present'] . '</td>';
         $rows .= '<td style="text-align:center;font-size:9px;padding:2px 4px;font-weight:600;">' . $row['totals']['absent'] . '</td>';
