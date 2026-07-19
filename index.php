@@ -476,16 +476,19 @@ function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $total
 <html>
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Attendance Report - <?php echo $period; ?></title>
 <style>
   *{margin:0;padding:0;box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
   body{font-family:"Segoe UI",Arial,sans-serif;background:#fff;color:#222;padding:20px;font-size:10px;}
-  .header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1a3a5c;padding-bottom:10px;margin-bottom:15px;}
+  .header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1a3a5c;padding-bottom:10px;margin-bottom:15px;flex-wrap:wrap;gap:8px;}
   .header h1{font-size:20px;color:#1a3a5c;}
   .header .meta{text-align:right;font-size:10px;color:#666;}
   .sub-title{font-size:11px;color:#444;margin-bottom:12px;background:#f5f7fa;padding:8px 12px;border-radius:6px;}
+  .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #e5e7eb;border-radius:8px;}
   table{width:100%;border-collapse:collapse;font-size:9px;}
-  thead th{background:#1a3a5c;color:#fff;padding:4px 6px;text-align:center;font-size:8px;text-transform:uppercase;letter-spacing:0.3px;white-space:nowrap;}
+  thead th{background:#1a3a5c;color:#fff;padding:4px 6px;text-align:center;font-size:8px;text-transform:uppercase;letter-spacing:0.3px;white-space:nowrap;position:sticky;top:0;}
   tbody td{border-bottom:1px solid #e5e7eb;padding:3px 5px;}
   tbody tr:nth-child(even){background:#f9fafb;}
   .bg-present{background:#d4edda;color:#155724;}
@@ -499,16 +502,23 @@ function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $total
   .summary-item .value.green{color:#155724;}
   .summary-item .value.red{color:#721c24;}
   .summary-item .value.amber{color:#856404;}
-  .footer{margin-top:20px;border-top:1px solid #ddd;padding-top:8px;font-size:8px;color:#888;display:flex;justify-content:space-between;}
+  .footer{margin-top:20px;border-top:1px solid #ddd;padding-top:8px;font-size:8px;color:#888;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;}
   .badge{display:inline-block;padding:1px 6px;border-radius:999px;font-size:7px;font-weight:600;}
   .badge-present{background:#d4edda;color:#155724;}
   .badge-absent{background:#f8d7da;color:#721c24;}
   .badge-late{background:#fff3cd;color:#856404;}
   .badge-excused{background:#d1ecf1;color:#0c5460;}
   .badge-nr{background:#e9ecef;color:#495057;}
+  @media (max-width:700px){
+    body{padding:10px;font-size:9px;}
+    .header h1{font-size:16px;}
+    .summary-item .value{font-size:13px;}
+  }
   @media print{
+    @page{size:landscape;margin:10mm;}
     body{padding:10px;}
     .no-print{display:none!important;}
+    .table-scroll{overflow:visible;border:none;}
     thead th{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     .bg-present,.bg-absent,.bg-late,.bg-excused{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
     tbody tr:nth-child(even){-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#f9fafb!important;}
@@ -518,6 +528,7 @@ function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $total
 </head>
 <body>
 <div class="no-print">
+
   <button onclick="window.print()" style="background:#1a3a5c;color:#fff;border:0;border-radius:4px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;margin-right:6px;">🖨 Print / Save as PDF</button>
   <button onclick="window.close()" style="background:#eee;border:1px solid #ccc;border-radius:4px;padding:8px 16px;font-size:12px;cursor:pointer;">✕ Close</button>
 </div>
@@ -574,6 +585,7 @@ function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $total
   </div>
 </div>
 
+<div class="table-scroll">
 <table>
   <thead>
     <tr>
@@ -595,6 +607,7 @@ function exportAttendancePDF($pdo, $reportData, $sessionDayList, $period, $total
     <?php echo $rows; ?>
   </tbody>
 </table>
+</div>
 
 <div class="footer">
   <span>Academy AMS — Confidential Report</span>
